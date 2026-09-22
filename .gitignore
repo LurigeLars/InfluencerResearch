@@ -1,0 +1,46 @@
+# Runtime state, caches and archives - not source
+__pycache__/
+*.pyc
+*.zip
+*.bak_*
+*.tmp
+*.log
+*.gdoc
+
+desktop.ini
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Authentication/browser state
+chrome-profile/
+browser-profile/
+playwright/.auth/
+*.cookies.txt
+*cookies*.json
+*session*.json
+storage_state*.json
+
+# Local runtime and generated research data
+.venv/
+venv/
+node_modules/
+output/
+state/
+control/
+evidence/
+logs/
+research_queue.json
+creator_registry.json
+
+# OS/editor-local files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

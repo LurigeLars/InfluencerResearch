@@ -1,0 +1,28 @@
+version: 2
+
+updates:
+  # Standard Python runtime dependencies in requirements.txt.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Europe/Stockholm"
+    open-pull-requests-limit: 5
+    groups:
+      python-minor-patch:
+        applies-to: "version-updates"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+    # These packages belong to the separately installed, wheel-only,
+    # hash-locked TikTok impersonation runtime. Keep that reviewed lock
+    # out of routine version-update automation.
+    ignore:
+      - dependency-name: "curl_cffi"
+      - dependency-name: "cffi"
+      - dependency-name: "pycparser"
+      - dependency-name: "certifi"
