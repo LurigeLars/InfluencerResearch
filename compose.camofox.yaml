@@ -14,6 +14,7 @@ services:
       CAMOFOX_ACCESS_KEY: ${CAMOFOX_ACCESS_KEY:?CAMOFOX_ACCESS_KEY is required}
       CAMOFOX_ADMIN_KEY: ${CAMOFOX_ADMIN_KEY:?CAMOFOX_ADMIN_KEY is required}
       CAMOUFOX_EXECUTABLE: /opt/camoufox/camoufox-bin
+      CAMOUFOX_INSTALL_DIR: /opt/camoufox
       XDG_CACHE_HOME: /run/camofox/cache
       CAMOFOX_PROFILE_DIR: /run/camofox/profiles
       CAMOFOX_COOKIES_DIR: /run/camofox/cookies
