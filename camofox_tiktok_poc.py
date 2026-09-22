@@ -69,7 +69,7 @@ def start_server() -> tuple[subprocess.Popen | None, str]:
     cli = local / "node_modules" / ".bin" / "camofox-browser.cmd"
     if not cli.exists():
         raise RuntimeError(
-            f"CamoFox CLI not installed at {cli}. Run app\\09_install_camofox_poc.bat first."
+            f"CamoFox CLI not installed at {cli}. Run scripts\\install_camofox.ps1 first."
         )
 
     log_dir = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "InstagramResearch" / "camofox-logs"

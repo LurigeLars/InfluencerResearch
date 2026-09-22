@@ -9,10 +9,16 @@ It is **not a fork** of yt-dlp or Camofox. The project orchestrates those tools 
 The current Windows-oriented setup expects:
 
 - CPython 3.12 x64
-- Node.js 22+ for Camofox
+- Node.js `v22.23.2` for the current reviewed Camofox baseline
 - a dedicated browser profile for authenticated Instagram access where required
 
-Install the Python runtime with `01_install.bat`. The pinned Camofox runtime used by the TikTok/browser flow can be installed with `09_install_camofox_poc.bat`.
+Install the Python runtime with `01_install.bat`. Install the pinned Camofox runtime used by the TikTok/browser flow with:
+
+```powershell
+pwsh -NoProfile -File scripts\install_camofox.ps1
+```
+
+The Camofox dependency tree is tracked in `runtime/camofox/package.json` and `runtime/camofox/package-lock.json`. The installer uses that lockfile and verifies the exact Node, package and browser baseline expected by the runtime.
 
 For Instagram authentication, set:
 
@@ -36,7 +42,7 @@ Use only accounts, content and automation flows you are authorized to access, an
 - [faster-whisper](https://github.com/SYSTRAN/faster-whisper) — transcription
 - [imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg) — FFmpeg integration
 
-Pinned versions are defined in `requirements.txt`, `requirements_tiktok_impersonation.lock.txt`, and the Camofox installer.
+Pinned versions are defined in `requirements.txt`, `requirements_tiktok_impersonation.lock.txt`, and `runtime/camofox/package-lock.json`.
 
 ## Project license
 

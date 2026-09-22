@@ -1,0 +1,11 @@
+{
+  "name": "influencerresearch-camofox-runtime",
+  "version": "0.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@askjo/camofox-browser": "1.13.1"
+  }
+}

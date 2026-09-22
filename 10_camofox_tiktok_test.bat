@@ -14,7 +14,7 @@ if not exist "%PY%" (
 
 if not exist "%CLI%" (
   echo ERROR: CamoFox POC is not installed.
-  echo Run 09_install_camofox_poc.bat first.
+  echo Run: pwsh -NoProfile -File scripts\install_camofox.ps1
   pause
   exit /b 3
 )
