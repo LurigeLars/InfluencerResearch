@@ -28,7 +28,10 @@ $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $ManifestDir = Join-Path $RepoRoot 'runtime\camofox'
 $SourcePackage = Join-Path $ManifestDir 'package.json'
 $SourceLock = Join-Path $ManifestDir 'package-lock.json'
-$Dest = Join-Path $env:LOCALAPPDATA 'InstagramResearch\camofox-poc'
+$RuntimeRoot = Join-Path $env:LOCALAPPDATA 'InstagramResearch'
+$Dest = Join-Path $RuntimeRoot 'camofox-poc'
+$Stage = Join-Path $RuntimeRoot ('camofox-poc.stage-' + [guid]::NewGuid().ToString('N'))
+$Backup = Join-Path $RuntimeRoot ('camofox-poc.backup-' + [guid]::NewGuid().ToString('N'))
 
 foreach ($path in @($SourcePackage, $SourceLock)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
@@ -36,9 +39,10 @@ foreach ($path in @($SourcePackage, $SourceLock)) {
     }
 }
 
-New-Item -ItemType Directory -Force -Path $Dest | Out-Null
-Copy-Item -LiteralPath $SourcePackage -Destination (Join-Path $Dest 'package.json') -Force
-Copy-Item -LiteralPath $SourceLock -Destination (Join-Path $Dest 'package-lock.json') -Force
+New-Item -ItemType Directory -Force -Path $RuntimeRoot | Out-Null
+New-Item -ItemType Directory -Force -Path $Stage | Out-Null
+Copy-Item -LiteralPath $SourcePackage -Destination (Join-Path $Stage 'package.json') -Force
+Copy-Item -LiteralPath $SourceLock -Destination (Join-Path $Stage 'package-lock.json') -Force
 
 $SensitiveEnv = @(
     'GITHUB_TOKEN', 'GH_TOKEN', 'NODE_AUTH_TOKEN', 'NPM_TOKEN',
@@ -51,10 +55,11 @@ foreach ($name in $SensitiveEnv) {
     [Environment]::SetEnvironmentVariable($name, $null, 'Process')
 }
 
+$StageValidated = $false
 try {
-    Push-Location $Dest
+    Push-Location $Stage
     try {
-        Write-Host 'Installing locked Node dependencies with lifecycle scripts disabled...'
+        Write-Host 'Installing locked Node dependencies into staging with lifecycle scripts disabled...'
         & npm ci --ignore-scripts --omit=dev --omit=optional --no-audit --no-fund
         if ($LASTEXITCODE -ne 0) { throw "npm ci failed with exit code $LASTEXITCODE." }
 
@@ -62,7 +67,7 @@ try {
         & npm rebuild better-sqlite3 --foreground-scripts --no-audit --no-fund
         if ($LASTEXITCODE -ne 0) { throw "better-sqlite3 rebuild failed with exit code $LASTEXITCODE." }
 
-        $PostInstall = Join-Path $Dest 'node_modules\@askjo\camofox-browser\scripts\postinstall.js'
+        $PostInstall = Join-Path $Stage 'node_modules\@askjo\camofox-browser\scripts\postinstall.js'
         if (-not (Test-Path -LiteralPath $PostInstall -PathType Leaf)) {
             throw "Reviewed Camofox postinstall script not found: $PostInstall"
         }
@@ -73,29 +78,59 @@ try {
     finally {
         Pop-Location
     }
+
+    $VersionCheck = "const fs=require('fs');const path=require('path');const root=process.argv[1];const expected={'@askjo/camofox-browser':process.argv[2],'camoufox-js':process.argv[3]};for(const [name,version] of Object.entries(expected)){const p=path.join(root,'node_modules',...name.split('/'),'package.json');const actual=JSON.parse(fs.readFileSync(p,'utf8')).version;if(actual!==version)throw new Error(name+': expected '+version+', got '+actual);}"
+    & node -e $VersionCheck $Stage $ExpectedCamofox $ExpectedCamoufoxJs
+    if ($LASTEXITCODE -ne 0) { throw 'Installed package version verification failed.' }
+
+    $VersionFile = Join-Path $env:LOCALAPPDATA 'camoufox\camoufox\Cache\version.json'
+    if (-not (Test-Path -LiteralPath $VersionFile -PathType Leaf)) {
+        throw "Camoufox version file missing after install: $VersionFile"
+    }
+    $BrowserVersion = Get-Content -LiteralPath $VersionFile -Raw | ConvertFrom-Json
+    if ([string]$BrowserVersion.version -ne $ExpectedBrowserVersion -or [string]$BrowserVersion.release -ne $ExpectedBrowserRelease) {
+        throw "Unexpected Camoufox browser baseline: version=$($BrowserVersion.version) release=$($BrowserVersion.release)"
+    }
+
+    $Cli = Join-Path $Stage 'node_modules\.bin\camofox-browser.cmd'
+    if (-not (Test-Path -LiteralPath $Cli -PathType Leaf)) {
+        throw "Camofox CLI missing after staged install: $Cli"
+    }
+
+    $StageValidated = $true
 }
 finally {
     foreach ($name in $SensitiveEnv) {
         [Environment]::SetEnvironmentVariable($name, $SavedEnv[$name], 'Process')
     }
+    if (-not $StageValidated -and (Test-Path -LiteralPath $Stage)) {
+        Remove-Item -LiteralPath $Stage -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
-$VersionCheck = "const fs=require('fs');const path=require('path');const root=process.argv[1];const expected={'@askjo/camofox-browser':process.argv[2],'camoufox-js':process.argv[3]};for(const [name,version] of Object.entries(expected)){const p=path.join(root,'node_modules',...name.split('/'),'package.json');const actual=JSON.parse(fs.readFileSync(p,'utf8')).version;if(actual!==version)throw new Error(name+': expected '+version+', got '+actual);}"
-& node -e $VersionCheck $Dest $ExpectedCamofox $ExpectedCamoufoxJs
-if ($LASTEXITCODE -ne 0) { throw 'Installed package version verification failed.' }
+$HadExistingRuntime = Test-Path -LiteralPath $Dest
+try {
+    if ($HadExistingRuntime) {
+        Write-Host 'Staging verified. Moving current runtime aside...'
+        Move-Item -LiteralPath $Dest -Destination $Backup
+    }
 
-$VersionFile = Join-Path $env:LOCALAPPDATA 'camoufox\camoufox\Cache\version.json'
-if (-not (Test-Path -LiteralPath $VersionFile -PathType Leaf)) {
-    throw "Camoufox version file missing after install: $VersionFile"
+    Write-Host 'Activating verified staged runtime...'
+    Move-Item -LiteralPath $Stage -Destination $Dest
 }
-$BrowserVersion = Get-Content -LiteralPath $VersionFile -Raw | ConvertFrom-Json
-if ([string]$BrowserVersion.version -ne $ExpectedBrowserVersion -or [string]$BrowserVersion.release -ne $ExpectedBrowserRelease) {
-    throw "Unexpected Camoufox browser baseline: version=$($BrowserVersion.version) release=$($BrowserVersion.release)"
+catch {
+    $SwapError = $_
+    if (Test-Path -LiteralPath $Stage) {
+        Remove-Item -LiteralPath $Stage -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if ($HadExistingRuntime -and (Test-Path -LiteralPath $Backup) -and -not (Test-Path -LiteralPath $Dest)) {
+        Move-Item -LiteralPath $Backup -Destination $Dest
+    }
+    throw "Camofox runtime activation failed; previous runtime was preserved when possible. $($SwapError.Exception.Message)"
 }
 
-$Cli = Join-Path $Dest 'node_modules\.bin\camofox-browser.cmd'
-if (-not (Test-Path -LiteralPath $Cli -PathType Leaf)) {
-    throw "Camofox CLI missing after install: $Cli"
+if (Test-Path -LiteralPath $Backup) {
+    Remove-Item -LiteralPath $Backup -Recurse -Force
 }
 
 Write-Host 'Camofox runtime installed and verified.'
