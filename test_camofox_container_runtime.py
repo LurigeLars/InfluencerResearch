@@ -53,6 +53,7 @@ class CamofoxContainerRuntimeTests(unittest.TestCase):
         self.assertIn('CAMOFOX_CRASH_REPORT_ENABLED: "false"', text)
         self.assertIn('CAMOFOX_DISABLE_DEFAULT_ADDONS: "true"', text)
         self.assertIn('CAMOUFOX_INSTALL_DIR: /opt/camoufox', text)
+        self.assertIn('HOME: /run/camofox', text)
         self.assertIn("CAMOFOX_TRANSFER_DIR", text)
         self.assertNotIn("docker.sock", text)
         self.assertNotIn("privileged: true", text)
