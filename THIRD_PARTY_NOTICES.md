@@ -8,7 +8,7 @@ The dependency manifests and pinned installers are authoritative for the version
 | --- | --- | --- | --- |
 | yt-dlp | https://github.com/yt-dlp/yt-dlp | Unlicense | Direct Python dependency |
 | Camofox Browser (`@askjo/camofox-browser`) | https://github.com/jo-inc/camofox-browser | MIT | Direct Node dependency |
-| camoufox-js | https://github.com/daijro/camoufox-js | MPL-2.0 | Transitive dependency of Camofox Browser |
+| camoufox-js | https://github.com/apify/camoufox-js | MPL-2.0 | Transitive dependency of Camofox Browser |
 | Camoufox browser | https://github.com/daijro/camoufox | MPL-2.0 | Browser runtime downloaded by the reviewed Camofox postinstall |
 | Playwright for Python | https://github.com/microsoft/playwright-python | Apache-2.0 | Direct Python dependency |
 | faster-whisper | https://github.com/SYSTRAN/faster-whisper | MIT | Direct Python dependency |
