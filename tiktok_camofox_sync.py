@@ -1422,9 +1422,23 @@ def _download_one_via_camofox(url: str, video_dir: Path) -> dict:
             _sleep_with_deadline(operation_deadline, 4.0)
 
             inspect_expression = r'''(async () => {
-              const v = document.querySelector('video');
-              if (v) { try { await v.play(); } catch {} }
-              await new Promise(r => setTimeout(r, 3500));
+              const readinessDeadline = Date.now() + 12000;
+              let v = null;
+              while (Date.now() < readinessDeadline) {
+                v = document.querySelector('video');
+                if (v) {
+                  try { await v.play(); } catch {}
+                  if (v.readyState >= 2 &&
+                      Number.isFinite(v.duration) &&
+                      v.duration > 0) {
+                    break;
+                  }
+                }
+                await new Promise(r => setTimeout(r, 250));
+              }
+              // TikTok can replace the media element during hydration; always re-query
+              // after the bounded readiness wait instead of retaining a stale/null node.
+              v = document.querySelector('video');
               const canonical =
                 document.querySelector('link[rel="canonical"]')?.href ||
                 location.href;
@@ -1449,6 +1463,11 @@ def _download_one_via_camofox(url: str, video_dir: Path) -> dict:
               return {
                 canonical,
                 candidateCount: resources.length,
+                page: {
+                  href: location.href,
+                  title: document.title || '',
+                  bodyExcerpt: (document.body?.innerText || '').slice(0, 500)
+                },
                 video: v ? {
                   readyState: v.readyState,
                   duration: Number.isFinite(v.duration) ? v.duration : null,
@@ -1463,7 +1482,7 @@ def _download_one_via_camofox(url: str, video_dir: Path) -> dict:
                 f"/tabs/{urllib.parse.quote(tab_id)}/evaluate",
                 {"userId": user_id, "expression": inspect_expression},
                 deadline=operation_deadline,
-                timeout_cap=15.0,
+                timeout_cap=20.0,
             )
             state = (
                 inspected.get("result")
@@ -1487,10 +1506,18 @@ def _download_one_via_camofox(url: str, video_dir: Path) -> dict:
                 if isinstance(state.get("video"), dict)
                 else {}
             )
-            if video.get("readyState") != 4:
+            ready_state = video.get("readyState")
+            if ready_state is None:
+                page = state.get("page") if isinstance(state.get("page"), dict) else {}
                 raise RuntimeError(
-                    f"CamoFox video not ready: "
-                    f"readyState={video.get('readyState')}"
+                    "CamoFox video element missing after bounded readiness wait: "
+                    f"url={str(page.get('href') or '')[:300]!r} "
+                    f"title={str(page.get('title') or '')[:200]!r} "
+                    f"body={str(page.get('bodyExcerpt') or '')[:500]!r}"
+                )
+            if int(ready_state) < 2:
+                raise RuntimeError(
+                    f"CamoFox video not ready: readyState={ready_state}"
                 )
             main_duration = video.get("duration")
             if main_duration is None:
