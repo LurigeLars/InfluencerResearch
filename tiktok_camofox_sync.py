@@ -50,8 +50,10 @@ CAMOFOX_FALLBACK_EXPECTED_GIT_BLOBS = {
 }
 CAMOFOX_FALLBACK_SOURCE_COMMIT = "af3a2505fc3853e976ad261b2ca0cfc445054d33"
 CAMOUFOX_JS_SOURCE_COMMIT = "3fe80d8448653d8dc1a2c186c7506f89e74c4ed4"
-CAMOFOX_ACCEPTED_ROOT_PACKAGE_SHA256 = "03a5783712644518960d9f48e79b9bd9f7480b50b9d04c968c0d5b071a85f4f6"
-CAMOFOX_ACCEPTED_ROOT_LOCK_SHA256 = "746e2ce8ee8ae9ce1f5255da1a11e32cb8cbca93479692024f1a42d4385695a2"
+CAMOFOX_ACCEPTED_ROOT_PACKAGE_NAME = "influencerresearch-camofox-runtime"
+CAMOFOX_ACCEPTED_ROOT_DEPENDENCIES = {
+    "@askjo/camofox-browser": CAMOFOX_FALLBACK_EXPECTED_CAMOFOX_VERSION,
+}
 CAMOFOX_ACCEPTED_NPM_ARTIFACTS = {
     "@askjo/camofox-browser": {
         "version": "1.13.1",
@@ -550,11 +552,43 @@ def _verify_camoufox_browser_cache() -> dict[str, Any]:
     return {"version": dict(CAMOUFOX_BROWSER_VERSION_FIELDS), "executables": verified}
 
 
+def _verify_camofox_root_manifests(local: Path) -> dict[str, Any]:
+    package_path = local / "package.json"
+    lock_path = local / "package-lock.json"
+    try:
+        package = json.loads(package_path.read_text(encoding="utf-8-sig"))
+        lock = json.loads(lock_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Unable to read CamoFox runtime manifests: {exc}") from exc
+
+    if not isinstance(package, dict) or not isinstance(lock, dict):
+        raise RuntimeError("CamoFox runtime manifests must be JSON objects")
+    if package.get("name") != CAMOFOX_ACCEPTED_ROOT_PACKAGE_NAME:
+        raise RuntimeError(f"Unexpected CamoFox root package name: {package.get('name')!r}")
+    if package.get("private") is not True:
+        raise RuntimeError("CamoFox root package must remain private")
+    if package.get("dependencies") != CAMOFOX_ACCEPTED_ROOT_DEPENDENCIES:
+        raise RuntimeError("CamoFox root dependencies differ from accepted baseline")
+    if lock.get("lockfileVersion") != 3:
+        raise RuntimeError(f"Unexpected CamoFox package-lock version: {lock.get('lockfileVersion')!r}")
+
+    root_entry = (lock.get("packages") or {}).get("")
+    if not isinstance(root_entry, dict):
+        raise RuntimeError("CamoFox package-lock root entry missing")
+    if root_entry.get("name") != CAMOFOX_ACCEPTED_ROOT_PACKAGE_NAME:
+        raise RuntimeError(f"Unexpected CamoFox package-lock root name: {root_entry.get('name')!r}")
+    if root_entry.get("dependencies") != CAMOFOX_ACCEPTED_ROOT_DEPENDENCIES:
+        raise RuntimeError("CamoFox package-lock root dependencies differ from accepted baseline")
+
+    return {
+        "package_name": CAMOFOX_ACCEPTED_ROOT_PACKAGE_NAME,
+        "dependencies": dict(CAMOFOX_ACCEPTED_ROOT_DEPENDENCIES),
+        "lockfile_version": 3,
+    }
+
+
 def _verify_fallback_camofox_runtime(local: Path) -> dict[str, Any]:
-    if _sha256_file(local / "package.json") != CAMOFOX_ACCEPTED_ROOT_PACKAGE_SHA256:
-        raise RuntimeError("CamoFox root package.json differs from accepted baseline")
-    if _sha256_file(local / "package-lock.json") != CAMOFOX_ACCEPTED_ROOT_LOCK_SHA256:
-        raise RuntimeError("CamoFox root package-lock.json differs from accepted baseline")
+    manifests = _verify_camofox_root_manifests(local)
 
     package_root = local / "node_modules" / "@askjo" / "camofox-browser"
     if not package_root.is_dir():
@@ -598,8 +632,7 @@ def _verify_fallback_camofox_runtime(local: Path) -> dict[str, Any]:
         "source_anchors": source_anchors,
         "npm_artifacts": npm_artifacts,
         "browser": browser,
-        "root_package_sha256": CAMOFOX_ACCEPTED_ROOT_PACKAGE_SHA256,
-        "root_package_lock_sha256": CAMOFOX_ACCEPTED_ROOT_LOCK_SHA256,
+        "manifests": manifests,
     }
 
 
