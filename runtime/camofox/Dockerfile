@@ -56,8 +56,11 @@ RUN mkdir -p /opt/camoufox \
     && echo "${CAMOUFOX_SHA256}  /tmp/camoufox.zip" | sha256sum -c - \
     && (unzip -q /tmp/camoufox.zip -d /opt/camoufox || true) \
     && rm -f /tmp/camoufox.zip \
+    && printf '{"version":"%s","release":"%s"}\n' "${CAMOUFOX_VERSION}" "${CAMOUFOX_RELEASE}" > /opt/camoufox/version.json \
     && test -x /opt/camoufox/camoufox-bin \
     && test -f /opt/camoufox/properties.json \
+    && test -f /opt/camoufox/version.json \
+    && test -d /opt/camoufox/fontconfig \
     && chmod -R a+rX /opt/camoufox
 
 COPY runtime/camofox/camofox.config.json /app/node_modules/@askjo/camofox-browser/camofox.config.json

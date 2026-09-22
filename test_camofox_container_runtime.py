@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import json
 import unittest
+from unittest import mock
+
+import tiktok_camofox_sync as sync
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent
@@ -13,6 +16,8 @@ class CamofoxContainerRuntimeTests(unittest.TestCase):
         self.assertIn("FROM node:22.23.2-trixie-slim", text)
         self.assertIn("CAMOUFOX_VERSION=152.0.4", text)
         self.assertIn("CAMOUFOX_RELEASE=beta.28", text)
+        self.assertIn("/opt/camoufox/version.json", text)
+        self.assertIn("test -d /opt/camoufox/fontconfig", text)
         self.assertIn("npm ci --ignore-scripts", text)
         self.assertIn("CAMOFOX_SKIP_DOWNLOAD=1", text)
         self.assertIn("USER node", text)
@@ -26,6 +31,7 @@ class CamofoxContainerRuntimeTests(unittest.TestCase):
         self.assertIn("cap_drop:", text)
         self.assertIn("- ALL", text)
         self.assertIn('CAMOFOX_CRASH_REPORT_ENABLED: "false"', text)
+        self.assertIn('CAMOFOX_DISABLE_DEFAULT_ADDONS: "true"', text)
         self.assertIn("CAMOFOX_TRANSFER_DIR", text)
         self.assertNotIn("docker.sock", text)
         self.assertNotIn("privileged: true", text)
@@ -37,6 +43,35 @@ class CamofoxContainerRuntimeTests(unittest.TestCase):
         self.assertFalse(config["plugins"]["youtube"]["enabled"])
         self.assertFalse(config["plugins"]["vnc"]["enabled"])
         self.assertTrue(config["plugins"]["persistence"]["enabled"])
+
+    def test_container_runtime_health_does_not_require_child_process(self) -> None:
+        original = sync._CAMOFOX_FALLBACK_SERVER
+        sync._CAMOFOX_FALLBACK_SERVER = {
+            "runtime_mode": "container",
+            "proc": None,
+        }
+        try:
+            with mock.patch.object(sync, "_fallback_health", return_value={"status": "ok"}):
+                self.assertEqual(sync.health(), {"status": "ok"})
+        finally:
+            sync._CAMOFOX_FALLBACK_SERVER = original
+
+    def test_stopped_legacy_runtime_is_not_healthy(self) -> None:
+        class StoppedProc:
+            def poll(self) -> int:
+                return 1
+
+        original = sync._CAMOFOX_FALLBACK_SERVER
+        sync._CAMOFOX_FALLBACK_SERVER = {
+            "runtime_mode": "legacy_local",
+            "proc": StoppedProc(),
+        }
+        try:
+            with mock.patch.object(sync, "_fallback_health") as fallback_health:
+                self.assertIsNone(sync.health())
+                fallback_health.assert_not_called()
+        finally:
+            sync._CAMOFOX_FALLBACK_SERVER = original
 
 
 if __name__ == "__main__":
