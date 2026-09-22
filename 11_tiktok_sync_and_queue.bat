@@ -3,7 +3,7 @@ setlocal EnableExtensions
 cd /d "%~dp0"
 
 set "PY=%LOCALAPPDATA%\InstagramResearch\venv\Scripts\python.exe"
-set "CLI=%LOCALAPPDATA%\InstagramResearch\camofox-poc\node_modules\.bin\camofox-browser.cmd"
+set "CAMOFOX_CONFIG=%LOCALAPPDATA%\InfluencerResearch\camofox-container.json"
 
 if not exist "%PY%" (
   echo ERROR: InstagramResearch Python environment not found.
@@ -12,9 +12,9 @@ if not exist "%PY%" (
   exit /b 2
 )
 
-if not exist "%CLI%" (
-  echo ERROR: CamoFox is not installed.
-  echo Run: pwsh -NoProfile -File scripts\install_camofox.ps1
+if not exist "%CAMOFOX_CONFIG%" (
+  echo ERROR: CamoFox Docker config is missing.
+  echo Run: pwsh -NoProfile -File scripts\camofox_container.ps1 -Action Up
   pause
   exit /b 3
 )

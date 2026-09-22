@@ -6,19 +6,21 @@ It is **not a fork** of yt-dlp or Camofox. The project orchestrates those tools 
 
 ## Runtime
 
-The current Windows-oriented setup expects:
+The host-side Python setup currently expects:
 
 - CPython 3.12 x64
-- Node.js `v22.23.2` for the current reviewed Camofox baseline
+- Docker Desktop for the isolated Camofox browser service
 - a dedicated browser profile for authenticated Instagram access where required
 
-Install the Python runtime with `01_install.bat`. Install the pinned Camofox runtime used by the TikTok/browser flow with:
+Install the Python runtime with `01_install.bat`. Build and start the pinned Camofox service used by the TikTok/browser flow with:
 
 ```powershell
-pwsh -NoProfile -File scripts\install_camofox.ps1
+pwsh -NoProfile -File scripts\camofox_container.ps1 -Action Up
 ```
 
-The Camofox dependency tree is tracked in `runtime/camofox/package.json` and `runtime/camofox/package-lock.json`. The installer uses that lockfile and verifies the exact Node, package and browser baseline expected by the runtime.
+Camofox is bound only to host loopback on `127.0.0.1:9377`. Its local access/admin keys and transient download-transfer directory live under `%LOCALAPPDATA%\InfluencerResearch` and are not stored in the repository. The container has no access to the normal Windows user profile, browser profiles, Drive folders, or unrelated project data.
+
+The Camofox dependency tree is tracked in `runtime/camofox/package.json` and `runtime/camofox/package-lock.json`. The Docker image uses the reviewed Camofox Browser `1.13.1`, `camoufox-js` `0.11.5`, Node `22.23.2`, and Camoufox `152.0.4` / `beta.28` baseline.
 
 For Instagram authentication, set:
 

@@ -24,6 +24,8 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+import camofox_container as camofox_container_config
+
 
 APP_VERSION = "0.8.7"
 CAMOFOX_FALLBACK_MAX_MEDIA_BYTES = 512 * 1024 * 1024
@@ -842,6 +844,9 @@ def _stop_fallback_server(*, force: bool = False, deadline: float | None = None)
     if not server:
         return
 
+    if server.get("runtime_mode") == "container":
+        return
+
     proc = server.get("proc")
     root = Path(server["root"])
     hard_end = deadline if deadline is not None else time.monotonic() + 8.0
@@ -896,8 +901,82 @@ atexit.register(_atexit_stop_server)
 
 
 
+def _ensure_container_camofox_server(*, deadline: float) -> dict[str, Any]:
+    cfg = camofox_container_config.load_config()
+    server: dict[str, Any] = {
+        "proc": None,
+        "root": None,
+        "tmp_dir": Path(cfg["transfer_dir"]),
+        "profile_dir": None,
+        "cookies_dir": None,
+        "base_url": str(cfg["base_url"]),
+        "port": 9377,
+        "access_key": str(cfg["access_key"]),
+        "admin_key": str(cfg["admin_key"]),
+        "log_handle": None,
+        "runtime_mode": "container",
+        "provenance": {
+            "runtime_mode": "container",
+            "camofox_version": CAMOFOX_FALLBACK_EXPECTED_CAMOFOX_VERSION,
+            "camoufox_js_version": CAMOFOX_FALLBACK_EXPECTED_CAMOUFOX_JS_VERSION,
+            "browser": dict(CAMOUFOX_BROWSER_VERSION_FIELDS),
+        },
+    }
+
+    if not _fallback_health(server, deadline=deadline):
+        raise RuntimeError(
+            "Camofox container is not healthy on 127.0.0.1:9377. Run "
+            "pwsh -NoProfile -File scripts\\camofox_container.ps1 -Action Up"
+        )
+
+    unauth = urllib.request.Request(
+        f"{server['base_url']}/tabs?userId=container-auth-probe",
+        method="GET",
+        headers={"Accept": "application/json"},
+    )
+    try:
+        with _NO_PROXY_OPENER.open(
+            unauth, timeout=_remaining_timeout(deadline, 2.0)
+        ):
+            raise RuntimeError("Camofox container access-key gate is not enforced")
+    except urllib.error.HTTPError as exc:
+        if exc.code != 401:
+            raise RuntimeError(
+                f"Unexpected unauthenticated Camofox status: {exc.code}"
+            ) from exc
+
+    _fallback_request_json(
+        server,
+        "GET",
+        "/tabs?userId=container-auth-probe",
+        deadline=deadline,
+        timeout_cap=2.0,
+    )
+    return server
+
+
 def _ensure_fallback_server(*, deadline: float) -> dict[str, Any]:
     global _CAMOFOX_FALLBACK_SERVER
+    mode = (
+        os.environ.get("INFLUENCER_RESEARCH_CAMOFOX_MODE", "container")
+        .strip()
+        .casefold()
+    )
+    if mode == "container":
+        current = _CAMOFOX_FALLBACK_SERVER
+        if (
+            current
+            and current.get("runtime_mode") == "container"
+            and _fallback_health(current, deadline=deadline)
+        ):
+            return current
+        server = _ensure_container_camofox_server(deadline=deadline)
+        _CAMOFOX_FALLBACK_SERVER = server
+        return server
+    if mode != "legacy_local":
+        raise RuntimeError(
+            "INFLUENCER_RESEARCH_CAMOFOX_MODE must be 'container' or 'legacy_local'"
+        )
     current = _CAMOFOX_FALLBACK_SERVER
     if (
         current
@@ -947,6 +1026,7 @@ def _ensure_fallback_server(*, deadline: float) -> dict[str, Any]:
         "access_key": access_key,
         "admin_key": admin_key,
         "log_handle": log_handle,
+        "runtime_mode": "legacy_local",
         "provenance": provenance,
     }
     _CAMOFOX_FALLBACK_SERVER = server
@@ -1011,6 +1091,8 @@ def _cleanup_fallback_session(
             deadline=deadline,
             timeout_cap=3.0,
         )
+        if server.get("runtime_mode") == "container":
+            return "storage_reset_container"
         user_dir = _fallback_user_profile_dir(server, user_id)
         _remove_owned_root_strict(user_dir, deadline=deadline)
         if user_dir.exists():
@@ -1026,6 +1108,11 @@ def _cleanup_fallback_session(
             )
         return "storage_reset"
     except Exception as exc:
+        if server.get("runtime_mode") == "container":
+            _stop_fallback_server(force=True, deadline=deadline)
+            raise RuntimeError(
+                f"Camofox container cleanup failed: {type(exc).__name__}: {exc}"
+            ) from exc
         root = Path(server["root"])
         _stop_fallback_server(force=True, deadline=deadline)
         if root.exists():
@@ -1275,7 +1362,7 @@ def _download_one_via_camofox(url: str, video_dir: Path) -> dict:
             "url": url,
             "ok": False,
             "source": "network",
-            "transport": "camofox_browser_disk_handoff_v52",
+            "transport": "camofox_browser_transfer_handoff_v53",
             "media_file": None,
             "info_file": None,
             "validation": "invalid_tiktok_video_url",
@@ -1736,7 +1823,7 @@ def _download_one_via_camofox(url: str, video_dir: Path) -> dict:
                     "url": url,
                     "ok": True,
                     "source": "network",
-                    "transport": "camofox_browser_disk_handoff_v52",
+                    "transport": "camofox_browser_transfer_handoff_v53",
                     "media_file": mp4,
                     "info_file": None,
                     "validation": validation,
@@ -1792,7 +1879,7 @@ def _download_one_via_camofox(url: str, video_dir: Path) -> dict:
             "url": url,
             "ok": False,
             "source": "network",
-            "transport": "camofox_browser_disk_handoff_v52",
+            "transport": "camofox_browser_transfer_handoff_v53",
             "media_file": mp4 if mp4.exists() else None,
             "info_file": None,
             "validation": "failed_before_acceptance" if mp4.exists() else "missing",

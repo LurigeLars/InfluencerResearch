@@ -1,0 +1,56 @@
+name: influencerresearch-camofox
+
+services:
+  camofox:
+    build:
+      context: .
+      dockerfile: runtime/camofox/Dockerfile
+    container_name: influencerresearch-camofox
+    user: node
+    environment:
+      NODE_ENV: production
+      CAMOFOX_PORT: "9377"
+      CAMOFOX_BIND_HOST: 0.0.0.0
+      CAMOFOX_ACCESS_KEY: ${CAMOFOX_ACCESS_KEY:?CAMOFOX_ACCESS_KEY is required}
+      CAMOFOX_ADMIN_KEY: ${CAMOFOX_ADMIN_KEY:?CAMOFOX_ADMIN_KEY is required}
+      CAMOUFOX_EXECUTABLE: /opt/camoufox/camoufox-bin
+      XDG_CACHE_HOME: /run/camofox/cache
+      CAMOFOX_PROFILE_DIR: /run/camofox/profiles
+      CAMOFOX_COOKIES_DIR: /run/camofox/cookies
+      CAMOFOX_TRACES_DIR: /run/camofox/traces
+      CAMOFOX_CRASH_REPORT_ENABLED: "false"
+      CAMOFOX_CRASH_REPORT_URL: ""
+      SENTRY_DSN: ""
+      PROMETHEUS_ENABLED: "false"
+      BROWSER_IDLE_TIMEOUT_MS: "60000"
+      SESSION_TIMEOUT_MS: "60000"
+      TAB_INACTIVITY_MS: "60000"
+      MAX_CONCURRENT_PER_USER: "1"
+      MAX_SESSIONS: "4"
+      MAX_TABS_PER_SESSION: "4"
+      MAX_TABS_GLOBAL: "8"
+      TMPDIR: /transfer
+      TMP: /transfer
+      TEMP: /transfer
+    ports:
+      - "127.0.0.1:9377:9377"
+    volumes:
+      - type: bind
+        source: ${CAMOFOX_TRANSFER_DIR:?CAMOFOX_TRANSFER_DIR is required}
+        target: /transfer
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=256m,mode=1777
+      - /run/camofox:rw,nosuid,nodev,size=256m,uid=1000,gid=1000,mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    shm_size: 1gb
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9377/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 30s
