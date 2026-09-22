@@ -40,13 +40,16 @@ def load_json(path: Path, default: Any = None) -> Any:
     raise FileNotFoundError(path)
 
 
+def _host_matches(host: str, domain: str) -> bool:
+    return host == domain or host.endswith("." + domain)
+
 def extract_handle(url: str) -> tuple[str | None, str | None]:
     parsed = urllib.parse.urlsplit(url.strip())
-    host = parsed.netloc.lower().removeprefix("www.")
+    host = (parsed.hostname or "").casefold().rstrip(".")
     parts = [p for p in parsed.path.split("/") if p]
-    if host.endswith("instagram.com") and parts:
+    if _host_matches(host, "instagram.com") and parts:
         return "INSTAGRAM", parts[0].lstrip("@").strip()
-    if host.endswith("tiktok.com") and parts and parts[0].startswith("@"):
+    if _host_matches(host, "tiktok.com") and parts and parts[0].startswith("@"):
         return "TIKTOK", parts[0][1:].strip()
     return None, None
 

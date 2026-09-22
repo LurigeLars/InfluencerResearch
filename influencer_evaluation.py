@@ -54,9 +54,12 @@ def creator_key(name: str, profile_url: str) -> str:
     return (key or "creator")[:80]
 
 
+def _host_matches(host: str, domain: str) -> bool:
+    return host == domain or host.endswith("." + domain)
+
 def is_youtube(url: str) -> bool:
-    host = (urlparse(url).netloc or "").casefold()
-    return host.endswith("youtube.com") or host.endswith("youtu.be")
+    host = (urlparse(url).hostname or "").casefold().rstrip(".")
+    return _host_matches(host, "youtube.com") or _host_matches(host, "youtu.be")
 
 
 def main() -> int:
