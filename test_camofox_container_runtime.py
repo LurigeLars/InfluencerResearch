@@ -23,6 +23,26 @@ class CamofoxContainerRuntimeTests(unittest.TestCase):
         self.assertIn("USER node", text)
         self.assertNotIn("releases/latest", text)
 
+    def test_runtime_manifest_pins_required_impit_linux_binding(self) -> None:
+        package = json.loads(
+            (BASE / 'runtime' / 'camofox' / 'package.json').read_text(encoding='utf-8')
+        )
+        lock = json.loads(
+            (BASE / 'runtime' / 'camofox' / 'package-lock.json').read_text(encoding='utf-8')
+        )
+        self.assertEqual(package['dependencies']['impit-linux-x64-gnu'], '0.14.5')
+        self.assertEqual(lock['packages']['']['dependencies']['impit-linux-x64-gnu'], '0.14.5')
+        binding = lock['packages']['node_modules/impit-linux-x64-gnu']
+        self.assertEqual(binding['version'], '0.14.5')
+        self.assertEqual(binding['os'], ['linux'])
+        self.assertEqual(binding['cpu'], ['x64'])
+        self.assertIsNot(binding.get('optional'), True)
+
+        dockerfile = (BASE / 'runtime' / 'camofox' / 'Dockerfile').read_text(encoding='utf-8')
+        self.assertIn('--omit=optional', dockerfile)
+        self.assertIn("impit-linux-x64-gnu':'0.14.5", dockerfile)
+        self.assertIn("require('impit')", dockerfile)
+
     def test_compose_is_loopback_only_and_hardened(self) -> None:
         text = (BASE / "compose.camofox.yaml").read_text(encoding="utf-8")
         self.assertIn('"127.0.0.1:9377:9377"', text)

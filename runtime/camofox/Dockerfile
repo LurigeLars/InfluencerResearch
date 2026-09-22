@@ -42,11 +42,13 @@ RUN apt-get update \
 WORKDIR /app
 COPY runtime/camofox/package.json runtime/camofox/package-lock.json ./
 
-# Disable every lifecycle script during dependency resolution. Build only the
-# native binding that camoufox-js requires, from source, after the lock is installed.
+# Disable every lifecycle script during dependency resolution. Keep unrelated
+# optional dependencies omitted; the required impit Linux binding is a direct
+# runtime dependency. Build only better-sqlite3 from source.
 RUN npm ci --ignore-scripts --omit=dev --omit=optional --no-audit --no-fund \
     && npm_config_build_from_source=true npm rebuild better-sqlite3 --foreground-scripts --no-audit --no-fund \
-    && node -e "const fs=require('fs');const path=require('path');const expected={'@askjo/camofox-browser':'1.13.1','camoufox-js':'0.11.5'};for(const [name,version] of Object.entries(expected)){const p=path.join('/app/node_modules',...name.split('/'),'package.json');const actual=JSON.parse(fs.readFileSync(p,'utf8')).version;if(actual!==version)throw new Error(name+': expected '+version+', got '+actual);}" \
+    && node -e "const fs=require('fs');const path=require('path');const expected={'@askjo/camofox-browser':'1.13.1','camoufox-js':'0.11.5','impit-linux-x64-gnu':'0.14.5'};for(const [name,version] of Object.entries(expected)){const p=path.join('/app/node_modules',...name.split('/'),'package.json');const actual=JSON.parse(fs.readFileSync(p,'utf8')).version;if(actual!==version)throw new Error(name+': expected '+version+', got '+actual);}" \
+    && node -e "require('impit');" \
     && node -e "const Database=require('better-sqlite3');const db=new Database(':memory:');if(db.prepare('select 1 as ok').get().ok!==1)process.exit(2);db.close();"
 
 # The npm package's postinstall fetch is intentionally not used because it is
