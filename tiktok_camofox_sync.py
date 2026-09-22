@@ -189,9 +189,18 @@ def request_json(method: str, path: str, body: dict | None = None, timeout: int 
     )
 
 
+def _runtime_is_available(server: dict[str, Any] | None) -> bool:
+    if not server:
+        return False
+    if server.get("runtime_mode") == "container":
+        return True
+    proc = server.get("proc")
+    return proc is not None and proc.poll() is None
+
+
 def health() -> dict | None:
     server = _CAMOFOX_FALLBACK_SERVER
-    if not server or server.get("proc") is None or server["proc"].poll() is not None:
+    if not _runtime_is_available(server):
         return None
     try:
         value = _fallback_health(server, deadline=time.monotonic() + 3.0)
@@ -201,10 +210,12 @@ def health() -> dict | None:
 
 
 def _server_public_status(server: dict[str, Any], *, started: bool) -> dict[str, Any]:
+    runtime_mode = str(server.get("runtime_mode") or "legacy_local")
     return {
         "started": started,
         "health": _fallback_health(server, deadline=time.monotonic() + 3.0),
-        "note": "constrained_process_owned",
+        "note": "docker_container" if runtime_mode == "container" else "constrained_process_owned",
+        "runtime_mode": runtime_mode,
         "port": int(server["port"]),
         "bind_host": "127.0.0.1",
         "access_key_required": True,
@@ -213,14 +224,12 @@ def _server_public_status(server: dict[str, Any], *, started: bool) -> dict[str,
 
 
 def start_server() -> dict:
-    """Start/reuse only this application's constrained process-owned CamoFox server."""
+    """Acquire the run lock and verify/reuse the configured Camofox runtime."""
     _acquire_tiktok_run_lock()
     try:
         current = _CAMOFOX_FALLBACK_SERVER
         was_healthy = bool(
-            current
-            and current.get("proc") is not None
-            and current["proc"].poll() is None
+            _runtime_is_available(current)
             and _fallback_health(current, deadline=time.monotonic() + 3.0)
         )
         server = _ensure_fallback_server(deadline=time.monotonic() + 60.0)
@@ -231,7 +240,7 @@ def start_server() -> dict:
 
 
 def stop_server(*, deadline: float | None = None) -> None:
-    """Idempotently stop the application-owned CamoFox server and release the run lock."""
+    """Release this run's Camofox handle; legacy-local mode also stops its process."""
     end = deadline if deadline is not None else time.monotonic() + 8.0
     try:
         _stop_fallback_server(force=False, deadline=end)

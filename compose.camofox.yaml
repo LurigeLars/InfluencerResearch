@@ -19,6 +19,7 @@ services:
       CAMOFOX_COOKIES_DIR: /run/camofox/cookies
       CAMOFOX_TRACES_DIR: /run/camofox/traces
       CAMOFOX_CRASH_REPORT_ENABLED: "false"
+      CAMOFOX_DISABLE_DEFAULT_ADDONS: "true"
       CAMOFOX_CRASH_REPORT_URL: ""
       SENTRY_DSN: ""
       PROMETHEUS_ENABLED: "false"
