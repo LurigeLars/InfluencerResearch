@@ -6,6 +6,7 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@askjo/camofox-browser": "1.13.1"
+    "@askjo/camofox-browser": "1.13.1",
+    "impit-linux-x64-gnu": "0.14.5"
   }
 }
