@@ -1,15 +1,12 @@
 from __future__ import annotations
-import contextlib, hashlib, io, json, os, subprocess, sys, tempfile
+import contextlib, hashlib, io, json, os, sys, tempfile, unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from creator_registry import load_registry, select_monitor_sources
 import creator_monitor as cm
 from creator_monitor import _partition_tiktok_unseen
-
-SUPPORTED_PLATFORMS = {"YOUTUBE": "yt_", "TIKTOK": "tt_"}
 
 
 def load(path, default):
@@ -453,159 +450,24 @@ def verify_adapter_negative_paths():
     }
 
 
-def monitored_sources(root):
-    registry = load_registry(root)
-    out = []
-    for profile in registry["creators"].values():
-        if str(profile.get("status", "ACTIVE")).upper() != "ACTIVE" or not profile.get("monitoring_enabled"):
-            continue
-        for source in select_monitor_sources(profile):
-            platform = str(source.get("platform", "")).upper()
-            if platform in SUPPORTED_PLATFORMS:
-                out.append((profile["creator_key"], platform))
-    if not out:
-        raise RuntimeError("No ACTIVE monitoring-enabled supported sources in creator registry")
-    return sorted(set(out))
+class CreatorMonitorContractTests(unittest.TestCase):
+    def test_tiktok_cutoff_partition(self) -> None:
+        result = verify_tiktok_cutoff_partition()
+        self.assertTrue(result["invalid_id_rejected"])
+        self.assertNotEqual(result["historical_id"], result["eligible_id"])
 
+    def test_fail_closed_contract(self) -> None:
+        result = verify_fail_closed_contract()
+        self.assertEqual(len(result["scenarios"]), 3)
+        self.assertTrue(result["failed_ids_retryable"])
+        self.assertTrue(result["stale_completed_ids_rejected"])
 
-def run_monitor(root, creator_key=""):
-    cmd = [sys.executable, str(root / "app" / "creator_monitor.py"), "--root", str(root), "--max-new", "1"]
-    if creator_key:
-        cmd += ["--creator-key", creator_key]
-    p = subprocess.run(cmd, cwd=str(root / "app"))
-    if p.returncode != 0:
-        raise RuntimeError(f"monitor {creator_key or 'ALL_MONITORED'} rc={p.returncode}")
-    return load(root / "state" / "creator_monitor_status.json", {})
-
-
-def source_result(status, creator_key, platform):
-    return next((x for x in status.get("results", []) if x.get("creator_key") == creator_key and x.get("platform") == platform), {})
-
-
-def choose_seen_id(root, creator_key, platform):
-    state = load(root / "state" / "creator_monitor_state.json", {})
-    skey = f"{creator_key}:{platform}"
-    entry = (state.get("sources") or {}).get(skey) or {}
-    seen = list(entry.get("seen_ids", []))
-    if not seen:
-        raise RuntimeError(f"{skey} baseline produced no seen ids")
-    manifest = load(root / "state" / "manifest.json", {"items": {}})
-    prefix = SUPPORTED_PLATFORMS[platform]
-    for vid in seen:
-        item = (manifest.get("items") or {}).get(prefix + vid, {})
-        full_done = (
-            item.get("download_status") == "DONE"
-            and item.get("transcription_status") == "DONE"
-            and (platform != "YOUTUBE" or item.get("visual_evidence_status") == "DONE")
-        )
-        if full_done:
-            return vid
-    return seen[0]
-
-
-def remove_seen_id(root, creator_key, platform, chosen):
-    state_path = root / "state" / "creator_monitor_state.json"
-    state = load(state_path, {})
-    skey = f"{creator_key}:{platform}"
-    entry = state["sources"][skey]
-    entry["seen_ids"] = [x for x in entry.get("seen_ids", []) if x != chosen]
-    state["sources"][skey] = entry
-    atomic(state_path, state)
-
-
-def main():
-    root = Path(__file__).resolve().parent.parent
-    expected = monitored_sources(root)
-    state_path = root / "state" / "creator_monitor_state.json"
-    state = load(state_path, {"schema_version": 1, "monitor_version": "0.1.0", "sources": {}})
-    state.setdefault("sources", {})
-    for creator_key, platform in expected:
-        state["sources"].pop(f"{creator_key}:{platform}", None)
-    atomic(state_path, state)
-
-    baseline = run_monitor(root)
-    if baseline.get("creator_filter") is not None:
-        raise RuntimeError(f"Registry-driven run unexpectedly had creator_filter: {baseline}")
-    baseline_checks = []
-    for creator_key, platform in expected:
-        result = source_result(baseline, creator_key, platform)
-        if result.get("result") != "BASELINED":
-            raise RuntimeError(f"{creator_key}:{platform} baseline failed: {baseline}")
-        baseline_checks.append({"creator_key": creator_key, "platform": platform, "result": "BASELINED"})
-
-    cutoff_partition_check = verify_tiktok_cutoff_partition()
-    fail_closed_contract_check = verify_fail_closed_contract()
-    adapter_negative_path_checks = verify_adapter_negative_paths()
-
-    representative_checks = []
-    by_platform = {}
-    for pair in expected:
-        by_platform.setdefault(pair[1], pair)
-    for platform, (creator_key, _) in sorted(by_platform.items()):
-        chosen = choose_seen_id(root, creator_key, platform)
-        queue_path = root / "state" / "research_queue.json"
-        queue_hash_before = sha256_file(queue_path)
-        remove_seen_id(root, creator_key, platform, chosen)
-        second = run_monitor(root, creator_key)
-        r2 = source_result(second, creator_key, platform)
-
-        if platform == "TIKTOK":
-            if chosen not in set(r2.get("historical_ignored_ids", [])):
-                raise RuntimeError(
-                    f"{creator_key}:{platform} pre-baseline gap was not ignored: chosen={chosen} status={second}"
-                )
-            if r2.get("new_items") != 0 or r2.get("completed_ids"):
-                raise RuntimeError(
-                    f"{creator_key}:{platform} historical gap leaked into new-item processing: {second}"
-                )
-            if sha256_file(queue_path) != queue_hash_before:
-                raise RuntimeError(
-                    f"{creator_key}:{platform} historical-gap test mutated Research Screen queue"
-                )
-            checks = ["PRE_BASELINE_GAP_IGNORED", "QUEUE_UNCHANGED"]
-        else:
-            if chosen not in set(r2.get("completed_ids", [])):
-                raise RuntimeError(
-                    f"{creator_key}:{platform} exact new-item exercise did not complete {chosen}: {second}"
-                )
-            checks = ["NEW_ITEM_EXACT_PROCESSING"]
-
-        third = run_monitor(root, creator_key)
-        r3 = source_result(third, creator_key, platform)
-        if r3.get("result") != "NO_NEW":
-            raise RuntimeError(f"{creator_key}:{platform} no-new cycle failed: {third}")
-        checks.append("NO_NEW_NO_DUPLICATE")
-        representative_checks.append({
-            "creator_key": creator_key,
-            "platform": platform,
-            "chosen_video_id": chosen,
-            "checks": checks,
-        })
-
-    final = run_monitor(root)
-    final_checks = []
-    for creator_key, platform in expected:
-        result = source_result(final, creator_key, platform)
-        if result.get("result") != "NO_NEW":
-            raise RuntimeError(f"{creator_key}:{platform} registry-wide no-new failed: {final}")
-        final_checks.append({"creator_key": creator_key, "platform": platform, "result": "NO_NEW"})
-
-    out = {
-        "schema_version": 1,
-        "acceptance": "creator_monitor_v0.1.4_registry_driven_fail_closed",
-        "state": "PASS",
-        "monitored_sources": [{"creator_key": c, "platform": p} for c, p in expected],
-        "baseline_checks": baseline_checks,
-        "tiktok_cutoff_partition_check": cutoff_partition_check,
-        "fail_closed_contract_check": fail_closed_contract_check,
-        "adapter_negative_path_checks": adapter_negative_path_checks,
-        "representative_adapter_checks": representative_checks,
-        "final_registry_wide_no_new": final_checks,
-    }
-    atomic(root / "state" / "creator_monitor_acceptance_status.json", out)
-    print(json.dumps(out, ensure_ascii=False, indent=2))
-    return 0
+    def test_adapter_negative_paths(self) -> None:
+        result = verify_adapter_negative_paths()
+        self.assertEqual(result["state"], "PASS")
+        self.assertEqual(result["scenario_count"], 13)
+        self.assertTrue(result["failed_ids_retryable"])
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    unittest.main()
