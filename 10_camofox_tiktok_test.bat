@@ -3,7 +3,7 @@ setlocal EnableExtensions
 cd /d "%~dp0"
 
 set "PY=%LOCALAPPDATA%\InstagramResearch\venv\Scripts\python.exe"
-set "CLI=%LOCALAPPDATA%\InstagramResearch\camofox-poc\node_modules\.bin\camofox-browser.cmd"
+set "CAMOFOX_CONFIG=%LOCALAPPDATA%\InfluencerResearch\camofox-container.json"
 
 if not exist "%PY%" (
   echo ERROR: InstagramResearch Python environment not found.
@@ -12,9 +12,9 @@ if not exist "%PY%" (
   exit /b 2
 )
 
-if not exist "%CLI%" (
-  echo ERROR: CamoFox POC is not installed.
-  echo Run 09_install_camofox_poc.bat first.
+if not exist "%CAMOFOX_CONFIG%" (
+  echo ERROR: CamoFox Docker config is missing.
+  echo Run: pwsh -NoProfile -File scripts\camofox_container.ps1 -Action Up
   pause
   exit /b 3
 )
@@ -26,7 +26,7 @@ echo Stage 1: CamoFox opens @nicholas_crown and discovers real video URLs.
 echo Stage 2: yt-dlp tests up to 3 individual discovered video URLs.
 echo.
 echo No TikTok login is required for this first test.
-echo CamoFox server stays local on 127.0.0.1:9377.
+echo CamoFox runs in Docker and is exposed only on host loopback 127.0.0.1:9377.
 echo.
 
 "%PY%" camofox_tiktok_poc.py

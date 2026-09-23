@@ -26,3 +26,13 @@ updates:
       - dependency-name: "cffi"
       - dependency-name: "pycparser"
       - dependency-name: "certifi"
+
+  # Reviewed Node runtime for Camofox Browser. Updates require manual review; Dependabot only proposes them.
+  - package-ecosystem: "npm"
+    directory: "/runtime/camofox"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "Europe/Stockholm"
+    open-pull-requests-limit: 3
