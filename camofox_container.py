@@ -7,7 +7,6 @@ from pathlib import Path
 CAMOFOX_CONTAINER_SCHEMA_VERSION = 1
 CAMOFOX_CONTAINER_BASE_URL = "http://127.0.0.1:9377"
 CAMOFOX_CONTAINER_CONFIG_NAME = "camofox-container.json"
-CAMOFOX_CONTAINER_TRANSFER_NAME = "camofox-transfer"
 
 
 def _localappdata_root(env: dict[str, str] | None = None) -> Path:
@@ -20,10 +19,6 @@ def _localappdata_root(env: dict[str, str] | None = None) -> Path:
 
 def config_path(env: dict[str, str] | None = None) -> Path:
     return _localappdata_root(env) / CAMOFOX_CONTAINER_CONFIG_NAME
-
-
-def transfer_dir(env: dict[str, str] | None = None) -> Path:
-    return _localappdata_root(env) / CAMOFOX_CONTAINER_TRANSFER_NAME
 
 
 def load_config(env: dict[str, str] | None = None) -> dict[str, object]:
@@ -49,12 +44,9 @@ def load_config(env: dict[str, str] | None = None) -> dict[str, object]:
     if len(access_key) < 32 or len(admin_key) < 32:
         raise RuntimeError("Camofox container keys are missing or too short")
 
-    xfer = transfer_dir(env)
-    xfer.mkdir(parents=True, exist_ok=True)
     return {
         "base_url": CAMOFOX_CONTAINER_BASE_URL,
         "access_key": access_key,
         "admin_key": admin_key,
-        "transfer_dir": xfer,
         "config_path": path,
     }

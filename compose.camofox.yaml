@@ -32,15 +32,11 @@ services:
       MAX_SESSIONS: "4"
       MAX_TABS_PER_SESSION: "4"
       MAX_TABS_GLOBAL: "8"
-      TMPDIR: /transfer
-      TMP: /transfer
-      TEMP: /transfer
+      TMPDIR: /tmp
+      TMP: /tmp
+      TEMP: /tmp
     ports:
       - "127.0.0.1:9377:9377"
-    volumes:
-      - type: bind
-        source: ${CAMOFOX_TRANSFER_DIR:?CAMOFOX_TRANSFER_DIR is required}
-        target: /transfer
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,size=256m,mode=1777

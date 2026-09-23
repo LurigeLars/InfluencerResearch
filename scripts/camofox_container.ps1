@@ -15,8 +15,7 @@ if (-not (Test-Path -LiteralPath $Compose -PathType Leaf)) { throw "Missing comp
 
 $LocalRoot = Join-Path $env:LOCALAPPDATA 'InfluencerResearch'
 $ConfigPath = Join-Path $LocalRoot 'camofox-container.json'
-$TransferDir = Join-Path $LocalRoot 'camofox-transfer'
-New-Item -ItemType Directory -Force -Path $LocalRoot, $TransferDir | Out-Null
+New-Item -ItemType Directory -Force -Path $LocalRoot | Out-Null
 
 function New-LocalToken {
     $bytes = [byte[]]::new(32)
@@ -44,7 +43,6 @@ if ([string]::IsNullOrWhiteSpace([string]$config.admin_key) -or ([string]$config
 
 $env:CAMOFOX_ACCESS_KEY = [string]$config.access_key
 $env:CAMOFOX_ADMIN_KEY = [string]$config.admin_key
-$env:CAMOFOX_TRANSFER_DIR = $TransferDir
 
 function Invoke-Compose([string[]]$Arguments) {
     & docker compose -f $Compose @Arguments
@@ -73,7 +71,6 @@ switch ($Action) {
         Write-Host 'CAMOFOX_CONTAINER_READY'
         $health | ConvertTo-Json -Depth 6
         Write-Host "Config: $ConfigPath"
-        Write-Host "Transfer: $TransferDir"
     }
     'Down' {
         Invoke-Compose @('down')
