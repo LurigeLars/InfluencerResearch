@@ -5,4 +5,4 @@ faster-whisper==1.2.1
 imageio-ffmpeg==0.6.0
 
 # BACKLOG_042: TikTok browser-impersonation dependencies are installed separately,
-# wheel-only and hash-locked, from requirements_tiktok_impersonation.lock.txt by 01_install.bat.
+# wheel-only and hash-locked, from requirements_tiktok_impersonation.lock.txt by scripts/install.ps1.
