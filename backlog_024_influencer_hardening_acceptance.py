@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 EXPECTED = {
-    "playwright": "1.62.0",
+    "playwright": "1.63.0",
     "yt-dlp": "2026.8.19",
     "yt-dlp-ejs": "0.8.0",
     "faster-whisper": "1.2.1",
