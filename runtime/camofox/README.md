@@ -11,8 +11,8 @@ This directory defines the reviewed container runtime used by the TikTok/Camofox
 
 The Docker build disables npm lifecycle scripts during dependency resolution, explicitly builds the required `better-sqlite3` native binding, and bakes the exact reviewed Linux Camoufox release into the image after verifying the release artifact. The dynamic Camofox postinstall browser fetch is not used.
 
-Start or stop the service with `scripts/camofox_container.ps1`. The service publishes only `127.0.0.1:9377`, requires a locally generated access key, runs as the non-root `node` user with a read-only root filesystem and dropped Linux capabilities, disables crash reporting, and receives only one dedicated host transfer directory for browser downloads.
+Start or stop the service with `scripts/camofox_container.ps1`. The service publishes only `127.0.0.1:9377`, requires a locally generated access key, runs as the non-root `node` user with a read-only root filesystem, dropped Linux capabilities, explicit CPU/RAM/PID limits, and no host bind mounts. Crash reporting is disabled.
 
-Browser profile, cookies, traces and cache are ephemeral inside the container. The host Python worker resets each temporary Camofox session through the authenticated persistence API. No normal host browser profile or home directory is mounted.
+Browser profile, cookies, traces and cache are ephemeral inside container tmpfs. No normal host browser profile, home directory, Drive folder, or media-transfer directory is mounted. Individual TikTok media is downloaded by the host-side yt-dlp path, not by Camofox.
 
 Any dependency, browser-baseline, filesystem mount, network exposure or authentication change requires re-review and a fresh isolated runtime test.
