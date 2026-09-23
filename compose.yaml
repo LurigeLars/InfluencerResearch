@@ -1,0 +1,123 @@
+name: influencerresearch
+
+services:
+  influencerresearch:
+    build:
+      context: .
+      dockerfile: runtime/influencerresearch/Dockerfile
+    container_name: influencerresearch-mcp
+    user: "10001:10001"
+    environment:
+      INFLUENCER_RESEARCH_ROOT: /research
+      INFLUENCER_RESEARCH_RUNTIME_DIR: /runtime/influencerresearch
+      INFLUENCER_RESEARCH_MCP_PORT: "8770"
+      INFLUENCER_RESEARCH_ALLOWED_HOSTS: "127.0.0.1:*,localhost:*,influencerresearch:*"
+      INFLUENCER_RESEARCH_CAMOFOX_MODE: container
+      INFLUENCER_RESEARCH_CAMOFOX_URL: http://camofox:9377
+      CAMOFOX_ACCESS_KEY: ${CAMOFOX_ACCESS_KEY:?CAMOFOX_ACCESS_KEY is required}
+      CAMOFOX_ADMIN_KEY: ${CAMOFOX_ADMIN_KEY:?CAMOFOX_ADMIN_KEY is required}
+      XDG_CACHE_HOME: /runtime/influencerresearch/cache
+      HOME: /home/influencer
+    ports:
+      - "127.0.0.1:${INFLUENCER_RESEARCH_MCP_PORT:-8770}:8770"
+    volumes:
+      - type: bind
+        source: ${INFLUENCER_RESEARCH_CONTROL_DIR:?INFLUENCER_RESEARCH_CONTROL_DIR is required}
+        target: /research/control
+      - type: bind
+        source: ${INFLUENCER_RESEARCH_STATE_DIR:?INFLUENCER_RESEARCH_STATE_DIR is required}
+        target: /research/state
+      - type: bind
+        source: ${INFLUENCER_RESEARCH_OUTPUT_DIR:?INFLUENCER_RESEARCH_OUTPUT_DIR is required}
+        target: /research/output
+      - type: bind
+        source: ${INFLUENCER_RESEARCH_LOG_DIR:?INFLUENCER_RESEARCH_LOG_DIR is required}
+        target: /research/logs
+      - influencerresearch-runtime:/runtime/influencerresearch
+    depends_on:
+      camofox:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=512m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 4g
+    cpus: 2.0
+    pids_limit: 256
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket,sys;s=socket.socket();s.settimeout(2);sys.exit(0 if s.connect_ex((\'127.0.0.1\',8770))==0 else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 30s
+    networks:
+      - runtime
+
+  camofox:
+    build:
+      context: .
+      dockerfile: runtime/camofox/Dockerfile
+    container_name: influencerresearch-camofox
+    user: node
+    environment:
+      NODE_ENV: production
+      CAMOFOX_PORT: "9377"
+      CAMOFOX_BIND_HOST: 0.0.0.0
+      CAMOFOX_ACCESS_KEY: ${CAMOFOX_ACCESS_KEY:?CAMOFOX_ACCESS_KEY is required}
+      CAMOFOX_ADMIN_KEY: ${CAMOFOX_ADMIN_KEY:?CAMOFOX_ADMIN_KEY is required}
+      CAMOUFOX_EXECUTABLE: /opt/camoufox/camoufox-bin
+      CAMOUFOX_INSTALL_DIR: /opt/camoufox
+      HOME: /run/camofox
+      XDG_CACHE_HOME: /run/camofox/cache
+      CAMOFOX_PROFILE_DIR: /run/camofox/profiles
+      CAMOFOX_COOKIES_DIR: /run/camofox/cookies
+      CAMOFOX_TRACES_DIR: /run/camofox/traces
+      CAMOFOX_CRASH_REPORT_ENABLED: "false"
+      CAMOFOX_DISABLE_DEFAULT_ADDONS: "true"
+      CAMOFOX_CRASH_REPORT_URL: ""
+      SENTRY_DSN: ""
+      PROMETHEUS_ENABLED: "false"
+      BROWSER_IDLE_TIMEOUT_MS: "60000"
+      SESSION_TIMEOUT_MS: "60000"
+      TAB_INACTIVITY_MS: "60000"
+      MAX_CONCURRENT_PER_USER: "1"
+      MAX_SESSIONS: "4"
+      MAX_TABS_PER_SESSION: "4"
+      MAX_TABS_GLOBAL: "8"
+      TMPDIR: /tmp
+      TMP: /tmp
+      TEMP: /tmp
+    expose:
+      - "9377"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=256m,mode=1777
+      - /run/camofox:rw,nosuid,nodev,size=256m,uid=1000,gid=1000,mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    shm_size: 1gb
+    mem_limit: 2g
+    cpus: 2.0
+    pids_limit: 256
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch(\'http://127.0.0.1:9377/health\').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 30s
+    networks:
+      - runtime
+
+volumes:
+  influencerresearch-runtime:
+
+networks:
+  runtime:
+    driver: bridge
