@@ -105,6 +105,10 @@ def normalize_creator_handle(value: str) -> str:
     handle = str(value or "").strip().lstrip("@")
     if not re.fullmatch(r"[A-Za-z0-9._]{1,30}", handle):
         raise ValueError("Invalid Instagram creator handle")
+    if handle in {".", ".."} or handle.endswith("."):
+        raise ValueError("Unsafe Instagram creator path segment")
+    if re.fullmatch(r"(?i:(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?)", handle):
+        raise ValueError("Reserved Windows creator path segment")
     return handle
 
 
