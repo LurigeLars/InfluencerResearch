@@ -32,6 +32,25 @@ class CamofoxContainerConfigTests(unittest.TestCase):
                 (local.resolve() / "InfluencerResearch" / "camofox-transfer").exists()
             )
 
+    def test_loads_internal_service_config_from_environment(self) -> None:
+        result = cc.load_config({
+            "INFLUENCER_RESEARCH_CAMOFOX_URL": "http://camofox:9377/",
+            "CAMOFOX_ACCESS_KEY": "a" * 43,
+            "CAMOFOX_ADMIN_KEY": "b" * 43,
+        })
+        self.assertEqual(result["base_url"], "http://camofox:9377")
+        self.assertEqual(result["access_key"], "a" * 43)
+        self.assertEqual(result["admin_key"], "b" * 43)
+        self.assertIsNone(result["config_path"])
+
+    def test_rejects_short_service_keys(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "too short"):
+            cc.load_config({
+                "INFLUENCER_RESEARCH_CAMOFOX_URL": "http://camofox:9377",
+                "CAMOFOX_ACCESS_KEY": "short",
+                "CAMOFOX_ADMIN_KEY": "short",
+            })
+
     def test_rejects_short_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             local = Path(tmp)
