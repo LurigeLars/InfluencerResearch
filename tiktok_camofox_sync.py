@@ -28,22 +28,22 @@ import camofox_container as camofox_container_config
 
 APP_VERSION = "0.8.8"
 CAMOFOX_FALLBACK_EXPECTED_NODE_VERSION = "v22.23.2"
-CAMOFOX_FALLBACK_EXPECTED_CAMOFOX_VERSION = "1.13.1"
+CAMOFOX_FALLBACK_EXPECTED_CAMOFOX_VERSION = "1.17.0"
 CAMOFOX_FALLBACK_EXPECTED_CAMOUFOX_JS_VERSION = "0.11.5"
 CAMOFOX_FALLBACK_EXPECTED_GIT_BLOBS = {
-    "package.json": "64caef26cda2707567e6f7eba1b9f5f429493990",
-    "camofox.config.json": "a789c84806d13e6a977c8984a3a562f5cac44b5b",
-    "server.js": "06443a7193aa494c2f4e1f717648444bf87bc970",
+    "package.json": "0360fa0f47b7048903768c19ae14591a1b124519",
+    "camofox.config.json": "da28c876d8864f3f25e44a2dc813c48e1e82ed9f",
+    "server.js": "80d5190990c06166aa0df257d7d6da98a39a2221",
     "lib/auth.js": "cc881a14207191ef84382cf940b75bc3e9e8100d",
-    "lib/config.js": "7fd9438effa91000182f70936af9763ede035a2d",
-    "lib/downloads.js": "e0b8cc9a8c862016f2929f89438ff9f0f9c1517d",
+    "lib/config.js": "5f5a6f845f62ac17a99e6ee5c5f743f75aadef88",
+    "lib/downloads.js": "bf1697b8dcc329d42151bce5d36222991ca67ad0",
     "lib/persistence.js": "c8c6ffc70bdbac6c8b453ef1c91b6fbc88aded66",
-    "lib/plugins.js": "a7ee27ea565c49945c6f14890500765d21584663",
+    "lib/plugins.js": "282eeb37e434bb384b77916fbe15c1c44bf9dbf6",
     "lib/launcher.js": "faa50e51a94abdd6c817c116b43542287ef6f039",
     "lib/camoufox-executable.js": "142f16922c6e8ad6a9b0d02488f0350009b0eeee",
     "plugins/persistence/index.js": "7c5199d3b00c39325b660699581f4298a334808e",
 }
-CAMOFOX_FALLBACK_SOURCE_COMMIT = "af3a2505fc3853e976ad261b2ca0cfc445054d33"
+CAMOFOX_FALLBACK_SOURCE_COMMIT = "389c996ae3c7d42e539295a336ee6f975847f066"
 CAMOUFOX_JS_SOURCE_COMMIT = "3fe80d8448653d8dc1a2c186c7506f89e74c4ed4"
 CAMOFOX_ACCEPTED_ROOT_PACKAGE_NAME = "influencerresearch-camofox-runtime"
 CAMOFOX_ACCEPTED_ROOT_DEPENDENCIES = {
@@ -51,9 +51,9 @@ CAMOFOX_ACCEPTED_ROOT_DEPENDENCIES = {
 }
 CAMOFOX_ACCEPTED_NPM_ARTIFACTS = {
     "@askjo/camofox-browser": {
-        "version": "1.13.1",
-        "resolved": "https://registry.npmjs.org/@askjo/camofox-browser/-/camofox-browser-1.13.1.tgz",
-        "integrity": "sha512-qc84dCPoXVPlCjX85EmpBd9xZ/342UVDi5gOHT4V+lwwA5CxOTM1uw0uRevn+EWtztBG+tO4qMXkR+nPx5Uldw==",
+        "version": "1.17.0",
+        "resolved": "https://registry.npmjs.org/@askjo/camofox-browser/-/camofox-browser-1.17.0.tgz",
+        "integrity": "sha512-avH15oUZ0gRReQQQVSQHfJYbERz+5ZhP97LpxGvfWgdj6rWpYUjSX5inzZv+bTHS3yKy2yAoqO+E5d8UZzXC9A==",
         "package_rel": "@askjo/camofox-browser",
     },
     "camoufox-js": {

@@ -19,7 +19,7 @@ EXPECTED_PYTHON = {
     "imageio-ffmpeg": "0.6.0",
 }
 EXPECTED_REQUIREMENTS = [f"{k}=={v}" for k, v in EXPECTED_PYTHON.items()]
-EXPECTED_CAMOFOX = "1.13.1"
+EXPECTED_CAMOFOX = "1.17.0"
 EXPECTED_CAMOUFOX_JS = "0.11.5"
 
 
@@ -120,7 +120,7 @@ result["influencer_sync"] = {
 package_json = camo_root / "package.json"
 package_lock = camo_root / "package-lock.json"
 camo_package_json = node_pkg / "package.json"
-camo_postinstall = node_pkg / "scripts" / "postinstall.js"
+camo_postinstall = node_pkg / "postinstall.js"
 camoufox_package_json = camoufox_pkg / "package.json"
 
 camo: dict[str, Any] = {
@@ -132,7 +132,7 @@ camo: dict[str, Any] = {
         "package.json": file_evidence(package_json),
         "package-lock.json": file_evidence(package_lock),
         "node_modules/@askjo/camofox-browser/package.json": file_evidence(camo_package_json),
-        "node_modules/@askjo/camofox-browser/scripts/postinstall.js": file_evidence(camo_postinstall),
+        "node_modules/@askjo/camofox-browser/postinstall.js": file_evidence(camo_postinstall),
         "node_modules/camoufox-js/package.json": file_evidence(camoufox_package_json),
     },
 }

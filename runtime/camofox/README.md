@@ -2,12 +2,12 @@
 
 This directory defines the reviewed container runtime used by the TikTok/Camofox path.
 
-- Direct dependency: `@askjo/camofox-browser` `1.13.1`
+- Direct dependency: `@askjo/camofox-browser` `1.17.0`
 - Transitive browser client: `camoufox-js` `0.11.5`
 - Container Node.js baseline: `v22.23.2`
 - Camoufox browser baseline: `152.0.4` / `beta.28`
 
-`package-lock.json` is the project-specific reviewed runtime baseline resolved from the exact direct dependency `@askjo/camofox-browser@1.13.1`. It is not a byte-for-byte copy of upstream's development lockfile.
+`package-lock.json` is the project-specific reviewed runtime baseline resolved from the exact direct dependency `@askjo/camofox-browser@1.17.0`. It is not a byte-for-byte copy of upstream's development lockfile.
 
 The Docker build disables npm lifecycle scripts during dependency resolution, explicitly builds the required `better-sqlite3` native binding, and bakes the exact reviewed Linux Camoufox release into the image after verifying the release artifact. The dynamic Camofox postinstall browser fetch is not used.
 
