@@ -123,7 +123,8 @@ class JobManager:
         try:
             JOB_REQUEST_PATH.unlink(missing_ok=True)
         except OSError:
-            pass
+            # Best-effort cleanup only; a stale request is overwritten before the next job starts.
+            return
 
     def _refresh_locked(self) -> None:
         job = self._active
