@@ -72,8 +72,8 @@ def start_server() -> tuple[None, str]:
     if health():
         return None, "docker_container"
     raise RuntimeError(
-        "Camofox Docker container is not healthy. Run "
-        "pwsh -NoProfile -File scripts\\camofox_container.ps1 -Action Up"
+        "Internal Camofox service is not healthy. Start the complete Compose runtime "
+        "with scripts\\runtime.ps1 -Action Up."
     )
 
 
