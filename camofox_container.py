@@ -22,6 +22,22 @@ def config_path(env: dict[str, str] | None = None) -> Path:
 
 
 def load_config(env: dict[str, str] | None = None) -> dict[str, object]:
+    source = os.environ if env is None else env
+    service_url = str(source.get("INFLUENCER_RESEARCH_CAMOFOX_URL") or "").strip().rstrip("/")
+    service_access_key = str(source.get("CAMOFOX_ACCESS_KEY") or "").strip()
+    service_admin_key = str(source.get("CAMOFOX_ADMIN_KEY") or "").strip()
+    if service_url:
+        if not service_url.startswith(("http://", "https://")):
+            raise RuntimeError("INFLUENCER_RESEARCH_CAMOFOX_URL must be an HTTP(S) URL")
+        if len(service_access_key) < 32 or len(service_admin_key) < 32:
+            raise RuntimeError("Container Camofox keys are missing or too short")
+        return {
+            "base_url": service_url,
+            "access_key": service_access_key,
+            "admin_key": service_admin_key,
+            "config_path": None,
+        }
+
     path = config_path(env)
     if not path.is_file():
         raise RuntimeError(
