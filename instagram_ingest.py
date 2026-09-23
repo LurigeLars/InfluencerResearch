@@ -11,7 +11,7 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 from playwright.sync_api import sync_playwright
 
@@ -98,8 +98,19 @@ def collect_reel_urls(page, creator: str, max_scan: int) -> list[str]:
     return list(found.values())[:max_scan]
 
 
+def canonical_reel_url(url: str) -> str:
+    parsed = urlsplit(str(url or "").strip())
+    host = (parsed.hostname or "").casefold().rstrip(".")
+    if parsed.scheme != "https" or not (host == "instagram.com" or host.endswith(".instagram.com")):
+        raise ValueError("Invalid Instagram Reel host")
+    match = re.fullmatch(r"/reel/([A-Za-z0-9_-]+)/?", parsed.path)
+    if not match:
+        raise ValueError("Invalid Instagram Reel path")
+    return f"https://www.instagram.com/reel/{match.group(1)}/"
+
+
 def reel_shortcode(url: str) -> str:
-    m = REEL_RE.search(url)
+    m = REEL_RE.search(canonical_reel_url(url))
     if not m:
         raise ValueError(f"Not a Reel URL: {url}")
     return m.group(1)
@@ -176,6 +187,7 @@ def download_with_ytdlp(
     Use yt-dlp for the media extractor, but authenticate it with cookies exported
     from the isolated Playwright profile. The temporary cookie file never enters Drive.
     """
+    reel_url = canonical_reel_url(reel_url)
     shortcode = reel_shortcode(reel_url)
     raw_dir = root / "output" / creator / "raw"
     raw_dir.mkdir(parents=True, exist_ok=True)
@@ -198,10 +210,13 @@ def download_with_ytdlp(
         "--format", "b[ext=mp4]/b",
         "--output", output_template,
         "--print", "after_move:filepath",
+        "--",
         reel_url,
     ]
 
     try:
+        # URL is strict-canonical Instagram and '--' terminates yt-dlp option parsing.
+        # codeql[py/command-line-injection]
         result = subprocess.run(
             cmd,
             capture_output=True,

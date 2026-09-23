@@ -93,6 +93,17 @@ def _youtube_profile_identity(channel_url: str) -> tuple[str, str]:
     raise ValueError("UNSUPPORTED_YOUTUBE_CHANNEL_IDENTITY")
 
 
+def canonical_youtube_channel_url(channel_url: str) -> str:
+    kind, identity = _youtube_profile_identity(channel_url)
+    if kind == "HANDLE":
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", identity):
+            raise ValueError("BAD_YOUTUBE_HANDLE")
+        return f"https://www.youtube.com/@{identity}"
+    if not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", identity):
+        raise ValueError("BAD_YOUTUBE_CHANNEL_ID")
+    return f"https://www.youtube.com/channel/{identity}"
+
+
 def metadata_matches_channel(info: dict, channel_url: str) -> bool:
     kind, expected = _youtube_profile_identity(channel_url)
     if kind == "CHANNEL_ID":
@@ -132,8 +143,10 @@ def probe_exact_video(video_id: str, *, channel_url: str, required_attribution_t
         return None, {"video_id": video_id, "ok": False, "reason": "BAD_VIDEO_ID"}
     url = f"https://www.youtube.com/watch?v={video_id}"
     base, js_diag = _yt_base_args()
-    cmd = [*base, "--skip-download", "--dump-single-json", url]
+    cmd = [*base, "--skip-download", "--dump-single-json", "--", url]
     try:
+        # URL is derived from VIDEO_ID_RE-validated input and is not user-selected executable syntax.
+        # codeql[py/command-line-injection]
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired as exc:
         return None, {
@@ -212,15 +225,19 @@ def exact_video_entries(channel_url: str, video_ids: list[str], *, required_attr
 
 
 def enumerate_channel(channel_url: str, *, limit: int) -> tuple[list[dict], dict]:
+    channel_url = canonical_youtube_channel_url(channel_url)
     cmd = [
         sys.executable, "-m", "yt_dlp",
         "--ignore-config",
         "--flat-playlist",
         "--playlist-end", str(max(limit, 1)),
         "--dump-json",
+        "--",
         channel_url,
     ]
     try:
+        # URL is strict-canonical YouTube and '--' terminates yt-dlp option parsing.
+        # codeql[py/command-line-injection]
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired as exc:
         return [], {"ok": False, "returncode": 124, "diagnostic_tail": str(exc)[-2000:]}

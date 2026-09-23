@@ -3,17 +3,34 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 
 APP_VERSION = "0.5.0"
 SOURCE_TYPE = "TIKTOK"
 DEFAULT_PROFILE = "https://www.tiktok.com/@nicholas_crown"
+TIKTOK_HANDLE_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
+def canonical_tiktok_profile_url(value: str) -> str:
+    parsed = urlsplit(str(value or "").strip())
+    host = (parsed.hostname or "").casefold().rstrip(".")
+    parts = [part for part in parsed.path.split("/") if part]
+    if parsed.scheme != "https" or host not in {"tiktok.com", "www.tiktok.com", "m.tiktok.com"}:
+        raise ValueError("Invalid TikTok profile URL")
+    if len(parts) != 1 or not parts[0].startswith("@"):
+        raise ValueError("Invalid TikTok profile path")
+    handle = parts[0][1:]
+    if not TIKTOK_HANDLE_RE.fullmatch(handle):
+        raise ValueError("Invalid TikTok creator handle")
+    return f"https://www.tiktok.com/@{handle}"
 
 
 def utc_now() -> str:
@@ -183,6 +200,7 @@ def run_ytdlp(
     root: Path,
     max_videos: int,
 ) -> dict:
+    profile_url = canonical_tiktok_profile_url(profile_url)
     video_dir = root / "output" / creator / "tiktok" / "videos"
     state_dir = root / "state" / "tiktok"
     video_dir.mkdir(parents=True, exist_ok=True)
@@ -204,9 +222,12 @@ def run_ytdlp(
         "--no-overwrites",
         "--format", "b[ext=mp4]/b",
         "--output", str(video_dir / "%(id)s.%(ext)s"),
+        "--",
         profile_url,
     ]
 
+    # URL is strict-canonical TikTok and '--' terminates yt-dlp option parsing.
+    # codeql[py/command-line-injection]
     result = subprocess.run(
         cmd,
         capture_output=True,
