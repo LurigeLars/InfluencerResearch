@@ -84,7 +84,7 @@ $py="$env:LOCALAPPDATA\InstagramResearch\venv\Scripts\python.exe"
 & $py .\apply_research_decisions.py --root ..
 
 # TikTok Camofox discovery + yt-dlp smoke
-& $py .\camofox_tiktok_poc.py
+& $py .\tiktok_camofox_smoke.py
 
 # TikTok production sync
 & $py .\tiktok_camofox_sync.py --root ..
