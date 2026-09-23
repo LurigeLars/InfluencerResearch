@@ -1,6 +1,6 @@
 # Camofox runtime
 
-This directory defines the reviewed container runtime used by the TikTok/Camofox path.
+This directory defines the reviewed Camofox/Camoufox container used by the InfluencerResearch Docker runtime.
 
 - Direct dependency: `@askjo/camofox-browser` `1.17.0`
 - Transitive browser client: `camoufox-js` `0.11.5`
@@ -11,8 +11,10 @@ This directory defines the reviewed container runtime used by the TikTok/Camofox
 
 The Docker build disables npm lifecycle scripts during dependency resolution, explicitly builds the required `better-sqlite3` native binding, and bakes the exact reviewed Linux Camoufox release into the image after verifying the release artifact. The dynamic Camofox postinstall browser fetch is not used.
 
-Start or stop the service with `scripts/camofox_container.ps1`. The service publishes only `127.0.0.1:9377`, requires a locally generated access key, runs as the non-root `node` user with a read-only root filesystem, dropped Linux capabilities, explicit CPU/RAM/PID limits, and no host bind mounts. Crash reporting is disabled.
+Camofox is a separate service in the root `compose.yaml`. It is reachable only from the Compose `runtime` network at `http://camofox:9377`; port 9377 is not published to the Windows host. The `influencerresearch` service authenticates to it with generated access/admin keys.
 
-Browser profile, cookies, traces and cache are ephemeral inside container tmpfs. No normal host browser profile, home directory, Drive folder, or media-transfer directory is mounted. Individual TikTok media is downloaded by the host-side yt-dlp path, not by Camofox.
+The service runs as the non-root `node` user with a read-only root filesystem, dropped Linux capabilities, no-new-privileges, explicit CPU/RAM/PID limits and no host bind mounts. Browser profile, cookies, traces and cache are ephemeral inside container tmpfs. Camofox is used for TikTok discovery/browser metadata only; individual TikTok media is downloaded by yt-dlp in the `influencerresearch` container.
 
-Any dependency, browser-baseline, filesystem mount, network exposure or authentication change requires re-review and a fresh isolated runtime test.
+Start, stop, inspect or smoke-test the complete stack with `scripts/runtime.ps1`.
+
+Any dependency, browser-baseline, filesystem mount, network exposure or authentication change requires a fresh runtime test.
