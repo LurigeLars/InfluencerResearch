@@ -40,7 +40,14 @@ def load_json(path: Path, default: Any = None) -> Any:
 
 
 def safe_creator(handle: str) -> str:
-    return handle.strip().lstrip("@").replace("/", "_").replace("\\", "_")
+    value = str(handle or "").strip().lstrip("@")
+    if not re.fullmatch(r"[A-Za-z0-9._]{1,30}", value):
+        raise ValueError("Invalid Instagram creator handle")
+    if value in {".", ".."} or value.endswith("."):
+        raise ValueError("Unsafe Instagram creator path segment")
+    if re.fullmatch(r"(?i:(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?)", value):
+        raise ValueError("Reserved Windows creator path segment")
+    return value
 
 
 def profile_dir() -> Path:
