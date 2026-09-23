@@ -1383,8 +1383,8 @@ class Bridge:
                 if self.taskkill is None or not self.taskkill.is_file():
                     raise RuntimeError(f"Reviewed taskkill path is unavailable: {self.taskkill}")
                 # taskkill is a reviewed fixed path and pid is the numeric PID of self.child.
-                # codeql[py/command-line-injection]
                 completed = subprocess.run(
+                    # codeql[py/command-line-injection]
                     [str(self.taskkill), "/PID", str(int(pid)), "/T", "/F"],
                     capture_output=True,
                     text=True,
