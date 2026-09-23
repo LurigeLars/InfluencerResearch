@@ -47,7 +47,10 @@ def main() -> int:
     norm = ns["normalize_creator_handle"]
     if norm("@nicholascrown") != "nicholascrown":
         fail("canonical creator normalization failed")
-    for bad in ("../x", "..\\x", "a/b", "a\\b", "a b", "x" * 31):
+    for bad in (
+        "../x", "..\\x", "a/b", "a\\b", "a b", "x" * 31,
+        ".", "..", "creator.", "CON", "nul", "COM1", "LPT9.txt",
+    ):
         try:
             norm(bad)
         except ValueError:
