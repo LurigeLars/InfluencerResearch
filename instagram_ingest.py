@@ -50,14 +50,20 @@ def safe_creator(handle: str) -> str:
     return value
 
 
-def profile_dir() -> Path:
+def runtime_dir() -> Path:
+    explicit = str(os.environ.get("INFLUENCER_RESEARCH_RUNTIME_DIR") or "").strip()
+    if explicit:
+        return Path(explicit)
     local = Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
-    return local / "InstagramResearch" / "chrome-profile"
+    return local / "InstagramResearch"
+
+
+def profile_dir() -> Path:
+    return runtime_dir() / "chrome-profile"
 
 
 def secret_dir() -> Path:
-    local = Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
-    d = local / "InstagramResearch" / "secrets"
+    d = runtime_dir() / "secrets"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
