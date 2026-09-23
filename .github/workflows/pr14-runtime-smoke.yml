@@ -10,6 +10,7 @@ on:
       - requirements_tiktok_impersonation.lock.txt
       - runtime/**
       - scripts/runtime.ps1
+      - "test_*.py"
       - .github/workflows/pr14-runtime-smoke.yml
 
 permissions:
