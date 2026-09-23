@@ -1383,16 +1383,6 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
         },
     )
 
-    # Seed only the original Nicholas Crown source from the successful v0.6 POC.
-    # Generic/evaluation creators must never inherit another creator's discovered URLs.
-    if creator_key == "nicholascrown":
-        poc_urls = load_json(
-            state_dir / "camofox_discovered_urls.json",
-            {"urls": []},
-        ).get("urls", [])
-        if poc_urls:
-            catalog = merge_catalog(catalog, [str(x) for x in poc_urls], profile_url=profile_url)
-
     previous_count = len(catalog.get("items", {}))
     if discovery_target_override is None:
         # Full/evaluation sync may deepen the historical catalog over time.
