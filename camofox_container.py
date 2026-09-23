@@ -41,8 +41,8 @@ def load_config(env: dict[str, str] | None = None) -> dict[str, object]:
     path = config_path(env)
     if not path.is_file():
         raise RuntimeError(
-            "Camofox container config is missing. Run "
-            "pwsh -NoProfile -File scripts\\camofox_container.ps1 -Action Up"
+            "Camofox container config is missing. Start the Docker runtime with "
+            "scripts\\runtime.ps1 -Action Up or set INFLUENCER_RESEARCH_CAMOFOX_URL."
         )
     try:
         obj = json.loads(path.read_text(encoding="utf-8-sig"))
