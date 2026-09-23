@@ -43,10 +43,7 @@ class MCPContractTests(unittest.TestCase):
         text = (BASE / "compose.yaml").read_text(encoding="utf-8")
         self.assertIn("  influencerresearch:", text)
         self.assertIn("  camofox:", text)
-        self.assertIn(
-            "INFLUENCER_RESEARCH_CAMOFOX_URL: http://camofox:9377",
-            text,
-        )
+        self.assertIn('INFLUENCER_RESEARCH_CONTAINER: "1"', text)
         self.assertNotIn("127.0.0.1:9377:9377", text)
         self.assertIn(
             "127.0.0.1:" + "$" + "{INFLUENCER_RESEARCH_MCP_PORT:-8770}:8770",
@@ -55,9 +52,16 @@ class MCPContractTests(unittest.TestCase):
 
     def test_camofox_env_config_is_supported(self) -> None:
         source = (BASE / "camofox_container.py").read_text(encoding="utf-8")
-        self.assertIn("INFLUENCER_RESEARCH_CAMOFOX_URL", source)
+        self.assertIn('"base_url": "http://camofox:9377"', source)
         self.assertIn("CAMOFOX_ACCESS_KEY", source)
         self.assertIn("CAMOFOX_ADMIN_KEY", source)
+
+    def test_job_launcher_uses_fixed_worker_command(self) -> None:
+        source = (BASE / "influencerresearch_mcp.py").read_text(encoding="utf-8")
+        self.assertIn('APP_DIR / "mcp_job_worker.py"', source)
+        self.assertNotIn('"influencer_evaluation.py", args', source)
+        self.assertNotIn('"creator_monitor.py", args', source)
+        self.assertNotIn('"creator_recent_check.py", args', source)
 
 
     def test_legacy_ingress_artifacts_are_retired(self) -> None:

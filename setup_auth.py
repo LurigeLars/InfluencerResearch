@@ -11,21 +11,18 @@ from playwright.sync_api import sync_playwright
 EXPECTED_USERNAME = os.environ.get("INFLUENCER_RESEARCH_INSTAGRAM_USERNAME", "").strip().lstrip("@")
 
 
+def host_runtime_dir() -> Path:
+    if os.name == "nt":
+        return Path.home() / "AppData" / "Local" / "InstagramResearch"
+    return Path.home() / ".local" / "share" / "InstagramResearch"
+
+
 def chrome_profile_dir() -> Path:
-    explicit = str(os.environ.get("INFLUENCER_RESEARCH_RUNTIME_DIR") or "").strip()
-    if explicit:
-        return Path(explicit) / "chrome-profile"
-    local = Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
-    return local / "InstagramResearch" / "chrome-profile"
+    return host_runtime_dir() / "chrome-profile"
 
 
 def cookie_export_path() -> Path:
-    explicit = str(os.environ.get("INFLUENCER_RESEARCH_RUNTIME_DIR") or "").strip()
-    if explicit:
-        root = Path(explicit)
-    else:
-        root = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "InstagramResearch"
-    return root / "secrets" / "instagram_cookies.json"
+    return host_runtime_dir() / "secrets" / "instagram_cookies.json"
 
 
 def write_cookie_export(cookies: list[dict]) -> Path:

@@ -34,7 +34,7 @@ class CamofoxContainerConfigTests(unittest.TestCase):
 
     def test_loads_internal_service_config_from_environment(self) -> None:
         result = cc.load_config({
-            "INFLUENCER_RESEARCH_CAMOFOX_URL": "http://camofox:9377/",
+            "INFLUENCER_RESEARCH_CONTAINER": "1",
             "CAMOFOX_ACCESS_KEY": "a" * 43,
             "CAMOFOX_ADMIN_KEY": "b" * 43,
         })
@@ -46,7 +46,7 @@ class CamofoxContainerConfigTests(unittest.TestCase):
     def test_rejects_short_service_keys(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "too short"):
             cc.load_config({
-                "INFLUENCER_RESEARCH_CAMOFOX_URL": "http://camofox:9377",
+                "INFLUENCER_RESEARCH_CONTAINER": "1",
                 "CAMOFOX_ACCESS_KEY": "short",
                 "CAMOFOX_ADMIN_KEY": "short",
             })
