@@ -4,6 +4,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import sys
 import time
 import urllib.error
@@ -16,9 +17,9 @@ from typing import Any
 import camofox_container as camofox_container_config
 
 
-APP_VERSION = "0.7.0"
+APP_VERSION = "0.8.0"
 USER_ID = "instagramresearch-tiktok"
-SESSION_KEY = "nicholas-crown-poc"
+SESSION_KEY = "nicholas-crown-smoke"
 PROFILE_URL = "https://www.tiktok.com/@nicholas_crown"
 VIDEO_RE = re.compile(r'https?://(?:www\.)?tiktok\.com/@nicholas_crown/video/\d+')
 NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -105,7 +106,7 @@ def collect_video_urls(tab_id: str, target: int = 10) -> tuple[list[str], list[d
         urls = flatten_links(snap)
 
         # Official agent guide also exposes a links endpoint. Use it when available,
-        # but don't make the POC depend on it because snapshot already carries refs/content.
+        # but don't make the smoke depend on it because snapshot already carries refs/content.
         links_result = None
         try:
             links_result = request_json(
@@ -147,8 +148,8 @@ def collect_video_urls(tab_id: str, target: int = 10) -> tuple[list[str], list[d
     return found[:target], diagnostics
 
 
-def test_individual_ytdlp(root: Path, urls: list[str], max_items: int = 3) -> list[dict]:
-    output = root / "output" / "nicholas_crown" / "tiktok" / "camofox_individual"
+def test_individual_ytdlp(scratch_root: Path, urls: list[str], max_items: int = 3) -> list[dict]:
+    output = scratch_root / "media"
     output.mkdir(parents=True, exist_ok=True)
 
     rows: list[dict] = []
@@ -161,6 +162,7 @@ def test_individual_ytdlp(root: Path, urls: list[str], max_items: int = 3) -> li
             "--write-info-json",
             "--format", "b[ext=mp4]/b",
             "--output", str(output / "%(id)s.%(ext)s"),
+            "--",
             url,
         ]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
@@ -179,8 +181,8 @@ def test_individual_ytdlp(root: Path, urls: list[str], max_items: int = 3) -> li
 def main() -> int:
     root = Path(__file__).resolve().parent.parent
     state_dir = root / "state" / "tiktok"
-    status_path = state_dir / "camofox_poc_status.json"
-    urls_path = state_dir / "camofox_discovered_urls.json"
+    status_path = state_dir / "camofox_smoke_status.json"
+    urls_path = state_dir / "camofox_smoke_discovered_urls.json"
 
     started = utc_now()
     atomic_json(status_path, {
@@ -217,7 +219,11 @@ def main() -> int:
             "urls": urls,
         })
 
-        individual = test_individual_ytdlp(root, urls, max_items=3) if urls else []
+        if urls:
+            with tempfile.TemporaryDirectory(prefix="influencerresearch-camofox-smoke-") as scratch:
+                individual = test_individual_ytdlp(Path(scratch), urls, max_items=3)
+        else:
+            individual = []
 
         enumeration_pass = len(urls) >= 3
         individual_successes = sum(1 for r in individual if r["returncode"] == 0 and r["mp4_exists"])
@@ -256,7 +262,7 @@ def main() -> int:
         }
         atomic_json(status_path, status)
         print(json.dumps(status, ensure_ascii=False, indent=2))
-        return 0 if enumeration_pass else 1
+        return 0 if decision == "PASS_HYBRID" else 1
 
     except Exception as exc:
         status = {
