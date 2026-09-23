@@ -13,13 +13,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import camofox_container as camofox_container_config
 
-APP_VERSION = "0.6.0"
-BASE_URL = "http://127.0.0.1:9377"
+
+APP_VERSION = "0.7.0"
 USER_ID = "instagramresearch-tiktok"
 SESSION_KEY = "nicholas-crown-poc"
 PROFILE_URL = "https://www.tiktok.com/@nicholas_crown"
 VIDEO_RE = re.compile(r'https?://(?:www\.)?tiktok\.com/@nicholas_crown/video/\d+')
+NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def utc_now() -> str:
@@ -34,15 +36,19 @@ def atomic_json(path: Path, data: Any) -> None:
 
 
 def request_json(method: str, path: str, body: dict | None = None, timeout: int = 30) -> Any:
-    url = BASE_URL + path
+    cfg = camofox_container_config.load_config()
+    url = str(cfg["base_url"]) + path
     payload = None
-    headers = {"Accept": "application/json"}
+    headers = {
+        "Accept": "application/json",
+        "Authorization": f"Bearer {cfg['access_key']}",
+    }
     if body is not None:
         payload = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=payload, method=method, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with NO_PROXY_OPENER.open(req, timeout=timeout) as resp:
             raw = resp.read()
             ctype = resp.headers.get("Content-Type", "")
             if "json" in ctype or raw[:1] in (b"{", b"["):
@@ -61,47 +67,13 @@ def health() -> dict | None:
         return None
 
 
-def start_server() -> tuple[subprocess.Popen | None, str]:
+def start_server() -> tuple[None, str]:
     if health():
-        return None, "already_running"
-
-    local = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "InstagramResearch" / "camofox-poc"
-    cli = local / "node_modules" / ".bin" / "camofox-browser.cmd"
-    if not cli.exists():
-        raise RuntimeError(
-            f"CamoFox CLI not installed at {cli}. Run app\\09_install_camofox_poc.bat first."
-        )
-
-    log_dir = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "InstagramResearch" / "camofox-logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / "camofox_server.log"
-    log = open(log_path, "ab", buffering=0)
-
-    env = os.environ.copy()
-    env["CAMOFOX_PORT"] = "9377"
-    env["CAMOFOX_CRASH_REPORT_ENABLED"] = "false"
-    env["CAMOFOX_PROFILE_DIR"] = str(
-        Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "InstagramResearch" / "camofox-profiles"
+        return None, "docker_container"
+    raise RuntimeError(
+        "Camofox Docker container is not healthy. Run "
+        "pwsh -NoProfile -File scripts\\camofox_container.ps1 -Action Up"
     )
-
-    proc = subprocess.Popen(
-        [str(cli)],
-        cwd=str(local),
-        stdout=log,
-        stderr=subprocess.STDOUT,
-        env=env,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-
-    for _ in range(60):
-        time.sleep(0.5)
-        h = health()
-        if h:
-            return proc, str(log_path)
-        if proc.poll() is not None:
-            break
-
-    raise RuntimeError(f"CamoFox server failed to become healthy. Check {log_path}")
 
 
 def flatten_links(obj: Any) -> list[str]:
@@ -311,8 +283,15 @@ def main() -> int:
                 )
             except Exception:
                 pass
-        # Intentionally leave the locally started server alive for quick reruns.
-        # Persistence is part of the CamoFox architecture under evaluation.
+        try:
+            request_json(
+                "DELETE",
+                f"/sessions/{urllib.parse.quote(USER_ID)}/storage_state",
+                timeout=10,
+            )
+        except Exception:
+            pass
+        # The Docker-managed Camofox service is intentionally left running.
 
 
 if __name__ == "__main__":

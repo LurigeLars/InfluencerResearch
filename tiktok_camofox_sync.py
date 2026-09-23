@@ -16,7 +16,6 @@ import time
 import tempfile
 import threading
 import tarfile
-import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -24,14 +23,10 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+import camofox_container as camofox_container_config
 
-APP_VERSION = "0.8.7"
-CAMOFOX_FALLBACK_MAX_MEDIA_BYTES = 512 * 1024 * 1024
-CAMOFOX_FALLBACK_DURATION_TOLERANCE_S = 2.0
-CAMOFOX_FALLBACK_TOTAL_TIMEOUT_SECONDS = 300.0
-CAMOFOX_FALLBACK_CLEANUP_RESERVE_SECONDS = 8.0
-CAMOFOX_FALLBACK_DOWNLOAD_WAIT_SECONDS = 20.0
-CAMOFOX_FALLBACK_DISK_MARGIN_BYTES = 512 * 1024 * 1024
+
+APP_VERSION = "0.8.8"
 CAMOFOX_FALLBACK_EXPECTED_NODE_VERSION = "v22.23.2"
 CAMOFOX_FALLBACK_EXPECTED_CAMOFOX_VERSION = "1.13.1"
 CAMOFOX_FALLBACK_EXPECTED_CAMOUFOX_JS_VERSION = "0.11.5"
@@ -50,8 +45,10 @@ CAMOFOX_FALLBACK_EXPECTED_GIT_BLOBS = {
 }
 CAMOFOX_FALLBACK_SOURCE_COMMIT = "af3a2505fc3853e976ad261b2ca0cfc445054d33"
 CAMOUFOX_JS_SOURCE_COMMIT = "3fe80d8448653d8dc1a2c186c7506f89e74c4ed4"
-CAMOFOX_ACCEPTED_ROOT_PACKAGE_SHA256 = "1983b600c7cda22e8ca70bcb889b252ed3112d0460c64eaf6704409a4e3691f0"
-CAMOFOX_ACCEPTED_ROOT_LOCK_SHA256 = "eb1b8473b30665402f2cef0079038e0519a2e8d4e2af64d14582446786eb69f4"
+CAMOFOX_ACCEPTED_ROOT_PACKAGE_NAME = "influencerresearch-camofox-runtime"
+CAMOFOX_ACCEPTED_ROOT_DEPENDENCIES = {
+    "@askjo/camofox-browser": CAMOFOX_FALLBACK_EXPECTED_CAMOFOX_VERSION,
+}
 CAMOFOX_ACCEPTED_NPM_ARTIFACTS = {
     "@askjo/camofox-browser": {
         "version": "1.13.1",
@@ -75,10 +72,8 @@ CAMOUFOX_BROWSER_EXECUTABLE_SHA256 = {
     "private_browsing.exe": "66220b91c9181f109aef95a98d3420365f17577662ff4e02abc0f802b5de5050",
     "desktop-launcher/desktop-launcher.exe": "23f0f0b22a570ae71b5e550564a7fd87eb68b7979f0b219299a422d358e62373",
 }
-YT_DLP_TIKTOK_WEBPAGE_FAILURE = "Unexpected response from webpage request"
 
 _CAMOFOX_FALLBACK_SERVER: dict[str, Any] | None = None
-_CAMOFOX_FALLBACK_LOCK = threading.Lock()
 _TIKTOK_RUN_LOCK_HANDLE: Any | None = None
 _TIKTOK_RUN_LOCK_GUARD = threading.Lock()
 _NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -167,11 +162,10 @@ def _release_tiktok_run_lock() -> None:
 
 
 def request_json(method: str, path: str, body: dict | None = None, timeout: int = 30) -> Any:
-    """Use the single constrained process-owned CamoFox server for discovery and media.
+    """Use the constrained Camofox browser service for TikTok discovery/metadata.
 
-    The public discovery client intentionally shares the same loopback/authenticated,
-    sanitized runtime boundary as the media fallback. No shared unauthenticated 9377
-    listener is reused or created.
+    Individual TikTok media is downloaded by yt-dlp. The browser service stays
+    loopback-only and authenticated and is not used as a media-transfer path.
     """
     deadline = time.monotonic() + max(0.1, float(timeout))
     server = _ensure_fallback_server(deadline=deadline)
@@ -185,9 +179,18 @@ def request_json(method: str, path: str, body: dict | None = None, timeout: int 
     )
 
 
+def _runtime_is_available(server: dict[str, Any] | None) -> bool:
+    if not server:
+        return False
+    if server.get("runtime_mode") == "container":
+        return True
+    proc = server.get("proc")
+    return proc is not None and proc.poll() is None
+
+
 def health() -> dict | None:
     server = _CAMOFOX_FALLBACK_SERVER
-    if not server or server.get("proc") is None or server["proc"].poll() is not None:
+    if not _runtime_is_available(server):
         return None
     try:
         value = _fallback_health(server, deadline=time.monotonic() + 3.0)
@@ -197,10 +200,12 @@ def health() -> dict | None:
 
 
 def _server_public_status(server: dict[str, Any], *, started: bool) -> dict[str, Any]:
+    runtime_mode = str(server.get("runtime_mode") or "legacy_local")
     return {
         "started": started,
         "health": _fallback_health(server, deadline=time.monotonic() + 3.0),
-        "note": "constrained_process_owned",
+        "note": "docker_container" if runtime_mode == "container" else "constrained_process_owned",
+        "runtime_mode": runtime_mode,
         "port": int(server["port"]),
         "bind_host": "127.0.0.1",
         "access_key_required": True,
@@ -209,14 +214,12 @@ def _server_public_status(server: dict[str, Any], *, started: bool) -> dict[str,
 
 
 def start_server() -> dict:
-    """Start/reuse only this application's constrained process-owned CamoFox server."""
+    """Acquire the run lock and verify/reuse the configured Camofox runtime."""
     _acquire_tiktok_run_lock()
     try:
         current = _CAMOFOX_FALLBACK_SERVER
         was_healthy = bool(
-            current
-            and current.get("proc") is not None
-            and current["proc"].poll() is None
+            _runtime_is_available(current)
             and _fallback_health(current, deadline=time.monotonic() + 3.0)
         )
         server = _ensure_fallback_server(deadline=time.monotonic() + 60.0)
@@ -227,7 +230,7 @@ def start_server() -> dict:
 
 
 def stop_server(*, deadline: float | None = None) -> None:
-    """Idempotently stop the application-owned CamoFox server and release the run lock."""
+    """Release this run's Camofox handle; legacy-local mode also stops its process."""
     end = deadline if deadline is not None else time.monotonic() + 8.0
     try:
         _stop_fallback_server(force=False, deadline=end)
@@ -398,7 +401,6 @@ def adopt_poc_file(root: Path, video_id: str, video_dir: Path) -> tuple[Path | N
     return dst_mp4, dst_info if dst_info.exists() else None
 
 
-
 def _git_blob_sha1(path: Path) -> str:
     raw = path.read_bytes()
     prefix = f"blob {len(raw)}\0".encode("ascii")
@@ -550,11 +552,43 @@ def _verify_camoufox_browser_cache() -> dict[str, Any]:
     return {"version": dict(CAMOUFOX_BROWSER_VERSION_FIELDS), "executables": verified}
 
 
+def _verify_camofox_root_manifests(local: Path) -> dict[str, Any]:
+    package_path = local / "package.json"
+    lock_path = local / "package-lock.json"
+    try:
+        package = json.loads(package_path.read_text(encoding="utf-8-sig"))
+        lock = json.loads(lock_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Unable to read CamoFox runtime manifests: {exc}") from exc
+
+    if not isinstance(package, dict) or not isinstance(lock, dict):
+        raise RuntimeError("CamoFox runtime manifests must be JSON objects")
+    if package.get("name") != CAMOFOX_ACCEPTED_ROOT_PACKAGE_NAME:
+        raise RuntimeError(f"Unexpected CamoFox root package name: {package.get('name')!r}")
+    if package.get("private") is not True:
+        raise RuntimeError("CamoFox root package must remain private")
+    if package.get("dependencies") != CAMOFOX_ACCEPTED_ROOT_DEPENDENCIES:
+        raise RuntimeError("CamoFox root dependencies differ from accepted baseline")
+    if lock.get("lockfileVersion") != 3:
+        raise RuntimeError(f"Unexpected CamoFox package-lock version: {lock.get('lockfileVersion')!r}")
+
+    root_entry = (lock.get("packages") or {}).get("")
+    if not isinstance(root_entry, dict):
+        raise RuntimeError("CamoFox package-lock root entry missing")
+    if root_entry.get("name") != CAMOFOX_ACCEPTED_ROOT_PACKAGE_NAME:
+        raise RuntimeError(f"Unexpected CamoFox package-lock root name: {root_entry.get('name')!r}")
+    if root_entry.get("dependencies") != CAMOFOX_ACCEPTED_ROOT_DEPENDENCIES:
+        raise RuntimeError("CamoFox package-lock root dependencies differ from accepted baseline")
+
+    return {
+        "package_name": CAMOFOX_ACCEPTED_ROOT_PACKAGE_NAME,
+        "dependencies": dict(CAMOFOX_ACCEPTED_ROOT_DEPENDENCIES),
+        "lockfile_version": 3,
+    }
+
+
 def _verify_fallback_camofox_runtime(local: Path) -> dict[str, Any]:
-    if _sha256_file(local / "package.json") != CAMOFOX_ACCEPTED_ROOT_PACKAGE_SHA256:
-        raise RuntimeError("CamoFox root package.json differs from accepted baseline")
-    if _sha256_file(local / "package-lock.json") != CAMOFOX_ACCEPTED_ROOT_LOCK_SHA256:
-        raise RuntimeError("CamoFox root package-lock.json differs from accepted baseline")
+    manifests = _verify_camofox_root_manifests(local)
 
     package_root = local / "node_modules" / "@askjo" / "camofox-browser"
     if not package_root.is_dir():
@@ -598,8 +632,7 @@ def _verify_fallback_camofox_runtime(local: Path) -> dict[str, Any]:
         "source_anchors": source_anchors,
         "npm_artifacts": npm_artifacts,
         "browser": browser,
-        "root_package_sha256": CAMOFOX_ACCEPTED_ROOT_PACKAGE_SHA256,
-        "root_package_lock_sha256": CAMOFOX_ACCEPTED_ROOT_LOCK_SHA256,
+        "manifests": manifests,
     }
 
 
@@ -809,6 +842,9 @@ def _stop_fallback_server(*, force: bool = False, deadline: float | None = None)
     if not server:
         return
 
+    if server.get("runtime_mode") == "container":
+        return
+
     proc = server.get("proc")
     root = Path(server["root"])
     hard_end = deadline if deadline is not None else time.monotonic() + 8.0
@@ -862,9 +898,81 @@ def _atexit_stop_server() -> None:
 atexit.register(_atexit_stop_server)
 
 
+def _ensure_container_camofox_server(*, deadline: float) -> dict[str, Any]:
+    cfg = camofox_container_config.load_config()
+    server: dict[str, Any] = {
+        "proc": None,
+        "root": None,
+        "profile_dir": None,
+        "cookies_dir": None,
+        "base_url": str(cfg["base_url"]),
+        "port": 9377,
+        "access_key": str(cfg["access_key"]),
+        "admin_key": str(cfg["admin_key"]),
+        "log_handle": None,
+        "runtime_mode": "container",
+        "provenance": {
+            "runtime_mode": "container",
+            "camofox_version": CAMOFOX_FALLBACK_EXPECTED_CAMOFOX_VERSION,
+            "camoufox_js_version": CAMOFOX_FALLBACK_EXPECTED_CAMOUFOX_JS_VERSION,
+            "browser": dict(CAMOUFOX_BROWSER_VERSION_FIELDS),
+        },
+    }
+
+    if not _fallback_health(server, deadline=deadline):
+        raise RuntimeError(
+            "Camofox container is not healthy on 127.0.0.1:9377. Run "
+            "pwsh -NoProfile -File scripts\\camofox_container.ps1 -Action Up"
+        )
+
+    unauth = urllib.request.Request(
+        f"{server['base_url']}/tabs?userId=container-auth-probe",
+        method="GET",
+        headers={"Accept": "application/json"},
+    )
+    try:
+        with _NO_PROXY_OPENER.open(
+            unauth, timeout=_remaining_timeout(deadline, 2.0)
+        ):
+            raise RuntimeError("Camofox container access-key gate is not enforced")
+    except urllib.error.HTTPError as exc:
+        if exc.code != 401:
+            raise RuntimeError(
+                f"Unexpected unauthenticated Camofox status: {exc.code}"
+            ) from exc
+
+    _fallback_request_json(
+        server,
+        "GET",
+        "/tabs?userId=container-auth-probe",
+        deadline=deadline,
+        timeout_cap=2.0,
+    )
+    return server
+
 
 def _ensure_fallback_server(*, deadline: float) -> dict[str, Any]:
     global _CAMOFOX_FALLBACK_SERVER
+    mode = (
+        os.environ.get("INFLUENCER_RESEARCH_CAMOFOX_MODE", "container")
+        .strip()
+        .casefold()
+    )
+    if mode == "container":
+        current = _CAMOFOX_FALLBACK_SERVER
+        if (
+            current
+            and current.get("runtime_mode") == "container"
+            and _fallback_health(current, deadline=deadline)
+        ):
+            return current
+        server = _ensure_container_camofox_server(deadline=deadline)
+        _CAMOFOX_FALLBACK_SERVER = server
+        return server
+    if mode != "legacy_local":
+        raise RuntimeError(
+            "INFLUENCER_RESEARCH_CAMOFOX_MODE must be 'container' or 'legacy_local'"
+        )
     current = _CAMOFOX_FALLBACK_SERVER
     if (
         current
@@ -914,6 +1022,7 @@ def _ensure_fallback_server(*, deadline: float) -> dict[str, Any]:
         "access_key": access_key,
         "admin_key": admin_key,
         "log_handle": log_handle,
+        "runtime_mode": "legacy_local",
         "provenance": provenance,
     }
     _CAMOFOX_FALLBACK_SERVER = server
@@ -959,130 +1068,6 @@ def _ensure_fallback_server(*, deadline: float) -> dict[str, Any]:
         raise
 
 
-def _fallback_user_profile_dir(server: dict[str, Any], user_id: str) -> Path:
-    digest = hashlib.sha256(str(user_id).encode("utf-8")).hexdigest()[:32]
-    return Path(server["profile_dir"]) / digest
-
-
-def _cleanup_fallback_session(
-    server: dict[str, Any],
-    *,
-    user_id: str,
-    deadline: float,
-) -> str:
-    try:
-        _fallback_request_json(
-            server,
-            "DELETE",
-            f"/sessions/{urllib.parse.quote(user_id)}/storage_state",
-            deadline=deadline,
-            timeout_cap=3.0,
-        )
-        user_dir = _fallback_user_profile_dir(server, user_id)
-        _remove_owned_root_strict(user_dir, deadline=deadline)
-        if user_dir.exists():
-            raise RuntimeError(
-                "CamoFox fallback profile artifact remains after storage reset"
-            )
-        stale_downloads = list(
-            Path(server["tmp_dir"]).glob("camofox-download-*")
-        )
-        if stale_downloads:
-            raise RuntimeError(
-                "CamoFox fallback download artifacts remain after storage reset"
-            )
-        return "storage_reset"
-    except Exception as exc:
-        root = Path(server["root"])
-        _stop_fallback_server(force=True, deadline=deadline)
-        if root.exists():
-            raise RuntimeError(
-                f"CamoFox fallback cleanup failed: {type(exc).__name__}: {exc}"
-            ) from exc
-        return "server_teardown"
-
-
-def _check_fallback_disk_floor(video_dir: Path, server: dict[str, Any]) -> None:
-    video_dir.mkdir(parents=True, exist_ok=True)
-    tmp_dir = Path(server["tmp_dir"])
-    per_volume = (
-        CAMOFOX_FALLBACK_MAX_MEDIA_BYTES + CAMOFOX_FALLBACK_DISK_MARGIN_BYTES
-    )
-    same_volume = os.stat(video_dir).st_dev == os.stat(tmp_dir).st_dev
-    if same_volume:
-        required = (
-            (2 * CAMOFOX_FALLBACK_MAX_MEDIA_BYTES)
-            + CAMOFOX_FALLBACK_DISK_MARGIN_BYTES
-        )
-        free = shutil.disk_usage(video_dir).free
-        if free < required:
-            raise RuntimeError(
-                f"Insufficient free disk for TikTok fallback: "
-                f"free={free} required={required}"
-            )
-        return
-    for path in (video_dir, tmp_dir):
-        free = shutil.disk_usage(path).free
-        if free < per_volume:
-            raise RuntimeError(
-                f"Insufficient free disk for TikTok fallback on "
-                f"{path.anchor or path}: free={free} required={per_volume}"
-            )
-
-
-def _clear_camofox_downloads(
-    server: dict[str, Any],
-    tab_id: str,
-    *,
-    user_id: str,
-    deadline: float,
-) -> None:
-    _camofox_downloads(
-        server,
-        tab_id,
-        user_id=user_id,
-        consume=True,
-        deadline=deadline,
-    )
-    remaining = _camofox_downloads(
-        server,
-        tab_id,
-        user_id=user_id,
-        consume=False,
-        deadline=deadline,
-    )
-    if remaining:
-        raise RuntimeError("CamoFox download pre-clear could not be proven")
-
-
-def _tiktok_video_identity(url: str) -> tuple[str, str] | None:
-    match = re.fullmatch(
-        r"https://www\.tiktok\.com/@([A-Za-z0-9._]+)/video/(\d+)",
-        url.strip().rstrip("/"),
-        flags=re.IGNORECASE,
-    )
-    if not match:
-        return None
-    return match.group(1), match.group(2)
-
-
-def _should_use_camofox_fallback(url: str, diagnostic: str) -> bool:
-    return bool(
-        _tiktok_video_identity(url)
-        and YT_DLP_TIKTOK_WEBPAGE_FAILURE in (diagnostic or "")
-    )
-
-
-def _local_media_stage_command(source: Path, destination: Path) -> list[str]:
-    return [
-        sys.executable,
-        str(Path(__file__).resolve()),
-        "--_b042-stage-media",
-        str(source),
-        str(destination),
-    ]
-
-
 def _safe_local_worker_env() -> dict[str, str]:
     allowed = {
         "PATH", "PATHEXT", "SYSTEMROOT", "WINDIR", "COMSPEC", "SYSTEMDRIVE",
@@ -1090,688 +1075,6 @@ def _safe_local_worker_env() -> dict[str, str]:
         "APPDATA", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)",
     }
     return {k: v for k, v in os.environ.items() if k.upper() in allowed and v}
-
-
-def _bounded_local_media_stage(
-    source: Path,
-    destination: Path,
-    *,
-    deadline: float,
-    cleanup_deadline: float | None = None,
-) -> tuple[bool, str, float | None]:
-    timeout = _remaining_timeout(deadline)
-    cleanup_end = cleanup_deadline if cleanup_deadline is not None else deadline
-    proc = subprocess.Popen(
-        _local_media_stage_command(source, destination),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        env=_safe_local_worker_env(),
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
-    try:
-        stdout, stderr = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired as exc:
-        _taskkill_owned_process(proc, cleanup_end - time.monotonic())
-        try:
-            remaining = cleanup_end - time.monotonic()
-            if remaining > 0:
-                proc.communicate(timeout=min(0.5, remaining))
-            else:
-                proc.communicate(timeout=0)
-        except Exception:
-            pass
-        raise TimeoutError("CamoFox fallback local copy/media validation exceeded per-video deadline") from exc
-    _remaining_timeout(deadline)
-    if proc.returncode != 0:
-        raise RuntimeError(f"Local media stage failed: {(stderr or stdout or '').strip()[-1000:]}")
-    try:
-        payload = json.loads((stdout or "").strip().splitlines()[-1])
-    except Exception as exc:
-        raise RuntimeError("Local media stage returned invalid JSON") from exc
-    return bool(payload.get("valid")), str(payload.get("validation") or ""), payload.get("duration")
-
-
-def _run_local_media_stage_cli(source: Path, destination: Path) -> int:
-    try:
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, destination)
-        valid, validation = validate_media(destination)
-        duration = _media_duration_seconds(destination) if valid else None
-        print(json.dumps({"valid": valid, "validation": validation, "duration": duration}))
-        return 0
-    except Exception as exc:
-        print(f"{type(exc).__name__}: {exc}", file=sys.stderr)
-        return 2
-
-
-def _media_duration_seconds(path: Path) -> float | None:
-    try:
-        import av
-        with av.open(str(path)) as container:
-            if container.duration is None:
-                return None
-            return float(container.duration) / 1_000_000.0
-    except Exception:
-        return None
-
-
-def _camofox_downloads(
-    server: dict[str, Any],
-    tab_id: str,
-    *,
-    user_id: str,
-    consume: bool,
-    deadline: float,
-) -> list[dict]:
-    payload = _fallback_request_json(
-        server,
-        "GET",
-        f"/tabs/{urllib.parse.quote(tab_id)}/downloads?"
-        + urllib.parse.urlencode({
-            "userId": user_id,
-            "includeData": "false",
-            "consume": "true" if consume else "false",
-            "maxBytes": str(CAMOFOX_FALLBACK_MAX_MEDIA_BYTES),
-        }),
-        deadline=deadline,
-        timeout_cap=5.0,
-    )
-    if not isinstance(payload, dict):
-        return []
-    downloads = payload.get("downloads")
-    return downloads if isinstance(downloads, list) else []
-
-
-def _camofox_local_download_path(
-    item: dict,
-    *,
-    temp_root: Path,
-    expected_filename: str,
-) -> Path:
-    raw_id = str(item.get("id") or "").strip()
-    try:
-        download_id = str(uuid.UUID(raw_id))
-    except Exception as exc:
-        raise RuntimeError("CamoFox download record has invalid download id") from exc
-    if download_id.casefold() != raw_id.casefold():
-        raise RuntimeError("CamoFox download id is not canonical UUID text")
-    if str(item.get("suggestedFilename") or "") != expected_filename:
-        raise RuntimeError(
-            "CamoFox download filename does not match current candidate"
-        )
-
-    reported_bytes = item.get("bytes")
-    if not isinstance(reported_bytes, int) or reported_bytes < 50_000:
-        raise RuntimeError(f"CamoFox download size is invalid: {reported_bytes!r}")
-    if reported_bytes > CAMOFOX_FALLBACK_MAX_MEDIA_BYTES:
-        raise RuntimeError(
-            f"CamoFox download exceeds per-file safety cap: {reported_bytes} bytes"
-        )
-
-    temp_root = temp_root.resolve()
-    matches = list(
-        temp_root.glob(f"camofox-download-{download_id}-{expected_filename}")
-    )
-    if len(matches) != 1:
-        raise RuntimeError(
-            f"Expected exactly one current CamoFox temp file for "
-            f"{download_id}, found {len(matches)}"
-        )
-    local_path = matches[0].resolve()
-    if local_path.parent != temp_root:
-        raise RuntimeError(
-            "Resolved CamoFox temp file escaped isolated temp directory"
-        )
-    if not local_path.is_file():
-        raise RuntimeError("Resolved CamoFox download is not a regular file")
-    actual_bytes = local_path.stat().st_size
-    if actual_bytes != reported_bytes:
-        raise RuntimeError(
-            f"CamoFox download size mismatch: api={reported_bytes} "
-            f"local={actual_bytes}"
-        )
-    return local_path
-
-
-def _download_one_via_camofox(url: str, video_dir: Path) -> dict:
-    identity = _tiktok_video_identity(url)
-    if not identity:
-        return {
-            "video_id": video_id_from_url(url),
-            "url": url,
-            "ok": False,
-            "source": "network",
-            "transport": "camofox_browser_disk_handoff_v52",
-            "media_file": None,
-            "info_file": None,
-            "validation": "invalid_tiktok_video_url",
-            "returncode": 1,
-            "diagnostic_tail": (
-                "CamoFox fallback rejected non-canonical TikTok video URL."
-            ),
-        }
-
-    handle, vid = identity
-    video_dir.mkdir(parents=True, exist_ok=True)
-    mp4 = video_dir / f"{vid}.mp4"
-    temp_path = video_dir / f".{vid}.camofox-fallback.tmp.mp4"
-    user_id = f"instagramresearch-tiktok-media-{os.getpid()}-{time.time_ns()}"
-    session_key = f"media-{vid}"
-    attempts: list[str] = []
-    success: dict[str, Any] | None = None
-    failure: Exception | None = None
-    cleanup_mode: str | None = None
-
-    with _CAMOFOX_FALLBACK_LOCK:
-        hard_deadline = (
-            time.monotonic() + CAMOFOX_FALLBACK_TOTAL_TIMEOUT_SECONDS
-        )
-        operation_deadline = (
-            hard_deadline - CAMOFOX_FALLBACK_CLEANUP_RESERVE_SECONDS
-        )
-        server: dict[str, Any] | None = None
-        try:
-            server = _ensure_fallback_server(deadline=operation_deadline)
-            _check_fallback_disk_floor(video_dir, server)
-            tab = _fallback_request_json(
-                server,
-                "POST",
-                "/tabs",
-                {
-                    "userId": user_id,
-                    "sessionKey": session_key,
-                    "url": url,
-                    "trace": False,
-                },
-                deadline=operation_deadline,
-                timeout_cap=30.0,
-            )
-            if not isinstance(tab, dict) or not tab.get("tabId"):
-                raise RuntimeError("CamoFox create-tab response missing tabId")
-            tab_id = str(tab["tabId"])
-            _sleep_with_deadline(operation_deadline, 4.0)
-
-            inspect_expression = r'''(async () => {
-              const v = document.querySelector('video');
-              if (v) { try { await v.play(); } catch {} }
-              await new Promise(r => setTimeout(r, 3500));
-              const canonical =
-                document.querySelector('link[rel="canonical"]')?.href ||
-                location.href;
-              const allowedHost = (hostname) =>
-                hostname === 'www.tiktok.com' ||
-                hostname.endsWith('.tiktok.com') ||
-                hostname.endsWith('.tiktokcdn-eu.com');
-              const resources = performance.getEntriesByType('resource')
-                .map(e => e.name)
-                .filter(n => {
-                  try {
-                    const u = new URL(n);
-                    return u.protocol === 'https:' &&
-                      allowedHost(u.hostname) &&
-                      (
-                        u.searchParams.get('mime_type') === 'video_mp4' ||
-                        /v\d+-webapp/i.test(u.hostname)
-                      );
-                  } catch { return false; }
-                })
-                .filter((n, i, a) => a.indexOf(n) === i);
-              return {
-                canonical,
-                candidateCount: resources.length,
-                video: v ? {
-                  readyState: v.readyState,
-                  duration: Number.isFinite(v.duration) ? v.duration : null,
-                  videoWidth: v.videoWidth,
-                  videoHeight: v.videoHeight
-                } : null
-              };
-            })()'''
-            inspected = _fallback_request_json(
-                server,
-                "POST",
-                f"/tabs/{urllib.parse.quote(tab_id)}/evaluate",
-                {"userId": user_id, "expression": inspect_expression},
-                deadline=operation_deadline,
-                timeout_cap=15.0,
-            )
-            state = (
-                inspected.get("result")
-                if isinstance(inspected, dict)
-                else None
-            )
-            if not isinstance(state, dict):
-                raise RuntimeError("CamoFox evaluate response missing result")
-
-            canonical = str(state.get("canonical") or "")
-            canonical_identity = _tiktok_video_identity(canonical)
-            if (
-                not canonical_identity
-                or canonical_identity[0].casefold() != handle.casefold()
-                or canonical_identity[1] != vid
-            ):
-                raise RuntimeError("CamoFox canonical identity mismatch")
-
-            video = (
-                state.get("video")
-                if isinstance(state.get("video"), dict)
-                else {}
-            )
-            if video.get("readyState") != 4:
-                raise RuntimeError(
-                    f"CamoFox video not ready: "
-                    f"readyState={video.get('readyState')}"
-                )
-            main_duration = video.get("duration")
-            if main_duration is None:
-                raise RuntimeError("CamoFox video duration unavailable")
-            main_duration = float(main_duration)
-
-            candidate_count = int(state.get("candidateCount") or 0)
-            if candidate_count <= 0:
-                raise RuntimeError(
-                    "CamoFox found no allowlisted TikTok MP4 candidates"
-                )
-
-            for candidate_index in range(candidate_count):
-                _remaining_timeout(operation_deadline)
-                _check_fallback_disk_floor(video_dir, server)
-                _clear_camofox_downloads(
-                    server,
-                    tab_id,
-                    user_id=user_id,
-                    deadline=operation_deadline,
-                )
-
-                request_budget_ms = max(
-                    1000,
-                    int(
-                        min(
-                            60.0,
-                            max(
-                                1.0,
-                                _remaining_timeout(operation_deadline) - 2.0,
-                            ),
-                        )
-                        * 1000
-                    ),
-                )
-                fetch_expression = r'''(async () => {
-                  const idx = __INDEX__;
-                  const expectedId = __EXPECTED_ID__;
-                  const maxBytes = __MAX_BYTES__;
-                  const requestTimeoutMs = __REQUEST_TIMEOUT_MS__;
-                  const allowedHost = (hostname) =>
-                    hostname === 'www.tiktok.com' ||
-                    hostname.endsWith('.tiktok.com') ||
-                    hostname.endsWith('.tiktokcdn-eu.com');
-                  const resources = performance.getEntriesByType('resource')
-                    .map(e => e.name)
-                    .filter(n => {
-                      try {
-                        const u = new URL(n);
-                        return u.protocol === 'https:' &&
-                          allowedHost(u.hostname) &&
-                          (
-                            u.searchParams.get('mime_type') === 'video_mp4' ||
-                            /v\d+-webapp/i.test(u.hostname)
-                          );
-                      } catch { return false; }
-                    })
-                    .filter((n, i, a) => a.indexOf(n) === i);
-                  const raw = resources[idx];
-                  if (!raw) {
-                    return { ok: false, error: 'candidate_missing' };
-                  }
-                  const rawUrl = new URL(raw);
-                  if (
-                    rawUrl.protocol !== 'https:' ||
-                    !allowedHost(rawUrl.hostname)
-                  ) {
-                    return {
-                      ok: false,
-                      error: 'candidate_host_rejected'
-                    };
-                  }
-
-                  const controller = new AbortController();
-                  const timer = setTimeout(
-                    () => controller.abort(),
-                    requestTimeoutMs
-                  );
-                  try {
-                    const response = await fetch(raw, {
-                      method: 'GET',
-                      credentials: 'include',
-                      cache: 'no-store',
-                      redirect: 'manual',
-                      signal: controller.signal
-                    });
-                    if (
-                      response.type === 'opaqueredirect' ||
-                      (
-                        response.status >= 300 &&
-                        response.status < 400
-                      )
-                    ) {
-                      controller.abort();
-                      return {
-                        ok: false,
-                        error: 'redirect_blocked'
-                      };
-                    }
-                    if (!response.ok) {
-                      return {
-                        ok: false,
-                        status: response.status
-                      };
-                    }
-                    const responseUrl = new URL(response.url || raw);
-                    if (
-                      responseUrl.protocol !== 'https:' ||
-                      !allowedHost(responseUrl.hostname)
-                    ) {
-                      controller.abort();
-                      return {
-                        ok: false,
-                        error: 'response_host_rejected'
-                      };
-                    }
-
-                    const contentLengthRaw =
-                      response.headers.get('content-length');
-                    const contentLength =
-                      contentLengthRaw === null
-                        ? null
-                        : Number(contentLengthRaw);
-                    if (
-                      Number.isFinite(contentLength) &&
-                      contentLength > maxBytes
-                    ) {
-                      controller.abort();
-                      return {
-                        ok: false,
-                        error: 'too_large_header',
-                        bytes: contentLength
-                      };
-                    }
-                    if (!response.body) {
-                      return {
-                        ok: false,
-                        error: 'missing_response_body'
-                      };
-                    }
-
-                    const reader = response.body.getReader();
-                    const chunks = [];
-                    let total = 0;
-                    while (true) {
-                      const part = await reader.read();
-                      if (part.done) break;
-                      if (!part.value) continue;
-                      total += part.value.byteLength;
-                      if (total > maxBytes) {
-                        try {
-                          await reader.cancel('max_bytes_exceeded');
-                        } catch {}
-                        controller.abort();
-                        return {
-                          ok: false,
-                          error: 'too_large_stream',
-                          bytes: total
-                        };
-                      }
-                      chunks.push(part.value);
-                    }
-                    if (total < 50000) {
-                      return {
-                        ok: false,
-                        error: 'too_small',
-                        bytes: total
-                      };
-                    }
-
-                    const blob = new Blob(chunks, {
-                      type:
-                        response.headers.get('content-type') ||
-                        'video/mp4'
-                    });
-                    const objectUrl = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = objectUrl;
-                    a.download = `${expectedId}-${idx + 1}.mp4`;
-                    a.style.display = 'none';
-                    document.body.appendChild(a);
-                    a.click();
-                    a.remove();
-                    setTimeout(
-                      () => URL.revokeObjectURL(objectUrl),
-                      5000
-                    );
-                    return {
-                      ok: true,
-                      status: response.status,
-                      bytes: total,
-                      downloadTriggered: true
-                    };
-                  } catch (err) {
-                    return {
-                      ok: false,
-                      error:
-                        `${err?.name || 'Error'}: ` +
-                        `${err?.message || String(err)}`
-                    };
-                  } finally {
-                    clearTimeout(timer);
-                  }
-                })()'''
-                fetch_expression = fetch_expression.replace(
-                    "__INDEX__", str(candidate_index)
-                )
-                fetch_expression = fetch_expression.replace(
-                    "__EXPECTED_ID__", json.dumps(vid)
-                )
-                fetch_expression = fetch_expression.replace(
-                    "__MAX_BYTES__",
-                    str(CAMOFOX_FALLBACK_MAX_MEDIA_BYTES),
-                )
-                fetch_expression = fetch_expression.replace(
-                    "__REQUEST_TIMEOUT_MS__",
-                    str(request_budget_ms),
-                )
-
-                triggered = _fallback_request_json(
-                    server,
-                    "POST",
-                    f"/tabs/{urllib.parse.quote(tab_id)}/evaluate",
-                    {"userId": user_id, "expression": fetch_expression},
-                    deadline=operation_deadline,
-                    timeout_cap=(request_budget_ms / 1000.0) + 2.0,
-                )
-                trigger_result = (
-                    triggered.get("result")
-                    if isinstance(triggered, dict)
-                    else None
-                )
-                if (
-                    not isinstance(trigger_result, dict)
-                    or not trigger_result.get("downloadTriggered")
-                ):
-                    reason = (
-                        trigger_result.get("error")
-                        if isinstance(trigger_result, dict)
-                        else "evaluate_failed"
-                    )
-                    attempts.append(
-                        f"candidate_{candidate_index + 1}:{reason}"
-                    )
-                    continue
-
-                expected_filename = f"{vid}-{candidate_index + 1}.mp4"
-                downloads: list[dict] = []
-                download_wait_deadline = min(
-                    operation_deadline,
-                    time.monotonic()
-                    + CAMOFOX_FALLBACK_DOWNLOAD_WAIT_SECONDS,
-                )
-                while time.monotonic() < download_wait_deadline:
-                    _sleep_with_deadline(
-                        download_wait_deadline,
-                        0.25,
-                    )
-                    downloads = _camofox_downloads(
-                        server,
-                        tab_id,
-                        user_id=user_id,
-                        consume=False,
-                        deadline=download_wait_deadline,
-                    )
-                    if downloads:
-                        break
-                if not downloads:
-                    attempts.append(
-                        f"candidate_{candidate_index + 1}:"
-                        "download_not_captured"
-                    )
-                    continue
-
-                matches = [
-                    row
-                    for row in downloads
-                    if isinstance(row, dict)
-                    and not row.get("failure")
-                    and row.get("suggestedFilename")
-                    == expected_filename
-                    and isinstance(row.get("id"), str)
-                    and isinstance(row.get("bytes"), int)
-                ]
-                if len(downloads) != 1 or len(matches) != 1:
-                    attempts.append(
-                        f"candidate_{candidate_index + 1}:"
-                        "download_record_not_bound"
-                    )
-                    _clear_camofox_downloads(
-                        server,
-                        tab_id,
-                        user_id=user_id,
-                        deadline=operation_deadline,
-                    )
-                    continue
-                item = matches[0]
-
-                try:
-                    captured_path = _camofox_local_download_path(
-                        item,
-                        temp_root=Path(server["tmp_dir"]),
-                        expected_filename=expected_filename,
-                    )
-                    valid, validation, duration = _bounded_local_media_stage(
-                        captured_path,
-                        temp_path,
-                        deadline=operation_deadline,
-                        cleanup_deadline=hard_deadline,
-                    )
-                finally:
-                    _clear_camofox_downloads(
-                        server,
-                        tab_id,
-                        user_id=user_id,
-                        deadline=operation_deadline,
-                    )
-
-                if not valid or duration is None:
-                    temp_path.unlink(missing_ok=True)
-                    attempts.append(
-                        f"candidate_{candidate_index + 1}:{validation}"
-                    )
-                    continue
-
-                delta = abs(duration - main_duration)
-                if delta > CAMOFOX_FALLBACK_DURATION_TOLERANCE_S:
-                    temp_path.unlink(missing_ok=True)
-                    attempts.append(
-                        f"candidate_{candidate_index + 1}:"
-                        f"duration_mismatch:{delta:.3f}s"
-                    )
-                    continue
-
-                _remaining_timeout(operation_deadline)
-                os.replace(temp_path, mp4)
-                success = {
-                    "video_id": vid,
-                    "url": url,
-                    "ok": True,
-                    "source": "network",
-                    "transport": "camofox_browser_disk_handoff_v52",
-                    "media_file": mp4,
-                    "info_file": None,
-                    "validation": validation,
-                    "returncode": 0,
-                    "diagnostic_tail": (
-                        f"CamoFox fallback accepted candidate "
-                        f"{candidate_index + 1}/{candidate_count}; "
-                        f"duration_delta={delta:.3f}s"
-                    ),
-                    "camofox_source_commit":
-                        CAMOFOX_FALLBACK_SOURCE_COMMIT,
-                }
-                break
-
-            if success is None:
-                raise RuntimeError(
-                    "No CamoFox candidate passed media and "
-                    "duration validation: "
-                    + "; ".join(attempts[-8:])
-                )
-        except Exception as exc:
-            failure = exc
-            if isinstance(exc, TimeoutError):
-                _stop_fallback_server(
-                    force=True,
-                    deadline=hard_deadline,
-                )
-        finally:
-            temp_path.unlink(missing_ok=True)
-            if server is not None:
-                try:
-                    cleanup_mode = _cleanup_fallback_session(
-                        server,
-                        user_id=user_id,
-                        deadline=hard_deadline,
-                    )
-                except Exception as cleanup_exc:
-                    failure = cleanup_exc
-                    _stop_fallback_server(
-                        force=True,
-                        deadline=hard_deadline,
-                    )
-
-        if failure is None and success is not None:
-            success["cleanup_mode"] = cleanup_mode
-            return success
-
-        exc = failure or RuntimeError(
-            "CamoFox fallback failed without result"
-        )
-        return {
-            "video_id": vid,
-            "url": url,
-            "ok": False,
-            "source": "network",
-            "transport": "camofox_browser_disk_handoff_v52",
-            "media_file": mp4 if mp4.exists() else None,
-            "info_file": None,
-            "validation": "failed_before_acceptance" if mp4.exists() else "missing",
-            "returncode": 1,
-            "diagnostic_tail": (
-                f"CamoFox TikTok fallback failed: "
-                f"{type(exc).__name__}: {exc}"
-            )[-2500:],
-            "cleanup_mode": cleanup_mode,
-            "camofox_source_commit":
-                CAMOFOX_FALLBACK_SOURCE_COMMIT,
-        }
 
 
 def download_one(url: str, video_dir: Path) -> dict:
@@ -1821,18 +1124,6 @@ def download_one(url: str, video_dir: Path) -> dict:
                 "returncode": 0,
                 "diagnostic_tail": detail[-2500:],
             }
-
-        if _should_use_camofox_fallback(url, detail):
-            fallback = _download_one_via_camofox(url, video_dir)
-            fallback["yt_dlp_returncode"] = result.returncode
-            fallback["yt_dlp_diagnostic_tail"] = detail[-2500:]
-            if fallback.get("ok"):
-                return fallback
-            fallback["diagnostic_tail"] = (
-                "yt-dlp failed with verified TikTok webpage response error. "
-                f"{fallback.get('diagnostic_tail') or ''}"
-            )[-2500:]
-            return fallback
 
         return {
             "video_id": vid,
@@ -2344,6 +1635,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 4 and sys.argv[1] == "--_b042-stage-media":
-        raise SystemExit(_run_local_media_stage_cli(Path(sys.argv[2]), Path(sys.argv[3])))
     raise SystemExit(main())

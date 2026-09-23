@@ -1,0 +1,18 @@
+{
+  "id": "influencerresearch-camofox",
+  "name": "InfluencerResearch Camofox",
+  "version": "1.13.1",
+  "newPageTimeoutMs": 10000,
+  "plugins": {
+    "youtube": {
+      "enabled": false
+    },
+    "persistence": {
+      "enabled": true
+    },
+    "vnc": {
+      "enabled": false,
+      "resolution": "1920x1080"
+    }
+  }
+}
