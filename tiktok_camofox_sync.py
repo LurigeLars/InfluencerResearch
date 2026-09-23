@@ -397,24 +397,6 @@ def published_iso(info: dict) -> str | None:
     return None
 
 
-def adopt_poc_file(root: Path, video_id: str, video_dir: Path) -> tuple[Path | None, Path | None]:
-    poc_dir = root / "output" / "nicholas_crown" / "tiktok" / "camofox_individual"
-    src_mp4 = poc_dir / f"{video_id}.mp4"
-    src_info = poc_dir / f"{video_id}.info.json"
-    if not src_mp4.exists():
-        return None, None
-
-    video_dir.mkdir(parents=True, exist_ok=True)
-    dst_mp4 = video_dir / src_mp4.name
-    dst_info = video_dir / src_info.name
-
-    if not dst_mp4.exists():
-        shutil.copy2(src_mp4, dst_mp4)
-    if src_info.exists() and not dst_info.exists():
-        shutil.copy2(src_info, dst_info)
-    return dst_mp4, dst_info if dst_info.exists() else None
-
-
 def _git_blob_sha1(path: Path) -> str:
     raw = path.read_bytes()
     prefix = f"blob {len(raw)}\0".encode("ascii")
@@ -1486,31 +1468,14 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
     model_holder: dict[str, Any] = {"model": None}
     completed = []
     failures = []
-    reused_poc = 0
     downloaded_network = 0
 
     for url in candidates:
         vid = video_id_from_url(url)
 
-        adopted_mp4, adopted_info = adopt_poc_file(root, vid, video_dir)
-        if adopted_mp4:
-            valid, validation = validate_media(adopted_mp4)
-            download = {
-                "video_id": vid,
-                "url": url,
-                "ok": valid,
-                "source": "poc_reuse",
-                "media_file": adopted_mp4,
-                "info_file": adopted_info,
-                "validation": validation,
-                "returncode": 0 if valid else 1,
-                "diagnostic_tail": "",
-            }
-            reused_poc += 1
-        else:
-            download = download_one(url, video_dir)
-            if download.get("source") == "network" and download.get("ok"):
-                downloaded_network += 1
+        download = download_one(url, video_dir)
+        if download.get("source") == "network" and download.get("ok"):
+            downloaded_network += 1
 
         if not download.get("ok") or not download.get("media_file"):
             failures.append({
@@ -1573,7 +1538,6 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
         "candidate_new": len(candidates),
         "max_new_downloads_effective": max_new_downloads,
         "completed_new": len(completed),
-        "reused_poc_files": reused_poc,
         "downloaded_network": downloaded_network,
         "failures": failures,
         "completed": completed,

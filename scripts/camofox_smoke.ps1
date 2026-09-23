@@ -5,7 +5,7 @@ $Python = Join-Path $env:LOCALAPPDATA 'InstagramResearch\venv\Scripts\python.exe
 $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $RuntimePackage = Join-Path $RepoRoot 'runtime\camofox\package.json'
 $ContainerScript = Join-Path $RepoRoot 'scripts\camofox_container.ps1'
-$PocScript = Join-Path $RepoRoot 'camofox_tiktok_poc.py'
+$TikTokSmokeScript = Join-Path $RepoRoot 'tiktok_camofox_smoke.py'
 $ContainerName = 'influencerresearch-camofox'
 
 if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) {
@@ -41,7 +41,8 @@ try {
         'test_camofox_container_config',
         'test_camofox_container_runtime',
         'test_camofox_manifest_validation',
-        'test_tiktok_media_transport'
+        'test_tiktok_media_transport',
+        'test_smoke_production_separation'
     )
     & $Python -m unittest -v @tests
     if ($LASTEXITCODE -ne 0) { throw 'Camofox unit tests failed.' }
@@ -71,7 +72,7 @@ try {
 
     Write-Host ''
     Write-Host '=== TIKTOK END-TO-END ==='
-    & $Python $PocScript
+    & $Python $TikTokSmokeScript
     if ($LASTEXITCODE -ne 0) { throw 'TikTok/Camofox smoke failed.' }
 
     Write-Host ''
