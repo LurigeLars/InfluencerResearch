@@ -12,6 +12,7 @@ import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from playwright.sync_api import sync_playwright
 
@@ -19,6 +20,18 @@ from playwright.sync_api import sync_playwright
 APP_VERSION = "0.4.4"
 STORY_URL_RE = re.compile(r"/stories/(?P<user>[^/]+)/(?P<id>\d+)/?")
 HIGHLIGHT_URL_RE = re.compile(r"/stories/highlights/(?P<id>\d+)/?")
+STRICT_STORY_PATH_RE = re.compile(r"^/stories/[A-Za-z0-9._-]{1,64}/\d+/?$")
+STRICT_HIGHLIGHT_PATH_RE = re.compile(r"^/stories/highlights/\d+/?$")
+
+
+def canonical_instagram_ephemeral_url(value: str) -> str:
+    parsed = urlsplit(str(value or "").strip())
+    host = (parsed.hostname or "").casefold().rstrip(".")
+    if parsed.scheme != "https" or not (host == "instagram.com" or host.endswith(".instagram.com")):
+        raise ValueError("Invalid Instagram story/highlight host")
+    if not (STRICT_STORY_PATH_RE.fullmatch(parsed.path) or STRICT_HIGHLIGHT_PATH_RE.fullmatch(parsed.path)):
+        raise ValueError("Invalid Instagram story/highlight path")
+    return f"https://www.instagram.com{parsed.path}"
 
 
 def utc_now() -> str:
@@ -421,6 +434,7 @@ def capture_story_frames(
 
 
 def run_ytdlp(context, root: Path, creator: str, source_type: str, source_url: str) -> dict:
+    source_url = canonical_instagram_ephemeral_url(source_url)
     source_dir = "stories" if source_type == "STORY" else "highlights"
     video_dir = root / "output" / creator / source_dir / "videos"
     video_dir.mkdir(parents=True, exist_ok=True)
@@ -438,9 +452,12 @@ def run_ytdlp(context, root: Path, creator: str, source_type: str, source_url: s
         "--format", "b[ext=mp4]/b",
         "--output", str(video_dir / "%(id)s.%(ext)s"),
         "--print", "after_move:filepath",
+        "--",
         source_url,
     ]
     try:
+        # URL is strict-canonical Instagram and '--' terminates yt-dlp option parsing.
+        # codeql[py/command-line-injection]
         result = subprocess.run(
             cmd,
             capture_output=True,

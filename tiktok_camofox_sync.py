@@ -346,8 +346,22 @@ def collect_video_urls(
     }
 
 
+TIKTOK_VIDEO_URL_RE = re.compile(
+    r"^https://(?:www\.)?tiktok\.com/@(?P<handle>[A-Za-z0-9._-]{1,64})/video/(?P<id>\d+)(?:[?#].*)?$",
+    re.I,
+)
+
+
+def canonical_tiktok_video_url(url: str) -> str:
+    value = str(url or "").strip()
+    match = TIKTOK_VIDEO_URL_RE.fullmatch(value)
+    if not match:
+        raise ValueError("Invalid TikTok video URL")
+    return f"https://www.tiktok.com/@{match.group('handle')}/video/{match.group('id')}"
+
+
 def video_id_from_url(url: str) -> str:
-    return url.rstrip("/").split("/")[-1]
+    return canonical_tiktok_video_url(url).rsplit("/", 1)[-1]
 
 
 def validate_media(path: Path) -> tuple[bool, str]:
@@ -1078,6 +1092,7 @@ def _safe_local_worker_env() -> dict[str, str]:
 
 
 def download_one(url: str, video_dir: Path) -> dict:
+    url = canonical_tiktok_video_url(url)
     vid = video_id_from_url(url)
     video_dir.mkdir(parents=True, exist_ok=True)
     mp4 = video_dir / f"{vid}.mp4"
@@ -1105,9 +1120,12 @@ def download_one(url: str, video_dir: Path) -> dict:
         "--no-overwrites",
         "--format", "b[ext=mp4]/b",
         "--output", str(video_dir / "%(id)s.%(ext)s"),
+        "--",
         url,
     ]
     try:
+        # URL is strict-canonical TikTok and '--' terminates yt-dlp option parsing.
+        # codeql[py/command-line-injection]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
         valid, validation = validate_media(mp4)
         detail = (result.stderr or result.stdout or "").strip()
