@@ -807,6 +807,28 @@ def acquire_single_instance_lock() -> object:
     return fh
 
 
+def _windows_system_directory() -> Path:
+    if os.name != "nt":
+        raise RuntimeError("Windows system directory requested on non-Windows platform.")
+
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    get_system_directory = kernel32.GetSystemDirectoryW
+    get_system_directory.argtypes = [wintypes.LPWSTR, wintypes.UINT]
+    get_system_directory.restype = wintypes.UINT
+
+    buffer = ctypes.create_unicode_buffer(32768)
+    length = int(get_system_directory(buffer, len(buffer)))
+    if length == 0:
+        err = ctypes.get_last_error()
+        raise OSError(err, "GetSystemDirectoryW failed")
+    if length >= len(buffer):
+        raise RuntimeError("Windows system directory path exceeds fixed buffer.")
+    return Path(buffer.value)
+
+
 class _WindowsLifetimeJob:
     """Bind this bridge process and descendants to a kill-on-root-exit Job Object."""
 
@@ -952,10 +974,7 @@ class Bridge:
             raise RuntimeError(f"Reviewed venv child runtime is unavailable: {self.python}")
         self.taskkill = None
         if os.name == "nt":
-            system_root = os.environ.get("SystemRoot")
-            if not system_root:
-                raise RuntimeError("SystemRoot is missing; refusing nondeterministic taskkill resolution.")
-            self.taskkill = Path(system_root) / "System32" / "taskkill.exe"
+            self.taskkill = _windows_system_directory() / "taskkill.exe"
         self.lifetime_job = _WindowsLifetimeJob()
 
     def log(self, msg: str):
@@ -1382,9 +1401,8 @@ class Bridge:
             if os.name == "nt":
                 if self.taskkill is None or not self.taskkill.is_file():
                     raise RuntimeError(f"Reviewed taskkill path is unavailable: {self.taskkill}")
-                # taskkill is a reviewed fixed path and pid is the numeric PID of self.child.
+                # taskkill comes from GetSystemDirectoryW and pid is the numeric PID of self.child.
                 completed = subprocess.run(
-                    # codeql[py/command-line-injection]
                     [str(self.taskkill), "/PID", str(int(pid)), "/T", "/F"],
                     capture_output=True,
                     text=True,
