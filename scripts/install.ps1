@@ -27,7 +27,7 @@ function Invoke-Checked {
     Write-InstallLog ("RUN " + $FilePath + " " + ($ArgumentList -join " "))
     & $FilePath @ArgumentList *>> $Log
     if ($LASTEXITCODE -ne 0) {
-        throw "Command failed with exit code $LASTEXITCODE: $FilePath $($ArgumentList -join ' ')"
+        throw "Command failed with exit code ${LASTEXITCODE}: $FilePath $($ArgumentList -join ' ')"
     }
 }
 
