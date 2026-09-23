@@ -12,7 +12,7 @@ class CamofoxContainerConfigTests(unittest.TestCase):
     def _env(self, root: Path) -> dict[str, str]:
         return {"LOCALAPPDATA": str(root)}
 
-    def test_loads_fixed_loopback_runtime_and_transfer_path(self) -> None:
+    def test_loads_fixed_loopback_runtime_without_host_transfer_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             local = Path(tmp)
             cfg = cc.config_path(self._env(local))
@@ -27,11 +27,10 @@ class CamofoxContainerConfigTests(unittest.TestCase):
             )
             result = cc.load_config(self._env(local))
             self.assertEqual(result["base_url"], "http://127.0.0.1:9377")
-            self.assertEqual(
-                result["transfer_dir"],
-                local.resolve() / "InfluencerResearch" / "camofox-transfer",
+            self.assertNotIn("transfer_dir", result)
+            self.assertFalse(
+                (local.resolve() / "InfluencerResearch" / "camofox-transfer").exists()
             )
-            self.assertTrue(Path(result["transfer_dir"]).is_dir())
 
     def test_rejects_short_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
