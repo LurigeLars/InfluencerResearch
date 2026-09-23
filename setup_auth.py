@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -10,9 +11,27 @@ from playwright.sync_api import sync_playwright
 EXPECTED_USERNAME = os.environ.get("INFLUENCER_RESEARCH_INSTAGRAM_USERNAME", "").strip().lstrip("@")
 
 
+def host_runtime_dir() -> Path:
+    if os.name == "nt":
+        return Path.home() / "AppData" / "Local" / "InstagramResearch"
+    return Path.home() / ".local" / "share" / "InstagramResearch"
+
+
 def chrome_profile_dir() -> Path:
-    local = Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
-    return local / "InstagramResearch" / "chrome-profile"
+    return host_runtime_dir() / "chrome-profile"
+
+
+def cookie_export_path() -> Path:
+    return host_runtime_dir() / "secrets" / "instagram_cookies.json"
+
+
+def write_cookie_export(cookies: list[dict]) -> Path:
+    path = cookie_export_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(cookies, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+    return path
 
 
 def main() -> int:
@@ -56,10 +75,12 @@ def main() -> int:
                 print("Make sure the account is logged in in the opened Chrome window, then run this file again.")
                 return 2
 
+            cookie_path = write_cookie_export(cookies)
             print()
             print("Authentication verified.")
             print(f"Dedicated InstagramResearch Chrome state is stored locally at: {profile_dir}")
-            print("No password or browser cookie database is copied to Google Drive.")
+            print(f"Portable session-cookie export written locally at: {cookie_path}")
+            print("The cookie export is sensitive and must never be committed or copied to Drive.")
             return 0
         finally:
             context.close()

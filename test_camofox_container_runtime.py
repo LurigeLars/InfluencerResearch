@@ -43,9 +43,13 @@ class CamofoxContainerRuntimeTests(unittest.TestCase):
         self.assertIn("impit-linux-x64-gnu':'0.14.5", dockerfile)
         self.assertIn("require('impit')", dockerfile)
 
-    def test_compose_is_loopback_only_and_hardened(self) -> None:
-        text = (BASE / "compose.camofox.yaml").read_text(encoding="utf-8")
-        self.assertIn('"127.0.0.1:9377:9377"', text)
+    def test_compose_is_internal_only_and_hardened(self) -> None:
+        text = (BASE / "compose.yaml").read_text(encoding="utf-8")
+        self.assertIn("  camofox:", text)
+        self.assertIn('INFLUENCER_RESEARCH_CONTAINER: "1"', text)
+        self.assertIn('expose:', text)
+        self.assertIn('- "9377"', text)
+        self.assertNotIn("127.0.0.1:9377:9377", text)
         self.assertIn("read_only: true", text)
         self.assertIn("no-new-privileges:true", text)
         self.assertIn("cap_drop:", text)

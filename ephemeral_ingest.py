@@ -53,24 +53,67 @@ def atomic_write_json(path: Path, data: dict) -> None:
     os.replace(tmp, path)
 
 
+def runtime_dir() -> Path:
+    if os.environ.get("INFLUENCER_RESEARCH_CONTAINER", "").strip() == "1":
+        return Path("/runtime/influencerresearch")
+    if os.name == "nt":
+        return Path.home() / "AppData" / "Local" / "InstagramResearch"
+    return Path.home() / ".local" / "share" / "InstagramResearch"
+
+
 def profile_dir() -> Path:
-    local = Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
-    return local / "InstagramResearch" / "chrome-profile"
+    return runtime_dir() / "chrome-profile"
 
 
 def secret_dir() -> Path:
-    local = Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
-    d = local / "InstagramResearch" / "secrets"
+    d = runtime_dir() / "secrets"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def instagram_cookie_path() -> Path:
+    return secret_dir() / "instagram_cookies.json"
+
+
+def load_instagram_cookies(context) -> None:
+    path = instagram_cookie_path()
+    if not path.is_file():
+        return
+    cookies = load_json(path, [])
+    if not isinstance(cookies, list) or not any(
+        isinstance(cookie, dict) and cookie.get("name") == "sessionid"
+        for cookie in cookies
+    ):
+        raise RuntimeError("Instagram cookie bootstrap is missing a sessionid cookie.")
+    context.add_cookies(cookies)
+
+
+def launch_instagram_context(playwright):
+    container_mode = os.environ.get("INFLUENCER_RESEARCH_CONTAINER", "").strip() == "1"
+    kwargs = {
+        "user_data_dir": str(profile_dir()),
+        "headless": container_mode,
+    }
+    if container_mode:
+        kwargs["viewport"] = {"width": 1440, "height": 1200}
+    else:
+        kwargs.update({
+            "channel": "chrome",
+            "args": ["--start-maximized"],
+            "viewport": None,
+        })
+    context = playwright.chromium.launch_persistent_context(**kwargs)
+    if container_mode:
+        load_instagram_cookies(context)
+    return context
 
 
 def verify_logged_in(context) -> None:
     cookies = context.cookies(["https://www.instagram.com/"])
     if "sessionid" not in {c.get("name", "") for c in cookies}:
         raise RuntimeError(
-            "Dedicated InstagramResearch Chrome profile is not authenticated. "
-            "Run scripts\\authenticate_instagram.ps1 first."
+            "Instagram session is not authenticated. Run scripts\\authenticate_instagram.ps1 "
+            "and then scripts\\runtime.ps1 -Action ImportInstagramAuth."
         )
 
 
@@ -635,13 +678,7 @@ def run_one(
         }
 
     with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=str(profile_dir()),
-            channel="chrome",
-            headless=False,
-            args=["--start-maximized"],
-            viewport=None,
-        )
+        context = launch_instagram_context(p)
         try:
             verify_logged_in(context)
             page = context.pages[0] if context.pages else context.new_page()
