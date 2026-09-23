@@ -1,7 +1,7 @@
 {
   "id": "influencerresearch-camofox",
   "name": "InfluencerResearch Camofox",
-  "version": "1.13.1",
+  "version": "1.17.0",
   "newPageTimeoutMs": 10000,
   "plugins": {
     "youtube": {

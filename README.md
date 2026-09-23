@@ -26,7 +26,7 @@ pwsh -NoProfile -File scripts\camofox_container.ps1 -Action Up
 
 Camofox is bound only to host loopback on `127.0.0.1:9377`. Its local access/admin keys live under `%LOCALAPPDATA%\InfluencerResearch` and are not stored in the repository. The container has no host bind mount and no access to the normal Windows user profile, browser profiles, Drive folders, or unrelated project data. TikTok profile discovery/browser metadata uses Camofox; individual TikTok media is downloaded by yt-dlp.
 
-The Camofox dependency tree is tracked in `runtime/camofox/package.json` and `runtime/camofox/package-lock.json`. The Docker image uses the reviewed Camofox Browser `1.13.1`, `camoufox-js` `0.11.5`, Node `22.23.2`, and Camoufox `152.0.4` / `beta.28` baseline.
+The Camofox dependency tree is tracked in `runtime/camofox/package.json` and `runtime/camofox/package-lock.json`. The Docker image uses the reviewed Camofox Browser `1.17.0`, `camoufox-js` `0.11.5`, Node `22.23.2`, and Camoufox `152.0.4` / `beta.28` baseline.
 
 For Instagram authentication, set:
 
