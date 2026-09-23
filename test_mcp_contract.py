@@ -60,5 +60,18 @@ class MCPContractTests(unittest.TestCase):
         self.assertIn("CAMOFOX_ADMIN_KEY", source)
 
 
+    def test_legacy_ingress_artifacts_are_retired(self) -> None:
+        for path in (
+            "research_request_bridge.py",
+            "creator_registration.py",
+            "compose.camofox.yaml",
+            "scripts/research_bridge.ps1",
+            "scripts/camofox_container.ps1",
+            "scripts/camofox_smoke.ps1",
+            "scripts/install.ps1",
+        ):
+            self.assertFalse((BASE / path).exists(), path)
+
+
 if __name__ == "__main__":
     unittest.main()
