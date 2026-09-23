@@ -8,13 +8,10 @@ services:
     container_name: influencerresearch-mcp
     user: "10001:10001"
     environment:
-      INFLUENCER_RESEARCH_ROOT: /research
-      INFLUENCER_RESEARCH_RUNTIME_DIR: /runtime/influencerresearch
       INFLUENCER_RESEARCH_CONTAINER: "1"
       INFLUENCER_RESEARCH_MCP_PORT: "8770"
       INFLUENCER_RESEARCH_ALLOWED_HOSTS: "127.0.0.1:*,localhost:*,influencerresearch:*"
       INFLUENCER_RESEARCH_CAMOFOX_MODE: container
-      INFLUENCER_RESEARCH_CAMOFOX_URL: http://camofox:9377
       CAMOFOX_ACCESS_KEY: ${CAMOFOX_ACCESS_KEY:?CAMOFOX_ACCESS_KEY is required}
       CAMOFOX_ADMIN_KEY: ${CAMOFOX_ADMIN_KEY:?CAMOFOX_ADMIN_KEY is required}
       XDG_CACHE_HOME: /runtime/influencerresearch/cache
