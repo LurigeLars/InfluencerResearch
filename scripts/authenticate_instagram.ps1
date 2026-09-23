@@ -12,4 +12,10 @@ if (-not (Test-Path -LiteralPath $Setup)) {
 }
 
 & $Python $Setup
-exit $LASTEXITCODE
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+Write-Host ""
+Write-Host "Instagram session export created."
+Write-Host "If the Docker runtime is already running, import it with:"
+Write-Host "  pwsh -NoProfile -File .\scripts\runtime.ps1 -Action ImportInstagramAuth"
+exit 0

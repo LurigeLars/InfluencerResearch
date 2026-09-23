@@ -10,6 +10,7 @@ services:
     environment:
       INFLUENCER_RESEARCH_ROOT: /research
       INFLUENCER_RESEARCH_RUNTIME_DIR: /runtime/influencerresearch
+      INFLUENCER_RESEARCH_CONTAINER: "1"
       INFLUENCER_RESEARCH_MCP_PORT: "8770"
       INFLUENCER_RESEARCH_ALLOWED_HOSTS: "127.0.0.1:*,localhost:*,influencerresearch:*"
       INFLUENCER_RESEARCH_CAMOFOX_MODE: container

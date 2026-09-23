@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("Up", "Down", "Status", "Smoke")]
+    [ValidateSet("Up", "Down", "Status", "Smoke", "ImportInstagramAuth")]
     [string]$Action = "Up"
 )
 
@@ -52,14 +52,45 @@ function Compose([string[]]$Args) {
     if ($LASTEXITCODE -ne 0) { throw "docker compose failed with exit code $LASTEXITCODE" }
 }
 
+function Import-InstagramAuth {
+    $cookiePath = Join-Path $env:LOCALAPPDATA "InstagramResearch\secrets\instagram_cookies.json"
+    if (-not (Test-Path -LiteralPath $cookiePath -PathType Leaf)) {
+        throw "Instagram cookie export is missing. Run scripts\authenticate_instagram.ps1 first."
+    }
+
+    $cookies = @(Get-Content -LiteralPath $cookiePath -Raw | ConvertFrom-Json)
+    if (-not ($cookies | Where-Object { [string]$_.name -eq "sessionid" })) {
+        throw "Instagram cookie export does not contain sessionid."
+    }
+
+    $serviceId = (& docker compose -f $Compose ps -q influencerresearch).Trim()
+    if (-not $serviceId) {
+        throw "InfluencerResearch container is not running. Run scripts\runtime.ps1 -Action Up first."
+    }
+
+    Get-Content -LiteralPath $cookiePath -Raw |
+        & docker compose -f $Compose exec -T influencerresearch sh -c 'umask 077; mkdir -p /runtime/influencerresearch/secrets; cat > /runtime/influencerresearch/secrets/instagram_cookies.json'
+    if ($LASTEXITCODE -ne 0) { throw "Instagram auth import failed." }
+
+    & docker compose -f $Compose exec -T influencerresearch python -c 'import json; p="/runtime/influencerresearch/secrets/instagram_cookies.json"; c=json.load(open(p,encoding="utf-8")); assert any(x.get("name")=="sessionid" for x in c); print("INSTAGRAM_AUTH_IMPORTED")'
+    if ($LASTEXITCODE -ne 0) { throw "Instagram auth verification failed." }
+}
+
 switch ($Action) {
     "Up" {
         Compose @("up", "-d", "--build")
         Write-Host "INFLUENCERRESEARCH_MCP=http://127.0.0.1:$($config.mcp_port)/mcp"
         Write-Host "Camofox is internal-only at http://camofox:9377"
+        $cookiePath = Join-Path $env:LOCALAPPDATA "InstagramResearch\secrets\instagram_cookies.json"
+        if (Test-Path -LiteralPath $cookiePath -PathType Leaf) {
+            Import-InstagramAuth
+        }
     }
     "Down" {
         Compose @("down")
+    }
+    "ImportInstagramAuth" {
+        Import-InstagramAuth
     }
     "Status" {
         Compose @("ps")
