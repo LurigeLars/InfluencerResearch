@@ -15,6 +15,7 @@ class SmokeProductionSeparationTests(unittest.TestCase):
             "reused_poc_files",
             "camofox_individual",
             "camofox_smoke",
+            "camofox_discovered_urls.json",
         ):
             self.assertNotIn(forbidden, source)
 
