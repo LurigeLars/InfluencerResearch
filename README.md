@@ -93,8 +93,9 @@ $py="$env:LOCALAPPDATA\InstagramResearch\venv\Scripts\python.exe"
 & $py .\influencer_evaluation.py --root .. --profile-url "https://example.com/profile" --sample-size 20
 
 # Research bridge
-pwsh -NoProfile -File .\12_install_research_bridge.ps1 -Mode Install
-pwsh -NoProfile -File .\12_install_research_bridge.ps1 -Mode Uninstall
+pwsh -NoProfile -File .\scripts\research_bridge.ps1 -Mode Install
+pwsh -NoProfile -File .\scripts\research_bridge.ps1 -Mode Status
+pwsh -NoProfile -File .\scripts\research_bridge.ps1 -Mode Uninstall
 ```
 
 The repository intentionally contains no legacy `.bat` entrypoints.
