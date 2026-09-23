@@ -294,7 +294,7 @@ def register_creator(root: Path, req: dict) -> dict:
         "request_id": str(req.get("request_id") or ""),
         "issued_by": str(req.get("issued_by") or "UNKNOWN")[:100],
         "registered_at": now_iso(),
-        "registration_path": "SAFE_BRIDGE_REGISTER_CREATOR",
+        "registration_path": "MCP_REGISTER_CREATOR",
     }
     merged = {**registry, "updated_at": now_iso(), "creators": {**registry["creators"], key: profile}}
     merged = validate_registry(merged)

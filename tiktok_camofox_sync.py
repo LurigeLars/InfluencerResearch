@@ -98,10 +98,19 @@ def load_json(path: Path, default: Any = None) -> Any:
     raise FileNotFoundError(path)
 
 
+def _runtime_dir() -> Path:
+    if os.environ.get("INFLUENCER_RESEARCH_CONTAINER", "").strip() == "1":
+        path = Path("/runtime/influencerresearch")
+    elif os.name == "nt":
+        path = Path.home() / "AppData" / "Local" / "InstagramResearch"
+    else:
+        path = Path.home() / ".local" / "share" / "InstagramResearch"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def _tiktok_run_lock_path() -> Path:
-    local = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "InstagramResearch"
-    local.mkdir(parents=True, exist_ok=True)
-    return local / "tiktok_runtime_v1.lock"
+    return _runtime_dir() / "tiktok_runtime_v1.lock"
 
 
 def _lock_file_nonblocking(handle: Any) -> None:
@@ -207,7 +216,7 @@ def _server_public_status(server: dict[str, Any], *, started: bool) -> dict[str,
         "note": "docker_container" if runtime_mode == "container" else "constrained_process_owned",
         "runtime_mode": runtime_mode,
         "port": int(server["port"]),
-        "bind_host": "127.0.0.1",
+        "bind_host": urllib.parse.urlparse(str(server["base_url"])).hostname,
         "access_key_required": True,
         "source_commit": CAMOFOX_FALLBACK_SOURCE_COMMIT,
     }
@@ -902,7 +911,7 @@ def _ensure_container_camofox_server(*, deadline: float) -> dict[str, Any]:
         "profile_dir": None,
         "cookies_dir": None,
         "base_url": str(cfg["base_url"]),
-        "port": 9377,
+        "port": int(urllib.parse.urlparse(str(cfg["base_url"])).port or 9377),
         "access_key": str(cfg["access_key"]),
         "admin_key": str(cfg["admin_key"]),
         "log_handle": None,
@@ -916,10 +925,7 @@ def _ensure_container_camofox_server(*, deadline: float) -> dict[str, Any]:
     }
 
     if not _fallback_health(server, deadline=deadline):
-        raise RuntimeError(
-            "Camofox container is not healthy on 127.0.0.1:9377. Run "
-            "pwsh -NoProfile -File scripts\\camofox_container.ps1 -Action Up"
-        )
+        raise RuntimeError(f"Camofox service is not healthy at {server['base_url']}")
 
     unauth = urllib.request.Request(
         f"{server['base_url']}/tabs?userId=container-auth-probe",
