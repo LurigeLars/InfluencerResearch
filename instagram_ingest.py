@@ -53,8 +53,9 @@ def safe_creator(handle: str) -> str:
 def runtime_dir() -> Path:
     if os.environ.get("INFLUENCER_RESEARCH_CONTAINER", "").strip() == "1":
         return Path("/runtime/influencerresearch")
-    local = Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
-    return local / "InstagramResearch"
+    if os.name == "nt":
+        return Path.home() / "AppData" / "Local" / "InstagramResearch"
+    return Path.home() / ".local" / "share" / "InstagramResearch"
 
 
 def profile_dir() -> Path:

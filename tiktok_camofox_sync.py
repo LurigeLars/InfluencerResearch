@@ -101,8 +101,10 @@ def load_json(path: Path, default: Any = None) -> Any:
 def _runtime_dir() -> Path:
     if os.environ.get("INFLUENCER_RESEARCH_CONTAINER", "").strip() == "1":
         path = Path("/runtime/influencerresearch")
+    elif os.name == "nt":
+        path = Path.home() / "AppData" / "Local" / "InstagramResearch"
     else:
-        path = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "InstagramResearch"
+        path = Path.home() / ".local" / "share" / "InstagramResearch"
     path.mkdir(parents=True, exist_ok=True)
     return path
 

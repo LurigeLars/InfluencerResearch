@@ -23,10 +23,11 @@ from creator_registry import get_creator, load_registry, register_creator
 
 
 SERVER_NAME = "InfluencerResearch"
-ROOT = Path(os.environ.get("INFLUENCER_RESEARCH_ROOT", "/research")).resolve()
+ROOT = Path("/research")
 APP_DIR = Path(__file__).resolve().parent
-STATE_DIR = ROOT / "state"
-JOB_STATE_PATH = STATE_DIR / "mcp_job_status.json"
+STATE_DIR = Path("/research/state")
+JOB_STATE_PATH = Path("/research/state/mcp_job_status.json")
+JOB_REQUEST_PATH = Path("/research/state/mcp_job_request.json")
 MCP_PORT = int(os.environ.get("INFLUENCER_RESEARCH_MCP_PORT", "8770"))
 
 
@@ -93,9 +94,9 @@ class CreatorSource(BaseModel):
 
 class JobManager:
     STATUS_FILES = {
-        "creator_evaluate": STATE_DIR / "creator_evaluation_status.json",
-        "creator_monitor": STATE_DIR / "creator_monitor_status.json",
-        "creator_recent_check": STATE_DIR / "creator_recent_check_status.json",
+        "creator_evaluate": Path("/research/state/creator_evaluation_status.json"),
+        "creator_monitor": Path("/research/state/creator_monitor_status.json"),
+        "creator_recent_check": Path("/research/state/creator_recent_check_status.json"),
     }
 
     def __init__(self) -> None:
@@ -118,6 +119,12 @@ class JobManager:
             out["status"] = job["status"]
         return out
 
+    def _cleanup_request(self) -> None:
+        try:
+            JOB_REQUEST_PATH.unlink(missing_ok=True)
+        except OSError:
+            pass
+
     def _refresh_locked(self) -> None:
         job = self._active
         if not job:
@@ -126,6 +133,7 @@ class JobManager:
         rc = proc.poll()
         if rc is None:
             return
+        self._cleanup_request()
         job["returncode"] = int(rc)
         job["finished_at"] = utc_now()
         job["state"] = "COMPLETE" if rc == 0 else "FAILED"
@@ -135,7 +143,7 @@ class JobManager:
         self._active = None
         atomic_json(JOB_STATE_PATH, public)
 
-    def start(self, kind: str, script: str, args: list[str]) -> dict:
+    def start(self, kind: str, params: dict) -> dict:
         with self._lock:
             self._refresh_locked()
             if self._active is not None:
@@ -145,23 +153,33 @@ class JobManager:
                     "job": self._public(self._active),
                 }
 
-            status_path = self.STATUS_FILES[kind]
-            cmd = [sys.executable, str(APP_DIR / script), "--root", str(ROOT), *args]
+            if kind not in self.STATUS_FILES:
+                return {"ok": False, "error": "UNKNOWN_JOB_KIND"}
+
+            job_id = uuid.uuid4().hex
+            request = {
+                "schema_version": 1,
+                "job_id": job_id,
+                "kind": kind,
+                "params": params,
+            }
+            atomic_json(JOB_REQUEST_PATH, request)
+
             proc = subprocess.Popen(
-                cmd,
+                [sys.executable, str(APP_DIR / "mcp_job_worker.py")],
                 cwd=str(APP_DIR),
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
             job = {
-                "job_id": uuid.uuid4().hex,
+                "job_id": job_id,
                 "kind": kind,
                 "state": "RUNNING",
                 "started_at": utc_now(),
                 "finished_at": None,
                 "returncode": None,
-                "status_path": status_path,
+                "status_path": self.STATUS_FILES[kind],
                 "status": None,
                 "proc": proc,
             }
@@ -186,6 +204,7 @@ class JobManager:
         with self._lock:
             self._refresh_locked()
             if self._active is None:
+                self._cleanup_request()
                 return {"ok": True, "result": "NO_ACTIVE_JOB"}
 
             job = self._active
@@ -198,6 +217,7 @@ class JobManager:
                     os.killpg(proc.pid, signal.SIGKILL)
                     proc.wait(timeout=3)
             finally:
+                self._cleanup_request()
                 job["returncode"] = proc.poll()
                 job["finished_at"] = utc_now()
                 job["state"] = "STOPPED"
@@ -328,11 +348,17 @@ def creator_evaluate(
     sample_size: int = 20,
     source_platform: Literal["YOUTUBE", "TIKTOK"] | None = None,
 ) -> str:
+    try:
+        profile = get_creator(ROOT, creator_key)
+    except Exception as exc:
+        return as_text({"ok": False, "error": f"{type(exc).__name__}:{exc}"})
     sample = max(1, min(int(sample_size), 100))
-    args = ["--creator-key", creator_key, "--sample-size", str(sample)]
-    if source_platform:
-        args.extend(["--source-platform", source_platform])
-    return as_text(jobs.start("creator_evaluate", "influencer_evaluation.py", args))
+    params = {
+        "creator_key": profile["creator_key"],
+        "sample_size": sample,
+        "source_platform": source_platform,
+    }
+    return as_text(jobs.start("creator_evaluate", params))
 
 
 @mcp.tool(
@@ -342,10 +368,18 @@ def creator_evaluate(
 )
 def creator_monitor(creator_key: str = "", max_new: int = 10) -> str:
     cap = max(1, min(int(max_new), 20))
-    args = ["--max-new", str(cap)]
+    normalized = ""
     if creator_key.strip():
-        args.extend(["--creator-key", creator_key.strip().lower()])
-    return as_text(jobs.start("creator_monitor", "creator_monitor.py", args))
+        try:
+            normalized = str(get_creator(ROOT, creator_key)["creator_key"])
+        except Exception as exc:
+            return as_text({"ok": False, "error": f"{type(exc).__name__}:{exc}"})
+    return as_text(
+        jobs.start(
+            "creator_monitor",
+            {"creator_key": normalized, "max_new": cap},
+        )
+    )
 
 
 @mcp.tool(
@@ -361,23 +395,28 @@ def creator_recent_check(
     max_items: int = 10,
 ) -> str:
     cap = max(1, min(int(max_items), 20))
-    args = ["--scope", scope, "--window", window, "--max-items", str(cap)]
-    keys = [
-        str(value).strip().lower()
-        for value in (creator_keys or [])
-        if str(value).strip()
-    ]
-    if keys:
-        args.extend(["--creator-keys", ",".join(keys)])
+    normalized_keys: list[str] = []
+    for value in creator_keys or []:
+        if not str(value).strip():
+            continue
+        try:
+            normalized_keys.append(str(get_creator(ROOT, str(value))["creator_key"]))
+        except Exception as exc:
+            return as_text({"ok": False, "error": f"{type(exc).__name__}:{exc}"})
+    normalized_keys = list(dict.fromkeys(normalized_keys))
+    lookback: int | None = None
     if window == "LAST_N_DAYS":
         if lookback_days is None:
             return as_text({"ok": False, "error": "LOOKBACK_DAYS_REQUIRED"})
-        args.extend(
-            ["--lookback-days", str(max(1, min(int(lookback_days), 90)))]
-        )
-    return as_text(
-        jobs.start("creator_recent_check", "creator_recent_check.py", args)
-    )
+        lookback = max(1, min(int(lookback_days), 90))
+    params = {
+        "scope": scope,
+        "creator_keys": normalized_keys,
+        "window": window,
+        "lookback_days": lookback,
+        "max_items": cap,
+    }
+    return as_text(jobs.start("creator_recent_check", params))
 
 
 @mcp.tool(
