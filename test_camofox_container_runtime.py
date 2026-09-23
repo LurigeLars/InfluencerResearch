@@ -58,6 +58,9 @@ class CamofoxContainerRuntimeTests(unittest.TestCase):
         self.assertNotIn("/transfer", text)
         self.assertNotIn("docker.sock", text)
         self.assertNotIn("privileged: true", text)
+        self.assertIn("mem_limit: 2g", text)
+        self.assertIn("cpus: 2.0", text)
+        self.assertIn("pids_limit: 256", text)
 
     def test_camofox_config_disables_unneeded_plugins(self) -> None:
         config = json.loads(
