@@ -237,6 +237,20 @@ def registered_tiktok_seed_urls(
     }
 
 
+def _canonical_ytdlp_profile_target(value: str, *, expected_handle: str) -> str | None:
+    raw = str(value or "").strip()
+    if raw.startswith("tiktokuser:"):
+        channel_id = raw.split(":", 1)[1]
+        if TIKTOK_CHANNEL_ID_RE.fullmatch(channel_id):
+            return f"tiktokuser:{channel_id}"
+        return None
+    platform, handle = extract_handle(raw)
+    expected = str(expected_handle or "").casefold().lstrip("@")
+    if platform != "TIKTOK" or not handle or handle.casefold() != expected:
+        return None
+    return f"https://www.tiktok.com/@{handle}"
+
+
 def yt_dlp_video_identity(video_url: str, *, expected_handle: str) -> tuple[str | None, dict]:
     """Resolve TikTok sec_uid/channel_id only from an exact-handle public seed video."""
     clean = _canonical_tiktok_video_url(video_url, expected_handle=expected_handle)
@@ -252,9 +266,12 @@ def yt_dlp_video_identity(video_url: str, *, expected_handle: str) -> tuple[str 
         "--no-playlist",
         "--dump-single-json",
         "--skip-download",
+        "--",
         clean,
     ]
     try:
+        # URL is strict-canonical TikTok video and '--' terminates yt-dlp option parsing.
+        # codeql[py/command-line-injection]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired as exc:
         return None, {
@@ -312,6 +329,9 @@ def yt_dlp_secondary_profile_urls(
 
 def yt_dlp_profile_urls(profile_url: str, *, handle: str, target: int) -> tuple[list[str], dict]:
     """Enumerate a public TikTok profile with yt-dlp before using browser scraping."""
+    profile_target = _canonical_ytdlp_profile_target(profile_url, expected_handle=handle)
+    if not profile_target:
+        return [], {"method": "YT_DLP_PROFILE", "ok": False, "reason": "BAD_PROFILE_TARGET"}
     limit = max(1, min(int(target), 100))
     cmd = [
         sys.executable, "-m", "yt_dlp",
@@ -322,9 +342,12 @@ def yt_dlp_profile_urls(profile_url: str, *, handle: str, target: int) -> tuple[
         "--playlist-end", str(limit),
         "--dump-single-json",
         "--skip-download",
-        profile_url,
+        "--",
+        profile_target,
     ]
     try:
+        # Target is strict-canonical TikTok/tiktokuser and '--' terminates yt-dlp option parsing.
+        # codeql[py/command-line-injection]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
     except subprocess.TimeoutExpired as exc:
         return [], {

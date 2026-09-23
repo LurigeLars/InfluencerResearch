@@ -62,6 +62,28 @@ def is_youtube(url: str) -> bool:
     return _host_matches(host, "youtube.com") or _host_matches(host, "youtu.be")
 
 
+def canonical_profile_url(url: str, platform: str) -> str:
+    parsed = urlparse(str(url or "").strip())
+    host = (parsed.hostname or "").casefold().rstrip(".")
+    parts = [part for part in parsed.path.split("/") if part]
+    if parsed.scheme != "https":
+        raise ValueError("BAD_PROFILE_SCHEME")
+    if platform == "YOUTUBE":
+        if not (_host_matches(host, "youtube.com") or host == "youtu.be"):
+            raise ValueError("BAD_YOUTUBE_PROFILE_HOST")
+        if not parts:
+            raise ValueError("BAD_YOUTUBE_PROFILE_PATH")
+        return str(url).strip()
+    if platform == "TIKTOK":
+        if not _host_matches(host, "tiktok.com") or len(parts) != 1 or not parts[0].startswith("@"):
+            raise ValueError("BAD_TIKTOK_PROFILE")
+        handle = parts[0][1:]
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", handle):
+            raise ValueError("BAD_TIKTOK_HANDLE")
+        return f"https://www.tiktok.com/@{handle}"
+    raise ValueError("BAD_PROFILE_PLATFORM")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="InfluencerResearch creator-evaluation entry point")
     ap.add_argument("--root", type=Path, required=True)
@@ -86,6 +108,11 @@ def main() -> int:
             return 6
         profile = str(source["profile_url"])
         platform = str(source["platform"])
+        try:
+            profile = canonical_profile_url(profile, platform)
+        except ValueError as exc:
+            print(f"InfluencerResearch registry rejection: {exc}", file=sys.stderr)
+            return 6
         name = str(profile_obj["display_name"])
         key = str(profile_obj["creator_key"])
         verification_basis = str(source.get("verification_basis") or profile_obj.get("verification", {}).get("basis") or "REGISTERED_VERIFIED_SOURCE")
@@ -99,6 +126,11 @@ def main() -> int:
     else:
         profile = str(args.profile_url).strip()
         platform = "YOUTUBE" if is_youtube(profile) else "TIKTOK"
+        try:
+            profile = canonical_profile_url(profile, platform)
+        except ValueError as exc:
+            print(f"InfluencerResearch direct-profile rejection: {exc}", file=sys.stderr)
+            return 6
         name = args.creator_name.strip() or creator_key("", profile)
         key = creator_key(name, profile)
         verification_basis = "LEGACY_DIRECT_PROFILE_MODE"
@@ -136,6 +168,8 @@ def main() -> int:
         print(f"InfluencerResearch {ORCHESTRATOR_VERSION}: TIKTOK discovery adapter -> {profile}")
         print("Instagram URLs remain identifiers only and are not opened by this path.")
 
+    # Executable and adapter script are fixed local paths; profile/IDs are canonicalized or allowlisted above.
+    # codeql[py/command-line-injection]
     p = subprocess.run(cmd)
     return int(p.returncode)
 

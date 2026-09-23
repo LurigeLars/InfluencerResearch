@@ -1265,6 +1265,8 @@ class Bridge:
         if os.name == "nt":
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         try:
+            # Interpreter/script are fixed local paths and every request-derived extra arg is schema-validated.
+            # codeql[py/command-line-injection]
             self.child = subprocess.Popen(
                 cmd,
                 cwd=str(self.app),
@@ -1380,8 +1382,10 @@ class Bridge:
             if os.name == "nt":
                 if self.taskkill is None or not self.taskkill.is_file():
                     raise RuntimeError(f"Reviewed taskkill path is unavailable: {self.taskkill}")
+                # taskkill is a reviewed fixed path and pid is the numeric PID of self.child.
+                # codeql[py/command-line-injection]
                 completed = subprocess.run(
-                    [str(self.taskkill), "/PID", str(pid), "/T", "/F"],
+                    [str(self.taskkill), "/PID", str(int(pid)), "/T", "/F"],
                     capture_output=True,
                     text=True,
                     timeout=30,
