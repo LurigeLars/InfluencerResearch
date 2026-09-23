@@ -57,7 +57,7 @@ def verify_logged_in(context) -> None:
     if "sessionid" not in {c.get("name", "") for c in cookies}:
         raise RuntimeError(
             "Dedicated InstagramResearch Chrome profile is not authenticated. "
-            "Run app\\02_authenticate.bat first."
+            "Run scripts\\authenticate_instagram.ps1 first."
         )
 
 

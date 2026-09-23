@@ -12,7 +12,13 @@ The host-side Python setup currently expects:
 - Docker Desktop for the isolated Camofox browser service
 - a dedicated browser profile for authenticated Instagram access where required
 
-Install the Python runtime with `01_install.bat`. Build and start the pinned Camofox service used by the TikTok/browser flow with:
+Install/update the Python runtime with PowerShell:
+
+```powershell
+pwsh -NoProfile -File scripts\install.ps1
+```
+
+Build and start the pinned Camofox service used by the TikTok/browser flow with:
 
 ```powershell
 pwsh -NoProfile -File scripts\camofox_container.ps1 -Action Up
@@ -28,7 +34,13 @@ For Instagram authentication, set:
 INFLUENCER_RESEARCH_INSTAGRAM_USERNAME=your_instagram_username
 ```
 
-Then run `02_authenticate.bat`. Authentication state is stored locally under the legacy compatibility runtime directory `%LOCALAPPDATA%\InstagramResearch` and must never be committed.
+Then run:
+
+```powershell
+pwsh -NoProfile -File scripts\authenticate_instagram.ps1
+```
+
+Authentication state is stored locally under the legacy compatibility runtime directory `%LOCALAPPDATA%\InstagramResearch` and must never be committed.
 
 ## Security and privacy
 
@@ -45,6 +57,39 @@ Use only accounts, content and automation flows you are authorized to access, an
 - [imageio-ffmpeg](https://github.com/imageio/imageio-ffmpeg) — FFmpeg integration
 
 Pinned versions are defined in `requirements.txt`, `requirements_tiktok_impersonation.lock.txt`, and `runtime/camofox/package-lock.json`.
+
+## Common commands
+
+After installation:
+
+```powershell
+$py="$env:LOCALAPPDATA\InstagramResearch\venv\Scripts\python.exe"
+
+# Instagram reels
+& $py .\instagram_ingest.py --root ..
+
+# Instagram stories for configured creators
+& $py .\ephemeral_ingest.py --root .. --mode stories --configured
+
+# Build/apply research queue
+& $py .\research_queue.py --root ..
+& $py .\apply_research_decisions.py --root ..
+
+# TikTok Camofox discovery + yt-dlp smoke
+& $py .\camofox_tiktok_poc.py
+
+# TikTok production sync
+& $py .\tiktok_camofox_sync.py --root ..
+
+# Creator evaluation
+& $py .\influencer_evaluation.py --root .. --profile-url "https://example.com/profile" --sample-size 20
+
+# Research bridge
+pwsh -NoProfile -File .\12_install_research_bridge.ps1 -Mode Install
+pwsh -NoProfile -File .\12_install_research_bridge.ps1 -Mode Uninstall
+```
+
+The repository intentionally contains no legacy `.bat` entrypoints.
 
 ## Project license
 
