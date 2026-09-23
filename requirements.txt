@@ -5,5 +5,5 @@ yt-dlp-ejs==0.8.0
 faster-whisper==1.2.1
 imageio-ffmpeg==0.6.0
 
-# TikTok browser-impersonation dependencies are installed separately,
-# wheel-only and hash-locked, from requirements_tiktok_impersonation.lock.txt by scripts/install.ps1.
+# TikTok browser-impersonation dependencies are installed separately in the Docker image,
+# wheel-only and hash-locked from requirements_tiktok_impersonation.lock.txt.
