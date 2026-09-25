@@ -192,8 +192,8 @@ def discover_youtube(profile: dict, source: dict, cutoff: datetime, end: datetim
             if raw:
                 try:
                     known_times.append(parse_iso_utc(str(raw)))
-                except Exception:
-                    pass
+                except (TypeError, ValueError, OverflowError):
+                    continue
 
         window_complete = _coverage_complete(
             discovered_count=len(entries),
