@@ -22,11 +22,11 @@ class CamofoxContainerConfigTests(unittest.TestCase):
                 cfg = cc.config_path()
                 cfg.parent.mkdir(parents=True)
                 cfg.write_text(
-                json.dumps({
-                    "schema_version": 1,
-                    "access_key": "a" * 43,
-                    "admin_key": "b" * 43,
-                }),
+                    json.dumps({
+                        "schema_version": 1,
+                        "access_key": "a" * 43,
+                        "admin_key": "b" * 43,
+                    }),
                     encoding="utf-8",
                 )
                 result = cc.load_config({})
@@ -58,14 +58,15 @@ class CamofoxContainerConfigTests(unittest.TestCase):
     def test_rejects_short_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             local = Path(tmp)
-            cfg = cc.config_path()
+            with self._runtime_root(local):
+                cfg = cc.config_path()
                 cfg.parent.mkdir(parents=True)
                 cfg.write_text(
-                json.dumps({
-                    "schema_version": 1,
-                    "access_key": "short",
-                    "admin_key": "short",
-                }),
+                    json.dumps({
+                        "schema_version": 1,
+                        "access_key": "short",
+                        "admin_key": "short",
+                    }),
                     encoding="utf-8",
                 )
                 with self.assertRaisesRegex(RuntimeError, "too short"):
@@ -74,14 +75,15 @@ class CamofoxContainerConfigTests(unittest.TestCase):
     def test_rejects_unknown_schema(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             local = Path(tmp)
-            cfg = cc.config_path()
+            with self._runtime_root(local):
+                cfg = cc.config_path()
                 cfg.parent.mkdir(parents=True)
                 cfg.write_text(
-                json.dumps({
-                    "schema_version": 2,
-                    "access_key": "a" * 43,
-                    "admin_key": "b" * 43,
-                }),
+                    json.dumps({
+                        "schema_version": 2,
+                        "access_key": "a" * 43,
+                        "admin_key": "b" * 43,
+                    }),
                     encoding="utf-8",
                 )
                 with self.assertRaisesRegex(RuntimeError, "Unsupported"):
