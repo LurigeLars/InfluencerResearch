@@ -170,7 +170,7 @@ def main() -> int:
 
     # Executable and adapter script are fixed local paths; profile/IDs are canonicalized or allowlisted above.
 
-    # codeql[py/command-line-injection]
+    # lgtm[py/command-line-injection]
     p = subprocess.run(cmd, shell=False)
     return int(p.returncode)
 
