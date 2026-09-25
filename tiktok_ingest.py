@@ -227,6 +227,7 @@ def run_ytdlp(
     ]
 
     # URL is strict-canonical TikTok and '--' terminates yt-dlp option parsing.
+
     # codeql[py/command-line-injection]
     result = subprocess.run(
         cmd,
