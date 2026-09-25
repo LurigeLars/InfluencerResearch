@@ -1008,15 +1008,19 @@ def _ensure_fallback_server(*, deadline: float) -> dict[str, Any]:
     )
     log_path = root / "camofox-fallback.log"
     log_handle = open(log_path, "ab", buffering=0)
-    proc = subprocess.Popen(
-        [node, str(package_root / "server.js")],
-        cwd=str(package_root),
-        stdout=log_handle,
-        stderr=subprocess.STDOUT,
-        env=env,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        shell=False,
-    )
+    try:
+        proc = subprocess.Popen(
+            [node, str(package_root / "server.js")],
+            cwd=str(package_root),
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            env=env,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            shell=False,
+        )
+    except Exception:
+        log_handle.close()
+        raise
     server: dict[str, Any] = {
         "proc": proc,
         "root": root,
