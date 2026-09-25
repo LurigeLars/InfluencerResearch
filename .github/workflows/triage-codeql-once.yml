@@ -1,0 +1,32 @@
+name: One-time CodeQL triage
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/triage-codeql-once.yml"
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  dismiss-verified-alerts:
+    if: github.repository == 'LurigeLars/InfluencerResearch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dismiss verified command-line false positives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for alert in 237 230 228 227 226 225 224; do
+            gh api --method PATCH \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2026-03-10" \
+              "repos/${GITHUB_REPOSITORY}/code-scanning/alerts/${alert}" \
+              -f state='dismissed' \
+              -f dismissed_reason='false positive' \
+              -f dismissed_comment='Reviewed 2026-09-25: subprocess uses an argument array with shell=False; external targets are strict-canonical/allowlisted and placed after -- where applicable. CodeQL does not model these sanitizers/option terminators.'
+          done
