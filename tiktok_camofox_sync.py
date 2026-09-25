@@ -392,16 +392,12 @@ def validate_media(path: Path) -> tuple[bool, str]:
 def published_iso(info: dict) -> str | None:
     ts = info.get("timestamp")
     if ts is not None:
-        try:
+        with contextlib.suppress(TypeError, ValueError, OverflowError, OSError):
             return datetime.fromtimestamp(float(ts), timezone.utc).isoformat()
-        except (TypeError, ValueError, OverflowError, OSError):
-            ts = None
     upload_date = str(info.get("upload_date") or "")
     if re.fullmatch(r"\d{8}", upload_date):
-        try:
+        with contextlib.suppress(ValueError):
             return datetime.strptime(upload_date, "%Y%m%d").replace(tzinfo=timezone.utc).isoformat()
-        except ValueError:
-            upload_date = ""
     return None
 
 
@@ -1100,7 +1096,7 @@ def download_one(url: str, video_dir: Path) -> dict:
     ]
     try:
         # URL is strict-canonical TikTok and '--' terminates yt-dlp option parsing.
-        # codeql[py/command-line-injection]
+        # lgtm[py/command-line-injection]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
         valid, validation = validate_media(mp4)
         detail = (result.stderr or result.stdout or "").strip()
