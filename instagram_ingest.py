@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -221,10 +222,8 @@ def validate_media(path: Path) -> tuple[bool, str]:
 def remove_shortcode_files(raw_dir: Path, shortcode: str) -> None:
     for p in raw_dir.glob(f"{shortcode}.*"):
         if p.is_file():
-            try:
+            with contextlib.suppress(OSError):
                 p.unlink()
-            except Exception:
-                pass
 
 
 def download_with_ytdlp(
@@ -274,10 +273,8 @@ def download_with_ytdlp(
             timeout=180,
         )
     finally:
-        try:
+        with contextlib.suppress(OSError):
             cookie_path.unlink(missing_ok=True)
-        except Exception:
-            pass
 
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
@@ -305,10 +302,8 @@ def download_with_ytdlp(
     media_path = candidates[0]
     valid, validation = validate_media(media_path)
     if not valid:
-        try:
+        with contextlib.suppress(OSError):
             media_path.unlink(missing_ok=True)
-        except Exception:
-            pass
         raise RuntimeError(f"downloaded media failed validation: {validation}")
 
     return {
@@ -340,10 +335,8 @@ def existing_item_is_valid(root: Path, item: dict) -> bool:
     item["download_status"] = "INVALID"
     item["media_validation"] = validation
     item["transcription_status"] = "NOT_STARTED"
-    try:
+    with contextlib.suppress(OSError):
         path.unlink(missing_ok=True)
-    except Exception:
-        pass
     return False
 
 

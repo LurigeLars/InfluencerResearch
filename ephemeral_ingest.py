@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import os
@@ -179,7 +180,7 @@ def discover_highlight_url(page, creator: str, label: str) -> tuple[str, list[di
             return str(row["href"]), discovered
 
     # Fallback: find the visible label and walk to its closest anchor.
-    try:
+    with contextlib.suppress(Exception):
         loc = page.get_by_text(label, exact=True).first
         if loc.count():
             href = loc.evaluate(
@@ -190,8 +191,6 @@ def discover_highlight_url(page, creator: str, label: str) -> tuple[str, list[di
             )
             if href and "/stories/highlights/" in href:
                 return str(href), discovered
-    except Exception:
-        pass
 
     raise RuntimeError(
         f"Could not resolve highlight label {label!r} on @{creator}. "
@@ -279,18 +278,14 @@ def open_highlight_from_profile(page, source_url: str) -> None:
 def story_view_confirmation_present(page) -> bool:
     labels = ["Visa händelse", "View story"]
     for label in labels:
-        try:
+        with contextlib.suppress(Exception):
             button = page.get_by_role("button", name=label, exact=True)
             if button.count() and button.first.is_visible():
                 return True
-        except Exception:
-            pass
-        try:
+        with contextlib.suppress(Exception):
             text_loc = page.get_by_text(label, exact=True)
             if text_loc.count() and text_loc.first.is_visible():
                 return True
-        except Exception:
-            pass
     return False
 
 
@@ -323,23 +318,19 @@ def dismiss_story_view_confirmation(page) -> bool:
         "View story",
     ]
     for label in labels:
-        try:
+        with contextlib.suppress(Exception):
             button = page.get_by_role("button", name=label, exact=True)
             if button.count() and button.first.is_visible():
                 button.first.click(timeout=5000)
                 page.wait_for_timeout(1200)
                 return True
-        except Exception:
-            pass
 
-        try:
+        with contextlib.suppress(Exception):
             text_loc = page.get_by_text(label, exact=True)
             if text_loc.count() and text_loc.first.is_visible():
                 text_loc.first.click(timeout=5000)
                 page.wait_for_timeout(1200)
                 return True
-        except Exception:
-            pass
 
     return False
 
@@ -512,10 +503,8 @@ def run_ytdlp(context, root: Path, creator: str, source_type: str, source_url: s
             shell=False,
         )
     finally:
-        try:
+        with contextlib.suppress(OSError):
             cookie_path.unlink(missing_ok=True)
-        except Exception:
-            pass
 
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
