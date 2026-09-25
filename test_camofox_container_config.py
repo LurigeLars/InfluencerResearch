@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import json
 import tempfile
-import unittest
 from pathlib import Path
-from unittest import mock
+from unittest import TestCase, main, mock
 
 import camofox_container as cc
 
 
-class CamofoxContainerConfigTests(unittest.TestCase):
+class CamofoxContainerConfigTests(TestCase):
     def _runtime_root(self, root: Path):
         return mock.patch.object(
             cc, "_localappdata_root", return_value=root.resolve() / "InfluencerResearch"
@@ -91,4 +90,4 @@ class CamofoxContainerConfigTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()
