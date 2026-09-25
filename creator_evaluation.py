@@ -270,6 +270,7 @@ def yt_dlp_video_identity(video_url: str, *, expected_handle: str) -> tuple[str 
     ]
     try:
         # URL is strict-canonical TikTok video and '--' terminates yt-dlp option parsing.
+
         # codeql[py/command-line-injection]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120, shell=False)
     except subprocess.TimeoutExpired as exc:
@@ -346,6 +347,7 @@ def yt_dlp_profile_urls(profile_url: str, *, handle: str, target: int) -> tuple[
     ]
     try:
         # Target is strict-canonical TikTok/tiktokuser and '--' terminates yt-dlp option parsing.
+
         # codeql[py/command-line-injection]
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120, shell=False)
     except subprocess.TimeoutExpired as exc:
