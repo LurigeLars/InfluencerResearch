@@ -495,7 +495,7 @@ def run_ytdlp(context, root: Path, creator: str, source_type: str, source_url: s
     try:
         # URL is strict-canonical Instagram and '--' terminates yt-dlp option parsing.
 
-        # codeql[py/command-line-injection]
+        # lgtm[py/command-line-injection]
         result = subprocess.run(
             cmd,
             capture_output=True,
