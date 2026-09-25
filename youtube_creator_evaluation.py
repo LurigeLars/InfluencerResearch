@@ -147,6 +147,7 @@ def probe_exact_video(video_id: str, *, channel_url: str, required_attribution_t
     cmd = [*base, "--skip-download", "--dump-single-json", "--", url]
     try:
         # URL is derived from VIDEO_ID_RE-validated input and is not user-selected executable syntax.
+
         # codeql[py/command-line-injection]
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=120, shell=False)
     except subprocess.TimeoutExpired as exc:
@@ -238,6 +239,7 @@ def enumerate_channel(channel_url: str, *, limit: int) -> tuple[list[dict], dict
     ]
     try:
         # URL is strict-canonical YouTube and '--' terminates yt-dlp option parsing.
+
         # codeql[py/command-line-injection]
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=120, shell=False)
     except subprocess.TimeoutExpired as exc:
