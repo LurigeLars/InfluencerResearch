@@ -605,15 +605,13 @@ def verify_tiktok_profile(
         }
     finally:
         if tab_id:
-            try:
+            with contextlib.suppress(Exception):
                 sync.request_json(
                     "DELETE",
                     f"/tabs/{urllib.parse.quote(tab_id)}?"
                     + urllib.parse.urlencode({"userId": user_id}),
                     timeout=10,
                 )
-            except Exception:
-                pass
 
 def discover_tiktok(
     profile_url: str,
