@@ -420,16 +420,16 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _trusted_local_appdata() -> Path:
+    if os.name == "nt":
+        return (Path.home() / "AppData" / "Local").resolve()
+    return (Path.home() / ".local" / "share").resolve()
+
+
 def _npm_cache_candidates() -> list[Path]:
     out: list[Path] = []
-    explicit = os.environ.get("npm_config_cache") or os.environ.get("NPM_CONFIG_CACHE")
-    if explicit:
-        out.append(Path(explicit))
-    localapp = os.environ.get("LOCALAPPDATA")
-    if localapp:
-        out.append(Path(localapp) / "npm-cache")
-    home = Path.home()
-    out.append(home / "AppData" / "Local" / "npm-cache")
+    home = Path.home().resolve()
+    out.append(_trusted_local_appdata() / "npm-cache")
     out.append(home / ".npm")
     unique: list[Path] = []
     seen: set[str] = set()
@@ -532,10 +532,7 @@ def _verify_installed_npm_artifact(local: Path, name: str, spec: dict[str, str])
 
 
 def _verify_camoufox_browser_cache() -> dict[str, Any]:
-    localapp = os.environ.get("LOCALAPPDATA")
-    if not localapp:
-        raise RuntimeError("LOCALAPPDATA unavailable for accepted Camoufox browser baseline")
-    cache = Path(localapp) / "camoufox" / "camoufox" / "Cache"
+    cache = _trusted_local_appdata() / "camoufox" / "camoufox" / "Cache"
     version_path = cache / "version.json"
     if not version_path.is_file():
         raise RuntimeError(f"Camoufox version.json missing at {version_path}")
@@ -988,11 +985,7 @@ def _ensure_fallback_server(*, deadline: float) -> dict[str, Any]:
     if current:
         _stop_fallback_server(force=True, deadline=deadline)
 
-    local = (
-        Path(os.environ.get("LOCALAPPDATA", str(Path.home())))
-        / "InstagramResearch"
-        / "camofox-poc"
-    )
+    local = _trusted_local_appdata() / "InstagramResearch" / "camofox-poc"
     provenance = _verify_fallback_camofox_runtime(local)
     package_root = local / "node_modules" / "@askjo" / "camofox-browser"
     node = shutil.which("node")
