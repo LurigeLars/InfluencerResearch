@@ -280,23 +280,19 @@ def main() -> int:
 
     finally:
         if tab_id:
-            try:
+            with contextlib.suppress(Exception):
                 request_json(
                     "DELETE",
                     f"/tabs/{urllib.parse.quote(tab_id)}?"
                     + urllib.parse.urlencode({"userId": USER_ID}),
                     timeout=10,
                 )
-            except Exception:
-                pass
-        try:
+        with contextlib.suppress(Exception):
             request_json(
                 "DELETE",
                 f"/sessions/{urllib.parse.quote(USER_ID)}/storage_state",
                 timeout=10,
             )
-        except Exception:
-            pass
         # The Docker-managed Camofox service is intentionally left running.
 
 
