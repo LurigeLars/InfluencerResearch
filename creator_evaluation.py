@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -122,15 +123,13 @@ def browser_read(url: str, *, user_id: str, session_key: str) -> dict:
             result["errors"].append(f"links:{type(exc).__name__}:{exc}")
     finally:
         if tab_id:
-            try:
+            with contextlib.suppress(Exception):
                 sync.request_json(
                     "DELETE",
                     f"/tabs/{urllib.parse.quote(tab_id)}?"
                     + urllib.parse.urlencode({"userId": user_id}),
                     timeout=10,
                 )
-            except Exception:
-                pass
     return result
 
 
@@ -447,14 +446,12 @@ def camofox_search_video_urls(handle: str, *, target: int, creator_key: str) -> 
             diag["error"] = f"{type(exc).__name__}: {exc}"
         finally:
             if tab_id:
-                try:
+                with contextlib.suppress(Exception):
                     sync.request_json(
                         "DELETE",
                         f"/tabs/{urllib.parse.quote(tab_id)}?" + urllib.parse.urlencode({"userId": user_id}),
                         timeout=10,
                     )
-                except Exception:
-                    pass
         attempts.append(diag)
         if len(found) >= limit:
             break
