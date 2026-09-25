@@ -233,6 +233,7 @@ def run_ytdlp(
         capture_output=True,
         text=True,
         timeout=600,
+        shell=False,
     )
 
     after = {

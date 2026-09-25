@@ -623,6 +623,7 @@ def _verify_fallback_camofox_runtime(local: Path) -> dict[str, Any]:
     node_version = subprocess.run(
         [node, "--version"], capture_output=True, text=True, timeout=10,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        shell=False,
     )
     if node_version.returncode != 0:
         raise RuntimeError("Unable to verify Node runtime for CamoFox")
@@ -795,6 +796,7 @@ def _taskkill_owned_process(proc: subprocess.Popen[Any], timeout: float) -> None
                 stderr=subprocess.DEVNULL,
                 timeout=timeout,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                shell=False,
             )
         except Exception:
             try:
@@ -824,6 +826,7 @@ def _remove_owned_root_strict(root: Path, *, deadline: float) -> None:
             text=True,
             env=_safe_local_worker_env(),
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            shell=False,
         )
         try:
             _, stderr = proc.communicate(timeout=_remaining_timeout(deadline))
@@ -1005,14 +1008,19 @@ def _ensure_fallback_server(*, deadline: float) -> dict[str, Any]:
     )
     log_path = root / "camofox-fallback.log"
     log_handle = open(log_path, "ab", buffering=0)
-    proc = subprocess.Popen(
-        [node, str(package_root / "server.js")],
-        cwd=str(package_root),
-        stdout=log_handle,
-        stderr=subprocess.STDOUT,
-        env=env,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
+    try:
+        proc = subprocess.Popen(
+            [node, str(package_root / "server.js")],
+            cwd=str(package_root),
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            env=env,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            shell=False,
+        )
+    except Exception:
+        log_handle.close()
+        raise
     server: dict[str, Any] = {
         "proc": proc,
         "root": root,

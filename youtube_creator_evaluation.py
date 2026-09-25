@@ -147,7 +147,7 @@ def probe_exact_video(video_id: str, *, channel_url: str, required_attribution_t
     try:
         # URL is derived from VIDEO_ID_RE-validated input and is not user-selected executable syntax.
         # codeql[py/command-line-injection]
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=120, shell=False)
     except subprocess.TimeoutExpired as exc:
         return None, {
             "video_id": video_id, "ok": False, "reason": "METADATA_TIMEOUT",
@@ -238,7 +238,7 @@ def enumerate_channel(channel_url: str, *, limit: int) -> tuple[list[dict], dict
     try:
         # URL is strict-canonical YouTube and '--' terminates yt-dlp option parsing.
         # codeql[py/command-line-injection]
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        p = subprocess.run(cmd, capture_output=True, text=True, timeout=120, shell=False)
     except subprocess.TimeoutExpired as exc:
         return [], {"ok": False, "returncode": 124, "diagnostic_tail": str(exc)[-2000:]}
 
@@ -540,7 +540,7 @@ def _extract_audio_for_whisper(media_path: Path) -> tuple[Path, dict]:
         "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
         str(wav_path),
     ]
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=120, shell=False)
     if p.returncode != 0 or not wav_path.exists() or wav_path.stat().st_size < 10_000:
         detail = (p.stderr or p.stdout or "")[-2500:]
         raise RuntimeError(f"ffmpeg_audio_extract_failed:{detail}")
@@ -819,7 +819,7 @@ def run_research_queue(root: Path, *, must_include: list[str] | None = None) -> 
     cmd = [sys.executable, str(script), "--root", str(root)]
     for shortcode in must_include or []:
         cmd.extend(["--must-include-shortcode", shortcode])
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=120, shell=False)
     return {
         "ok": p.returncode == 0,
         "returncode": p.returncode,
