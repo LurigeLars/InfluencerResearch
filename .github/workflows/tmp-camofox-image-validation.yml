@@ -1,0 +1,28 @@
+name: Temporary Camofox image validation
+
+on:
+  push:
+    branches:
+      - fix/docker-scout-camofox-runtime-20260926
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build hardened Camofox image
+        run: docker build -f runtime/camofox/Dockerfile -t camofox-scout-test .
+      - name: Verify runtime surface
+        run: |
+          docker run --rm camofox-scout-test sh -ec '
+            test "$(id -u)" != "0"
+            ! command -v npm
+            ! command -v npx
+            node -e "require(\"impit\"); const Database=require(\"better-sqlite3\"); const db=new Database(\":memory:\"); if(db.prepare(\"select 1 as ok\").get().ok!==1) process.exit(2); db.close();"
+            test -x /opt/camoufox/camoufox-bin
+            test -f /opt/camoufox/properties.json
+            test -f /opt/camoufox/version.json
+          '
