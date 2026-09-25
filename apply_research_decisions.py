@@ -325,7 +325,7 @@ def markdown(shortcode: str, d: dict, manifest_item: dict) -> str:
         "## Rationale",
         str(d["rationale"]),
         "",
-        "_Influencer source is discovery only. Ekonomi owns analysis. "
+        "_Influencer source is discovery only. Ekonomi owns analysis. " +
         "TEST/BACKLOG candidates do not authorize system changes or trades._",
         "",
     ]

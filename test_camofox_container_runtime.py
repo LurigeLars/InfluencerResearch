@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import json
-import unittest
-from unittest import mock
+from unittest import TestCase, main, mock
 
 import tiktok_camofox_sync as sync
 from pathlib import Path
@@ -10,7 +9,7 @@ from pathlib import Path
 BASE = Path(__file__).resolve().parent
 
 
-class CamofoxContainerRuntimeTests(unittest.TestCase):
+class CamofoxContainerRuntimeTests(TestCase):
     def test_dockerfile_pins_reviewed_runtime_and_skips_dynamic_postinstall(self) -> None:
         text = (BASE / "runtime" / "camofox" / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("FROM node:22.23.2-trixie-slim", text)
@@ -105,4 +104,4 @@ class CamofoxContainerRuntimeTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    main()
