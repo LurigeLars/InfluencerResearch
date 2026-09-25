@@ -42,16 +42,12 @@ def load_json(path: Path, default: Any) -> Any:
 def published_iso(info: dict) -> str | None:
     ts = info.get("timestamp")
     if ts is not None:
-        try:
+        with contextlib.suppress(TypeError, ValueError, OverflowError, OSError):
             return datetime.fromtimestamp(float(ts), timezone.utc).isoformat()
-        except (TypeError, ValueError, OverflowError, OSError):
-            ts = None
     upload_date = str(info.get("upload_date") or "")
     if re.fullmatch(r"\d{8}", upload_date):
-        try:
+        with contextlib.suppress(ValueError):
             return datetime.strptime(upload_date, "%Y%m%d").replace(tzinfo=timezone.utc).isoformat()
-        except ValueError:
-            upload_date = ""
     return None
 
 
@@ -148,7 +144,7 @@ def probe_exact_video(video_id: str, *, channel_url: str, required_attribution_t
     try:
         # URL is derived from VIDEO_ID_RE-validated input and is not user-selected executable syntax.
 
-        # codeql[py/command-line-injection]
+        # lgtm[py/command-line-injection]
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=120, shell=False)
     except subprocess.TimeoutExpired as exc:
         return None, {
@@ -240,7 +236,7 @@ def enumerate_channel(channel_url: str, *, limit: int) -> tuple[list[dict], dict
     try:
         # URL is strict-canonical YouTube and '--' terminates yt-dlp option parsing.
 
-        # codeql[py/command-line-injection]
+        # lgtm[py/command-line-injection]
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=120, shell=False)
     except subprocess.TimeoutExpired as exc:
         return [], {"ok": False, "returncode": 124, "diagnostic_tail": str(exc)[-2000:]}
@@ -666,13 +662,11 @@ def capture_visual_evidence(root: Path, creator_key: str, url: str, video_id: st
     evidence_dir = root / "output" / creator_key / "youtube" / "frames" / video_id
     index_path = evidence_dir / "visual_index.json"
     if index_path.exists():
-        try:
+        with contextlib.suppress(OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
             existing = json.loads(index_path.read_text(encoding="utf-8"))
             retained = existing.get("frames", [])
             if retained and all((root / Path(x["file"])).exists() for x in retained if x.get("file")):
                 return {"ok": True, "source": "existing_visual_evidence", "index": index_path, **existing.get("summary", {})}
-        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
-            existing = None
 
     ffmpeg = _ffmpeg_exe()
     if not ffmpeg:
