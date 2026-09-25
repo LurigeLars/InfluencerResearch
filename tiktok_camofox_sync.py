@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import atexit
 import base64
 import hashlib
@@ -124,7 +125,7 @@ def _lock_file_nonblocking(handle: Any) -> None:
 
 
 def _unlock_file(handle: Any) -> None:
-    try:
+    with contextlib.suppress(Exception):
         handle.seek(0)
         if os.name == "nt":
             import msvcrt
@@ -132,8 +133,6 @@ def _unlock_file(handle: Any) -> None:
         else:
             import fcntl
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-    except Exception:
-        pass
 
 
 def _acquire_tiktok_run_lock() -> None:
@@ -395,14 +394,14 @@ def published_iso(info: dict) -> str | None:
     if ts is not None:
         try:
             return datetime.fromtimestamp(float(ts), timezone.utc).isoformat()
-        except Exception:
-            pass
+        except (TypeError, ValueError, OverflowError, OSError):
+            ts = None
     upload_date = str(info.get("upload_date") or "")
     if re.fullmatch(r"\d{8}", upload_date):
         try:
             return datetime.strptime(upload_date, "%Y%m%d").replace(tzinfo=timezone.utc).isoformat()
-        except Exception:
-            pass
+        except ValueError:
+            upload_date = ""
     return None
 
 
@@ -780,10 +779,8 @@ def _taskkill_owned_process(proc: subprocess.Popen[Any], timeout: float) -> None
     if proc.poll() is not None:
         return
     if timeout <= 0:
-        try:
+        with contextlib.suppress(Exception):
             proc.kill()
-        except Exception:
-            pass
         return
     if os.name == "nt":
         try:
@@ -796,15 +793,11 @@ def _taskkill_owned_process(proc: subprocess.Popen[Any], timeout: float) -> None
                 shell=False,
             )
         except Exception:
-            try:
+            with contextlib.suppress(Exception):
                 proc.kill()
-            except Exception:
-                pass
     else:
-        try:
+        with contextlib.suppress(Exception):
             proc.kill()
-        except Exception:
-            pass
 
 
 def _remove_owned_root_strict(root: Path, *, deadline: float) -> None:
@@ -861,7 +854,7 @@ def _stop_fallback_server(*, force: bool = False, deadline: float | None = None)
         _taskkill_owned_process(proc, hard_end - time.monotonic())
     else:
         if proc is not None and proc.poll() is None and not force:
-            try:
+            with contextlib.suppress(Exception):
                 _fallback_request_json(
                     server,
                     "POST",
@@ -870,8 +863,6 @@ def _stop_fallback_server(*, force: bool = False, deadline: float | None = None)
                     timeout_cap=2.0,
                     token=server["admin_key"],
                 )
-            except Exception:
-                pass
         if proc is not None and proc.poll() is None:
             remaining = min(2.0, hard_end - time.monotonic())
             if remaining > 0:
@@ -883,21 +874,16 @@ def _stop_fallback_server(*, force: bool = False, deadline: float | None = None)
                 _taskkill_owned_process(proc, 0.0)
 
     log_handle = server.get("log_handle")
-    try:
-        if log_handle:
+    if log_handle:
+        with contextlib.suppress(Exception):
             log_handle.close()
-    except Exception:
-        pass
 
     _remove_owned_root_strict(root, deadline=hard_end)
 
 def _atexit_stop_server() -> None:
-    try:
+    with contextlib.suppress(Exception):
         _stop_fallback_server(force=True, deadline=time.monotonic() + 8.0)
-    except Exception:
-        pass
-    finally:
-        _release_tiktok_run_lock()
+    _release_tiktok_run_lock()
 
 
 atexit.register(_atexit_stop_server)
@@ -1425,15 +1411,13 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
         atomic_json(catalog_path, catalog)
     finally:
         if tab_id:
-            try:
+            with contextlib.suppress(Exception):
                 request_json(
                     "DELETE",
                     f"/tabs/{urllib.parse.quote(tab_id)}?"
                     + urllib.parse.urlencode({"userId": user_id}),
                     timeout=10,
                 )
-            except Exception:
-                pass
 
     main_manifest = load_json(root / "state" / "manifest.json", {"schema_version": 1, "items": {}})
     main_items = main_manifest.get("items", {})

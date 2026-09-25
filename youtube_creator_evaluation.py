@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import html
 import json
 import os
@@ -43,14 +44,14 @@ def published_iso(info: dict) -> str | None:
     if ts is not None:
         try:
             return datetime.fromtimestamp(float(ts), timezone.utc).isoformat()
-        except Exception:
-            pass
+        except (TypeError, ValueError, OverflowError, OSError):
+            ts = None
     upload_date = str(info.get("upload_date") or "")
     if re.fullmatch(r"\d{8}", upload_date):
         try:
             return datetime.strptime(upload_date, "%Y%m%d").replace(tzinfo=timezone.utc).isoformat()
-        except Exception:
-            pass
+        except ValueError:
+            upload_date = ""
     return None
 
 
@@ -307,13 +308,11 @@ def _ffmpeg_exe() -> str | None:
     system = shutil.which("ffmpeg") or shutil.which("ffmpeg.exe")
     if system:
         return system
-    try:
+    with contextlib.suppress(Exception):
         import imageio_ffmpeg
         bundled = imageio_ffmpeg.get_ffmpeg_exe()
         if bundled and Path(bundled).exists():
             return bundled
-    except Exception:
-        pass
     return None
 
 def _clean_caption_text(value: str) -> str:
@@ -334,7 +333,7 @@ def _vtt_seconds(value: str) -> float | None:
             m, s = parts
             return float(m) * 60 + float(s)
     except ValueError:
-        pass
+        return None
     return None
 
 
@@ -586,10 +585,8 @@ def transcribe_whisper(root: Path, creator_key: str, video_id: str, media_path: 
             rows.append({"start": round(float(seg.start), 3), "end": round(float(seg.end), 3), "text": text})
     finally:
         if audio_diag.get("used") and whisper_input.exists():
-            try:
+            with contextlib.suppress(OSError):
                 whisper_input.unlink()
-            except OSError:
-                pass
 
     when = utc_now()
     txt_path.write_text(" ".join(text_parts).strip() + "\n", encoding="utf-8")
@@ -652,16 +649,12 @@ def _merge_frame_records(records: list[dict]) -> list[dict]:
             if abs(float(ts) - float(kept[-1]["timestamp_s"])) <= 0.35:
                 # Prefer scene-change evidence over the periodic frame at the same moment.
                 if rec["reason"] == "SCENE_CHANGE" and kept[-1]["reason"] != "SCENE_CHANGE":
-                    try:
+                    with contextlib.suppress(OSError):
                         kept[-1]["file"].unlink()
-                    except OSError:
-                        pass
                     kept[-1] = rec
                 else:
-                    try:
+                    with contextlib.suppress(OSError):
                         rec["file"].unlink()
-                    except OSError:
-                        pass
                 continue
         kept.append(rec)
     return kept
@@ -676,8 +669,8 @@ def capture_visual_evidence(root: Path, creator_key: str, url: str, video_id: st
             retained = existing.get("frames", [])
             if retained and all((root / Path(x["file"])).exists() for x in retained if x.get("file")):
                 return {"ok": True, "source": "existing_visual_evidence", "index": index_path, **existing.get("summary", {})}
-        except Exception:
-            pass
+        except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+            existing = None
 
     ffmpeg = _ffmpeg_exe()
     if not ffmpeg:
@@ -734,10 +727,8 @@ def capture_visual_evidence(root: Path, creator_key: str, url: str, video_id: st
                         yt.wait(timeout=10)
         yt_stderr = yt_err_path.read_text(encoding="utf-8", errors="replace")
     finally:
-        try:
+        with contextlib.suppress(OSError):
             yt_err_path.unlink()
-        except OSError:
-            pass
 
     ff_stderr = (ff.stderr or b"").decode("utf-8", errors="replace")
     fps_times = _showinfo_times(ff_stderr, "fps")
@@ -809,8 +800,8 @@ def read_info_json(root: Path, creator_key: str, video_id: str) -> dict:
     if info_path.exists():
         try:
             return json.loads(info_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+        except (OSError, json.JSONDecodeError):
+            return {}
     return {}
 
 
