@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 
+
 CAMOFOX_CONTAINER_SCHEMA_VERSION = 1
 CAMOFOX_CONTAINER_BASE_URL = "http://127.0.0.1:9377"
 CAMOFOX_CONTAINER_CONFIG_NAME = "camofox-container.json"
@@ -18,7 +19,11 @@ def _localappdata_root(env: dict[str, str] | None = None) -> Path:
 
 
 def config_path(env: dict[str, str] | None = None) -> Path:
-    return _localappdata_root(env) / CAMOFOX_CONTAINER_CONFIG_NAME
+    root = _localappdata_root(env).resolve()
+    path = (root / CAMOFOX_CONTAINER_CONFIG_NAME).resolve()
+    if path.parent != root:
+        raise RuntimeError("Camofox container config path escapes the runtime directory")
+    return path
 
 
 def load_config(env: dict[str, str] | None = None) -> dict[str, object]:
