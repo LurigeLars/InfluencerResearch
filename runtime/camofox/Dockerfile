@@ -10,6 +10,7 @@ ENV NODE_ENV=production \
     CAMOUFOX_EXECUTABLE=/opt/camoufox/camoufox-bin
 
 RUN apt-get update \
+    && apt-get -y upgrade \
     && apt-get install -y --no-install-recommends \
         build-essential \
         ca-certificates \
@@ -67,7 +68,12 @@ RUN mkdir -p /opt/camoufox \
 
 COPY runtime/camofox/camofox.config.json /app/node_modules/@askjo/camofox-browser/camofox.config.json
 
+# Build-only tools and the npm/corepack CLIs are not needed by the running server.
+# Removing them keeps vulnerable package-manager transitive dependencies (for
+# example tar/pacote) out of the final runtime image.
 RUN apt-get purge -y --auto-remove build-essential curl unzip \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+        /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
     && rm -rf /var/lib/apt/lists/* /root/.npm
 
 USER node
