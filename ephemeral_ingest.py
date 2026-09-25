@@ -510,6 +510,7 @@ def run_ytdlp(context, root: Path, creator: str, source_type: str, source_url: s
             capture_output=True,
             text=True,
             timeout=300,
+            shell=False,
         )
     finally:
         try:
