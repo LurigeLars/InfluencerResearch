@@ -10,16 +10,15 @@ CAMOFOX_CONTAINER_BASE_URL = "http://127.0.0.1:9377"
 CAMOFOX_CONTAINER_CONFIG_NAME = "camofox-container.json"
 
 
-def _localappdata_root(env: dict[str, str] | None = None) -> Path:
-    source = os.environ if env is None else env
-    raw = str(source.get("LOCALAPPDATA") or "").strip()
-    if not raw:
-        raise RuntimeError("LOCALAPPDATA is required for the Camofox container runtime")
-    return Path(raw).resolve() / "InfluencerResearch"
+def _localappdata_root() -> Path:
+    # Do not let an inherited environment variable redefine the security-sensitive
+    # host config root. On Windows this is the user's standard Local AppData tree.
+    base = Path.home() / "AppData" / "Local"
+    return (base / "InfluencerResearch").resolve()
 
 
-def config_path(env: dict[str, str] | None = None) -> Path:
-    root = _localappdata_root(env).resolve()
+def config_path() -> Path:
+    root = _localappdata_root()
     path = (root / CAMOFOX_CONTAINER_CONFIG_NAME).resolve()
     if path.parent != root:
         raise RuntimeError("Camofox container config path escapes the runtime directory")
@@ -40,7 +39,7 @@ def load_config(env: dict[str, str] | None = None) -> dict[str, object]:
             "config_path": None,
         }
 
-    path = config_path(env)
+    path = config_path()
     if not path.is_file():
         raise RuntimeError(
             "Camofox container config is missing. Start the Docker runtime with "
