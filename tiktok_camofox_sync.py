@@ -394,14 +394,14 @@ def published_iso(info: dict) -> str | None:
     if ts is not None:
         try:
             return datetime.fromtimestamp(float(ts), timezone.utc).isoformat()
-        except Exception:
-            pass
+        except (TypeError, ValueError, OverflowError, OSError):
+            ts = None
     upload_date = str(info.get("upload_date") or "")
     if re.fullmatch(r"\d{8}", upload_date):
         try:
             return datetime.strptime(upload_date, "%Y%m%d").replace(tzinfo=timezone.utc).isoformat()
-        except Exception:
-            pass
+        except ValueError:
+            upload_date = ""
     return None
 
 
