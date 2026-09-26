@@ -154,7 +154,10 @@ def canonical_reel_url(url: str) -> str:
     host = (parsed.hostname or "").casefold().rstrip(".")
     if parsed.scheme != "https" or not (host == "instagram.com" or host.endswith(".instagram.com")):
         raise ValueError("Invalid Instagram Reel host")
-    match = re.fullmatch(r"/reel/([A-Za-z0-9_-]+)/?", parsed.path)
+    match = re.fullmatch(
+        r"/(?:[A-Za-z0-9._]{1,30}/)?reel/([A-Za-z0-9_-]+)/?",
+        parsed.path,
+    )
     if not match:
         raise ValueError("Invalid Instagram Reel path")
     return f"https://www.instagram.com/reel/{match.group(1)}/"
