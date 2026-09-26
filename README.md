@@ -167,22 +167,22 @@ The backend never reads `GEMINI_API_KEY` from process environment variables.
 
 ### One-time local namespace migration
 
-Older installations stored host-only auth/fallback state under `%LOCALAPPDATA%\\InstagramResearch`. The canonical host namespace is now `%LOCALAPPDATA%\\InfluencerResearch`.
+Older installations stored host-only auth/fallback state under `%LOCALAPPDATA%\InstagramResearch`. The canonical host namespace is now `%LOCALAPPDATA%\InfluencerResearch`.
 
 Preview the migration:
 
 ```powershell
-pwsh -NoProfile -File scripts\\migrate_local_namespace.ps1 -Action Plan
+pwsh -NoProfile -File scripts\migrate_local_namespace.ps1 -Action Plan
 ```
 
 Apply and verify it:
 
 ```powershell
-pwsh -NoProfile -File scripts\\migrate_local_namespace.ps1 -Action Apply
-pwsh -NoProfile -File scripts\\migrate_local_namespace.ps1 -Action Verify
+pwsh -NoProfile -File scripts\migrate_local_namespace.ps1 -Action Apply
+pwsh -NoProfile -File scripts\migrate_local_namespace.ps1 -Action Verify
 ```
 
-The migration refuses to run while the retired Windows request bridge still exists, never overwrites an existing active destination, deletes only explicitly retired bridge artifacts, and preserves otherwise-unclassified historical files under `%LOCALAPPDATA%\\InfluencerResearch\\legacy-archive-2026-09-26`.
+The migration refuses to run while the retired Windows request bridge still exists, never overwrites an existing active destination, deletes only explicitly retired bridge artifacts, and preserves otherwise-unclassified historical files under `%LOCALAPPDATA%\InfluencerResearch\legacy-archive-2026-09-26`.
 
 ## Camofox baseline
 
