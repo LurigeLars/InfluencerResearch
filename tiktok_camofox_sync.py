@@ -103,9 +103,9 @@ def _runtime_dir() -> Path:
     if os.environ.get("INFLUENCER_RESEARCH_CONTAINER", "").strip() == "1":
         path = Path("/runtime/influencerresearch")
     elif os.name == "nt":
-        path = Path.home() / "AppData" / "Local" / "InstagramResearch"
+        path = Path.home() / "AppData" / "Local" / "InfluencerResearch"
     else:
-        path = Path.home() / ".local" / "share" / "InstagramResearch"
+        path = Path.home() / ".local" / "share" / "InfluencerResearch"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -967,14 +967,14 @@ def _ensure_fallback_server(*, deadline: float) -> dict[str, Any]:
     if current:
         _stop_fallback_server(force=True, deadline=deadline)
 
-    local = _trusted_local_appdata() / "InstagramResearch" / "camofox-poc"
+    local = _trusted_local_appdata() / "InfluencerResearch" / "camofox-poc"
     provenance = _verify_fallback_camofox_runtime(local)
     package_root = local / "node_modules" / "@askjo" / "camofox-browser"
     node = shutil.which("node")
     if not node:
         raise RuntimeError("Node executable not found for CamoFox fallback")
 
-    root = Path(tempfile.mkdtemp(prefix="InstagramResearch-B042-camofox-fallback-"))
+    root = Path(tempfile.mkdtemp(prefix="InfluencerResearch-B042-camofox-fallback-"))
     port = _allocate_loopback_port()
     access_key = secrets.token_urlsafe(32)
     admin_key = secrets.token_urlsafe(32)
