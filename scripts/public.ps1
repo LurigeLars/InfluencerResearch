@@ -13,7 +13,6 @@ if (-not (Get-Command docker -ErrorAction SilentlyContinue)) {
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $Compose = Join-Path $Repo "compose.public.yaml"
 $GatewayEnv = Join-Path $Repo "public\gateway.env"
-$TunnelEnv = Join-Path $Repo "public\tunnel.env"
 $RuntimeNetwork = "influencerresearch_runtime"
 
 function PublicCompose([string[]]$ComposeArgs) {
@@ -24,10 +23,8 @@ function PublicCompose([string[]]$ComposeArgs) {
 }
 
 function Require-LocalConfig {
-    foreach ($path in @($GatewayEnv, $TunnelEnv)) {
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-            throw "Missing local config: $path. Copy the matching .example file and fill it locally."
-        }
+    if (-not (Test-Path -LiteralPath $GatewayEnv -PathType Leaf)) {
+        throw "Missing local config: $GatewayEnv. Copy the matching .example file and fill it locally."
     }
 
     & docker network inspect $RuntimeNetwork *> $null
@@ -49,12 +46,12 @@ switch ($Action) {
         } while ([DateTimeOffset]::UtcNow -lt $deadline)
 
         if ($health -ne "healthy") {
-            PublicCompose -ComposeArgs @("logs", "--tail", "100", "gateway", "cloudflared")
+            PublicCompose -ComposeArgs @("logs", "--tail", "100", "gateway")
             throw "InfluencerResearch public gateway did not become healthy."
         }
 
         Write-Host "PUBLIC_GATEWAY_READY"
-        Write-Host "Cloudflare origin service: http://gateway:8080"
+        Write-Host "Cloudflare origin service: http://influencer-gateway:8080"
         Write-Host "Connector endpoint: https://<redacted-private-host>/mcp"
     }
     "Down" {
@@ -64,6 +61,6 @@ switch ($Action) {
         PublicCompose -ComposeArgs @("ps")
     }
     "Logs" {
-        PublicCompose -ComposeArgs @("logs", "--tail", "200", "gateway", "cloudflared")
+        PublicCompose -ComposeArgs @("logs", "--tail", "200", "gateway")
     }
 }

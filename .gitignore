@@ -19,7 +19,6 @@ desktop.ini
 *.pfx
 
 public/gateway.env
-public/tunnel.env
 
 # Authentication/browser state
 chrome-profile/
