@@ -210,6 +210,36 @@ class InstagramPublicCamofoxSmokeTests(unittest.TestCase):
         )
         self.assertEqual(result, "STORY_PUBLIC_ACCESS_INCONCLUSIVE")
 
+    def test_story_teaser_gate_requires_auth(self) -> None:
+        dom = {
+            "href": "https://www.instagram.com/stories/rikatillsammans/",
+            "body_text_excerpt": (
+                "Se den här händelsen innan den försvinner\n"
+                "Kolla in de senaste fotona och videorna från rikatillsammans.\n"
+                "Registrera dig\nLogga in"
+            ),
+            "login_surface": True,
+            "generic_error": False,
+            "story_url_active": True,
+            "videos": [],
+            "story_links": [],
+            "view_confirmation_visible": False,
+        }
+        self.assertEqual(
+            smoke.classify_story_probe(dom, "rikatillsammans"),
+            "STORY_REQUIRES_AUTH",
+        )
+
+    def test_dismiss_profile_media_auth_gate_executes_close_action(self) -> None:
+        fake_response = {"ok": True, "result": {"clicked": True}}
+        with patch.object(smoke, "request_json", return_value=fake_response) as request:
+            result = smoke.dismiss_profile_media_auth_gate("tab-1", "user-1")
+
+        self.assertTrue(result["clicked"])
+        body = request.call_args.args[2]
+        self.assertIn("media_auth_gate_close_not_found", body["expression"])
+        self.assertIn("visa foton, videor med mera från", body["expression"].lower())
+
     def test_handle_visibility_ignores_requested_url_metadata(self) -> None:
         result = smoke.classify_snapshot(
             {
