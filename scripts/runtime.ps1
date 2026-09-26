@@ -26,6 +26,66 @@ function New-Token {
     return [Convert]::ToBase64String($bytes).TrimEnd("=").Replace("+","-").Replace("/","_")
 }
 
+function Save-RuntimeConfig($Config) {
+    [IO.File]::WriteAllText(
+        $ConfigPath,
+        ($Config | ConvertTo-Json -Depth 4),
+        [Text.UTF8Encoding]::new($false)
+    )
+}
+
+function Test-TcpPortFree([int]$Port) {
+    $listener = $null
+    try {
+        $listener = [System.Net.Sockets.TcpListener]::new(
+            [System.Net.IPAddress]::Loopback,
+            $Port
+        )
+        $listener.Start()
+        return $true
+    } catch {
+        return $false
+    } finally {
+        if ($listener) {
+            try { $listener.Stop() } catch {}
+        }
+    }
+}
+
+function Test-InfluencerResearchContainerRunning {
+    $names = @(& docker ps --format "{{.Names}}")
+    return $names -contains "influencerresearch-mcp"
+}
+
+function Ensure-HostMcpPort($Config) {
+    if ($Action -notin @("Up", "Smoke")) {
+        return
+    }
+
+    if (Test-InfluencerResearchContainerRunning) {
+        return
+    }
+
+    $configuredPort = [int]$Config.mcp_port
+    if (Test-TcpPortFree $configuredPort) {
+        return
+    }
+
+    foreach ($candidate in 8771..8799) {
+        if ($candidate -eq $configuredPort) {
+            continue
+        }
+        if (Test-TcpPortFree $candidate) {
+            Write-Host "MCP host port $configuredPort is already in use; switching to $candidate."
+            $Config.mcp_port = $candidate
+            Save-RuntimeConfig $Config
+            return
+        }
+    }
+
+    throw "MCP host port $configuredPort is already in use and no free fallback port was found in 8771-8799."
+}
+
 if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
     $config = [ordered]@{
         schema_version = 1
@@ -33,11 +93,16 @@ if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
         camofox_admin_key = New-Token
         mcp_port = 8770
     }
-    [IO.File]::WriteAllText($ConfigPath, ($config | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
+    Save-RuntimeConfig $config
 }
 
 $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
 if ([int]$config.schema_version -ne 1) { throw "Unsupported runtime config schema." }
+if ([int]$config.mcp_port -lt 1024 -or [int]$config.mcp_port -gt 65535) {
+    throw "Invalid MCP host port in runtime config."
+}
+
+Ensure-HostMcpPort $config
 
 $env:CAMOFOX_ACCESS_KEY = [string]$config.camofox_access_key
 $env:CAMOFOX_ADMIN_KEY = [string]$config.camofox_admin_key
