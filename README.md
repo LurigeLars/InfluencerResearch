@@ -15,6 +15,15 @@ Camofox has **no host-published port** and is not an MCP surface. TikTok browser
 
 Persistent research data uses narrow bind mounts for the existing parent-root `control/`, `state/`, `output/` and `logs/` directories. Browser/runtime secrets and cache live in the `influencerresearch-runtime` Docker volume.
 
+
+The runtime expects the host control directory one level above the repository (for example `<redacted-workspace>\control`). On a fresh installation, initialize the required settings file from the tracked non-secret template:
+
+```powershell
+Copy-Item .\control\settings.example.json ..\control\settings.json
+```
+
+Keep `..\control\settings.json` as local runtime configuration; do not commit machine-specific control data.
+
 Start the complete stack:
 
 ```powershell
