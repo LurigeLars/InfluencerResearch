@@ -15,6 +15,15 @@ Camofox has **no host-published port** and is not an MCP surface. TikTok browser
 
 Persistent research data uses narrow bind mounts for the existing parent-root `control/`, `state/`, `output/` and `logs/` directories. Browser/runtime secrets and cache live in the `influencerresearch-runtime` Docker volume.
 
+
+The runtime expects the host control directory one level above the repository (for example `<redacted-workspace>\control`). On a fresh installation, initialize the required settings file from the tracked non-secret template:
+
+```powershell
+Copy-Item .\control\settings.example.json ..\control\settings.json
+```
+
+Keep `..\control\settings.json` as local runtime configuration; do not commit machine-specific control data.
+
 Start the complete stack:
 
 ```powershell
@@ -117,24 +126,72 @@ pwsh -NoProfile -File scripts\runtime.ps1 -Action ImportInstagramAuth
 
 On `-Action Up`, the runtime automatically imports the local cookie export when it exists. Instagram workers then run headless inside the `influencerresearch` container using the persistent Docker runtime volume.
 
+
+## Gemini transcription secret
+
+Gemini transcription uses a Windows-hosted DPAPI secret and a runtime-only tmpfs file. The API key is never stored in the repository, a Compose environment file, container metadata, or the persistent Docker runtime volume.
+
+Store or rotate the key once on the Windows host:
+
+```powershell
+pwsh -NoProfile -File scripts\configure_gemini.ps1
+```
+
+The encrypted DPAPI blob is written to:
+
+```text
+%LOCALAPPDATA%\InfluencerResearch\secrets\gemini_api_key.dpapi
+```
+
+It is bound to the current Windows user by DPAPI. On `runtime.ps1 -Action Up`, the host decrypts the key in memory and streams it into the running container at:
+
+```text
+/run/influencerresearch-secrets/gemini_api_key
+```
+
+That path is backed by tmpfs and disappears with the container. To refresh an already-running container after rotating the key:
+
+```powershell
+pwsh -NoProfile -File scripts\runtime.ps1 -Action ImportGeminiKey
+```
+
+The shared transcription backend supports `auto`, `gemini`, and `faster-whisper`. With the default `auto` provider, Gemini is preferred when the runtime secret is present and `faster-whisper` is the local fallback. Example `control/settings.json` transcription section:
+
+```json
+{
+  "transcription": {
+    "enabled": true,
+    "provider": "auto",
+    "gemini_model": "gemini-3.5-transcribe",
+    "model_size": "small",
+    "device": "cpu",
+    "compute_type": "int8",
+    "beam_size": 5,
+    "vad_filter": true
+  }
+}
+```
+
+The backend never reads `GEMINI_API_KEY` from process environment variables.
+
 ### One-time local namespace migration
 
-Older installations stored host-only auth/fallback state under `%LOCALAPPDATA%\\InstagramResearch`. The canonical host namespace is now `%LOCALAPPDATA%\\InfluencerResearch`.
+Older installations stored host-only auth/fallback state under `%LOCALAPPDATA%\InstagramResearch`. The canonical host namespace is now `%LOCALAPPDATA%\InfluencerResearch`.
 
 Preview the migration:
 
 ```powershell
-pwsh -NoProfile -File scripts\\migrate_local_namespace.ps1 -Action Plan
+pwsh -NoProfile -File scripts\migrate_local_namespace.ps1 -Action Plan
 ```
 
 Apply and verify it:
 
 ```powershell
-pwsh -NoProfile -File scripts\\migrate_local_namespace.ps1 -Action Apply
-pwsh -NoProfile -File scripts\\migrate_local_namespace.ps1 -Action Verify
+pwsh -NoProfile -File scripts\migrate_local_namespace.ps1 -Action Apply
+pwsh -NoProfile -File scripts\migrate_local_namespace.ps1 -Action Verify
 ```
 
-The migration refuses to run while the retired Windows request bridge still exists, never overwrites an existing active destination, deletes only explicitly retired bridge artifacts, and preserves otherwise-unclassified historical files under `%LOCALAPPDATA%\\InfluencerResearch\\legacy-archive-2026-09-26`.
+The migration refuses to run while the retired Windows request bridge still exists, never overwrites an existing active destination, deletes only explicitly retired bridge artifacts, and preserves otherwise-unclassified historical files under `%LOCALAPPDATA%\InfluencerResearch\legacy-archive-2026-09-26`.
 
 ## Camofox baseline
 

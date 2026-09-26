@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("Up", "Down", "Status", "Smoke", "InstagramPublicSmoke", "ImportInstagramAuth")]
+    [ValidateSet("Up", "Down", "Status", "Smoke", "InstagramPublicSmoke", "ImportInstagramAuth", "ImportGeminiKey")]
     [string]$Action = "Up",
     [string]$InstagramProfileUrl = "https://www.instagram.com/rikatillsammans/",
     [string]$InstagramHandle = "rikatillsammans",
@@ -145,15 +145,59 @@ function Import-InstagramAuth {
     if ($LASTEXITCODE -ne 0) { throw "Instagram auth verification failed." }
 }
 
+function Import-GeminiKey {
+    $secretPath = Join-Path $env:LOCALAPPDATA "InfluencerResearch\secrets\gemini_api_key.dpapi"
+    if (-not (Test-Path -LiteralPath $secretPath -PathType Leaf)) {
+        throw "Gemini DPAPI secret is missing. Run scripts\configure_gemini.ps1 first."
+    }
+
+    $serviceId = (& docker compose -f $Compose ps -q influencerresearch).Trim()
+    if (-not $serviceId) {
+        throw "InfluencerResearch container is not running. Run scripts\runtime.ps1 -Action Up first."
+    }
+
+    $encrypted = Get-Content -LiteralPath $secretPath -Raw
+    $secure = ConvertTo-SecureString -String $encrypted
+    $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    $plain = $null
+    try {
+        $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr)
+        if ([string]::IsNullOrWhiteSpace($plain)) {
+            throw "Gemini DPAPI secret decrypted to an empty value."
+        }
+
+        $plain |
+            & docker compose -f $Compose exec -T influencerresearch sh -c 'umask 077; cat > /run/influencerresearch-secrets/gemini_api_key'
+        if ($LASTEXITCODE -ne 0) { throw "Gemini key import failed." }
+    }
+    finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
+        $plain = $null
+        $secure = $null
+    }
+
+    & docker compose -f $Compose exec -T influencerresearch sh -c 'test -s /run/influencerresearch-secrets/gemini_api_key && printf "GEMINI_KEY_IMPORTED\n"'
+    if ($LASTEXITCODE -ne 0) { throw "Gemini key verification failed." }
+}
+
+function Import-AvailableRuntimeSecrets {
+    $cookiePath = Join-Path $env:LOCALAPPDATA "InfluencerResearch\secrets\instagram_cookies.json"
+    if (Test-Path -LiteralPath $cookiePath -PathType Leaf) {
+        Import-InstagramAuth
+    }
+
+    $geminiPath = Join-Path $env:LOCALAPPDATA "InfluencerResearch\secrets\gemini_api_key.dpapi"
+    if (Test-Path -LiteralPath $geminiPath -PathType Leaf) {
+        Import-GeminiKey
+    }
+}
+
 switch ($Action) {
     "Up" {
         Compose -ComposeArgs @("up", "-d", "--build")
         Write-Host "INFLUENCERRESEARCH_MCP=http://127.0.0.1:$($config.mcp_port)/mcp"
         Write-Host "Camofox is internal-only at http://camofox:9377"
-        $cookiePath = Join-Path $env:LOCALAPPDATA "InfluencerResearch\secrets\instagram_cookies.json"
-        if (Test-Path -LiteralPath $cookiePath -PathType Leaf) {
-            Import-InstagramAuth
-        }
+        Import-AvailableRuntimeSecrets
     }
     "Down" {
         Compose -ComposeArgs @("down")
@@ -174,6 +218,9 @@ switch ($Action) {
     "ImportInstagramAuth" {
         Import-InstagramAuth
     }
+    "ImportGeminiKey" {
+        Import-GeminiKey
+    }
     "Status" {
         Compose -ComposeArgs @("ps")
         try {
@@ -185,6 +232,7 @@ switch ($Action) {
     }
     "Smoke" {
         Compose -ComposeArgs @("up", "-d", "--build")
+        Import-AvailableRuntimeSecrets
         $tests = @(
             "test_camofox_container_config",
             "test_camofox_container_runtime",
@@ -192,7 +240,9 @@ switch ($Action) {
             "test_tiktok_media_transport",
             "test_smoke_production_separation",
             "test_mcp_contract",
-            "test_local_runtime_namespace"
+            "test_local_runtime_namespace",
+            "test_transcription_backend",
+            "test_instagram_ingest_limits"
         )
         & docker compose -f $Compose exec -T influencerresearch python -m unittest -v @tests
         if ($LASTEXITCODE -ne 0) { throw "Container unit smoke failed." }

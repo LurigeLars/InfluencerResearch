@@ -38,6 +38,7 @@ services:
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,size=512m,mode=1777
+      - /run/influencerresearch-secrets:rw,nosuid,nodev,noexec,size=64k,uid=10001,gid=10001,mode=0700
     cap_drop:
       - ALL
     security_opt:

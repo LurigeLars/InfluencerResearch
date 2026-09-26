@@ -16,6 +16,8 @@ from urllib.parse import urljoin, urlsplit
 
 from playwright.sync_api import sync_playwright
 
+from transcription_backend import transcribe_video
+
 
 APP_VERSION = "0.3.1"
 REEL_RE = re.compile(r"/reel/([A-Za-z0-9_-]+)/?")
@@ -348,26 +350,6 @@ def transcribe_videos(root: Path, manifest: dict, settings: dict, keys: list[str
     if not tcfg.get("enabled", True) or not keys:
         return {"attempted": 0, "completed": 0, "errors": []}
 
-    # Silence Hugging Face's Windows symlink warning; cache still works without symlinks.
-    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
-
-    try:
-        from faster_whisper import WhisperModel
-    except Exception as exc:
-        return {
-            "attempted": len(keys),
-            "completed": 0,
-            "errors": [f"faster-whisper import failed: {exc}"],
-        }
-
-    model = WhisperModel(
-        str(tcfg.get("model_size", "small")),
-        device=str(tcfg.get("device", "cpu")),
-        compute_type=str(tcfg.get("compute_type", "int8")),
-    )
-    beam_size = int(tcfg.get("beam_size", 5))
-    vad_filter = bool(tcfg.get("vad_filter", True))
-
     completed = 0
     errors: list[str] = []
 
@@ -399,37 +381,31 @@ def transcribe_videos(root: Path, manifest: dict, settings: dict, keys: list[str
             continue
 
         try:
-            segments, info = model.transcribe(
-                str(video_path),
-                beam_size=beam_size,
-                vad_filter=vad_filter,
-            )
-            rows = []
-            parts = []
-            for seg in segments:
-                text = (seg.text or "").strip()
-                if text:
-                    parts.append(text)
-                rows.append({
-                    "start": round(float(seg.start), 3),
-                    "end": round(float(seg.end), 3),
-                    "text": text,
-                })
-
-            full_text = " ".join(parts).strip()
+            result = transcribe_video(video_path, tcfg)
+            full_text = str(result.get("text") or "").strip()
             txt_path.write_text(full_text + ("\n" if full_text else ""), encoding="utf-8")
-            atomic_write_json(json_path, {
+
+            metadata = {
                 "schema_version": 1,
                 "shortcode": key,
                 "creator": creator,
                 "source_url": item.get("url"),
-                "language": getattr(info, "language", None),
-                "language_probability": getattr(info, "language_probability", None),
-                "duration": getattr(info, "duration", None),
+                "provider": result.get("provider"),
+                "model": result.get("model"),
+                "language": result.get("language"),
+                "language_probability": result.get("language_probability"),
+                "duration": result.get("duration"),
                 "generated_at": utc_now(),
-                "segments": rows,
-            })
+                "segments": result.get("segments", []),
+            }
+            if result.get("fallback_from"):
+                metadata["fallback_from"] = result.get("fallback_from")
+                metadata["fallback_error"] = result.get("fallback_error")
+            atomic_write_json(json_path, metadata)
+
             item["transcription_status"] = "DONE"
+            item["transcription_provider"] = result.get("provider")
+            item["transcription_model"] = result.get("model")
             item["transcript_txt"] = str(txt_path.relative_to(root))
             item["transcript_json"] = str(json_path.relative_to(root))
             item["transcribed_at"] = utc_now()
@@ -442,6 +418,58 @@ def transcribe_videos(root: Path, manifest: dict, settings: dict, keys: list[str
     return {"attempted": len(keys), "completed": completed, "errors": errors}
 
 
+def resolve_creators(creators_cfg: list[dict], override: str | None) -> list[str]:
+    if override is not None:
+        return [safe_creator(override)]
+
+    creators = [
+        safe_creator(str(x.get("handle", "")))
+        for x in creators_cfg
+        if x.get("enabled", False) and str(x.get("handle", "")).strip()
+    ]
+    creators = [creator for creator in creators if creator and creator != "CHANGE_ME"]
+    if not creators:
+        raise RuntimeError("No enabled creators in control\\creators.json.")
+    return creators
+
+
+def resolve_max_new_per_creator(settings: dict, override: int | None) -> int:
+    value = int(settings.get("max_new_per_creator", 10)) if override is None else int(override)
+    if value < 1:
+        raise ValueError("max_new_per_creator must be at least 1")
+    return value
+
+
+def select_transcription_keys(
+    manifest: dict,
+    summaries: list[dict],
+    *,
+    new_only: bool,
+) -> list[str]:
+    if new_only:
+        candidates = [
+            key
+            for summary in summaries
+            for key in summary.get("new_keys", [])
+        ]
+    else:
+        candidates = list(manifest.get("items", {}).keys())
+
+    selected = []
+    seen = set()
+    for key in candidates:
+        if key in seen:
+            continue
+        seen.add(key)
+        item = manifest.get("items", {}).get(key, {})
+        if (
+            item.get("download_status") == "DONE"
+            and item.get("video_file")
+            and item.get("transcription_status") != "DONE"
+        ):
+            selected.append(key)
+    return selected
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -450,6 +478,22 @@ def main() -> int:
         default=Path(__file__).resolve().parent.parent,
     )
     parser.add_argument("--skip-transcription", action="store_true")
+    parser.add_argument(
+        "--creator",
+        default=None,
+        help="Run only one explicit Instagram creator handle.",
+    )
+    parser.add_argument(
+        "--max-new-per-creator",
+        type=int,
+        default=None,
+        help="Override settings.json max_new_per_creator for this run.",
+    )
+    parser.add_argument(
+        "--transcribe-new-only",
+        action="store_true",
+        help="Transcribe only videos downloaded during this run.",
+    )
     args = parser.parse_args()
 
     root = args.root.resolve()
@@ -463,17 +507,10 @@ def main() -> int:
     )
     manifest.setdefault("items", {})
 
-    creators = [
-        safe_creator(str(x.get("handle", "")))
-        for x in creators_cfg
-        if x.get("enabled", False) and str(x.get("handle", "")).strip()
-    ]
-    creators = [c for c in creators if c and c != "CHANGE_ME"]
-    if not creators:
-        raise RuntimeError("No enabled creators in control\\creators.json.")
+    creators = resolve_creators(creators_cfg, args.creator)
 
     max_scan = int(settings.get("max_scan_per_creator", 50))
-    max_new = int(settings.get("max_new_per_creator", 10))
+    max_new = resolve_max_new_per_creator(settings, args.max_new_per_creator)
 
     started = utc_now()
     atomic_write_json(status_path, {
@@ -557,13 +594,11 @@ def main() -> int:
                 "skipped": True,
             }
         else:
-            pending = [
-                key
-                for key, item in manifest["items"].items()
-                if item.get("download_status") == "DONE"
-                and item.get("video_file")
-                and item.get("transcription_status") != "DONE"
-            ]
+            pending = select_transcription_keys(
+                manifest,
+                summaries,
+                new_only=args.transcribe_new_only,
+            )
             transcription = transcribe_videos(root, manifest, settings, pending)
             atomic_write_json(manifest_path, manifest)
 
