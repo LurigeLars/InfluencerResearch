@@ -17,7 +17,7 @@ from typing import Any
 import camofox_container as camofox_container_config
 
 
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"
 NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 REEL_ABS_RE = re.compile(r"https?://(?:www\.)?instagram\.com/reel/([A-Za-z0-9_-]+)/?", re.I)
 REEL_REL_RE = re.compile(r"(?:^|[\"'\s(])(/reel/[A-Za-z0-9_-]+/?)", re.I)
@@ -36,7 +36,10 @@ AUTH_PROMPT_PATTERNS = (
     "login",
     "sign up",
 )
-LANGUAGE_DIALOG_PATTERN = "switch display language"
+LANGUAGE_DIALOG_PATTERNS = (
+    "switch display language",
+    "byt visningsspråk",
+)
 
 
 def utc_now() -> str:
@@ -98,21 +101,32 @@ def extract_reel_urls(obj: Any) -> list[str]:
     return found
 
 
-def classify_snapshot(obj: Any, expected_handle: str) -> dict[str, Any]:
-    text = "\n".join(flatten_strings(obj))
+def snapshot_body_text(obj: Any) -> str:
+    if isinstance(obj, dict) and isinstance(obj.get("snapshot"), str):
+        return str(obj["snapshot"])
+    return "\n".join(flatten_strings(obj))
+
+
+def classify_snapshot(
+    snapshot_obj: Any,
+    expected_handle: str,
+    links_obj: Any = None,
+) -> dict[str, Any]:
+    text = snapshot_body_text(snapshot_obj)
     low = text.casefold()
     block_hits = sorted({p for p in HARD_BLOCK_PATTERNS if p in low})
     auth_prompt_hits = sorted({p for p in AUTH_PROMPT_PATTERNS if p in low})
-    language_dialog_visible = LANGUAGE_DIALOG_PATTERN in low
+    language_dialog_hits = sorted({p for p in LANGUAGE_DIALOG_PATTERNS if p in low})
     handle_visible = expected_handle.casefold() in low
-    reels = extract_reel_urls(obj)
+    reels = extract_reel_urls({"snapshot": snapshot_obj, "links": links_obj})
     return {
         "handle_visible": handle_visible,
         "reel_count": len(reels),
         "reels": reels,
         "block_hits": block_hits,
         "auth_prompt_hits": auth_prompt_hits,
-        "language_dialog_visible": language_dialog_visible,
+        "language_dialog_visible": bool(language_dialog_hits),
+        "language_dialog_hits": language_dialog_hits,
         "snapshot_excerpt": text[:1200],
     }
 
@@ -161,8 +175,41 @@ def probe_public_session(profile_url: str, handle: str, run_index: int) -> dict[
             except Exception as exc:
                 links_error = f"{type(exc).__name__}: {exc}"[:1000]
 
-            combined = {"snapshot": snap, "links": links}
-            classified = classify_snapshot(combined, handle)
+            classified = classify_snapshot(snap, handle, links)
+            language_dialog_dismiss_attempted = False
+            language_dialog_dismissed = False
+            language_dialog_dismiss_error = None
+
+            if classified["language_dialog_visible"]:
+                language_dialog_dismiss_attempted = True
+                try:
+                    request_json(
+                        "POST",
+                        f"/tabs/{urllib.parse.quote(tab_id)}/press",
+                        {"userId": user_id, "key": "Escape"},
+                        timeout=10,
+                    )
+                    time.sleep(0.75)
+                    snap = request_json(
+                        "GET",
+                        f"/tabs/{urllib.parse.quote(tab_id)}/snapshot?"
+                        + urllib.parse.urlencode({"userId": user_id, "format": "text"}),
+                        timeout=30,
+                    )
+                    try:
+                        links = request_json(
+                            "GET",
+                            f"/tabs/{urllib.parse.quote(tab_id)}/links?"
+                            + urllib.parse.urlencode({"userId": user_id, "limit": 120}),
+                            timeout=20,
+                        )
+                    except Exception as exc:
+                        links_error = f"{type(exc).__name__}: {exc}"[:1000]
+                    classified = classify_snapshot(snap, handle, links)
+                    language_dialog_dismissed = not classified["language_dialog_visible"]
+                except Exception as exc:
+                    language_dialog_dismiss_error = f"{type(exc).__name__}: {exc}"[:1000]
+
             for url in classified["reels"]:
                 if url not in all_reels:
                     all_reels.append(url)
@@ -175,6 +222,10 @@ def probe_public_session(profile_url: str, handle: str, run_index: int) -> dict[
                     "block_hits": classified["block_hits"],
                     "auth_prompt_hits": classified["auth_prompt_hits"],
                     "language_dialog_visible": classified["language_dialog_visible"],
+                    "language_dialog_hits": classified["language_dialog_hits"],
+                    "language_dialog_dismiss_attempted": language_dialog_dismiss_attempted,
+                    "language_dialog_dismissed": language_dialog_dismissed,
+                    "language_dialog_dismiss_error": language_dialog_dismiss_error,
                     "links_error": links_error,
                     "snapshot_excerpt": classified["snapshot_excerpt"],
                 }
