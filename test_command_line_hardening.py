@@ -25,6 +25,12 @@ class CommandLineHardeningTests(unittest.TestCase):
             canonical_reel_url("https://m.instagram.com/reel/ABC_123/?utm_source=x"),
             "https://www.instagram.com/reel/ABC_123/",
         )
+        self.assertEqual(
+            canonical_reel_url(
+                "https://www.instagram.com/rikatillsammans/reel/DduJ5WpiTTU/"
+            ),
+            "https://www.instagram.com/reel/DduJ5WpiTTU/",
+        )
         with self.assertRaises(ValueError):
             canonical_reel_url("--exec=calc")
 
