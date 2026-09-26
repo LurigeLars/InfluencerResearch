@@ -54,6 +54,51 @@ Long-running research operations are fixed allowlisted jobs. Only one research j
 
 The former Windows request-file/Scheduled-Task research bridge is retired and is not part of the canonical runtime.
 
+## Public Cloudflare access
+
+The optional public stack follows the same pattern as the other local MCP services:
+
+```text
+Cloudflare Access
+  -> remotely managed Cloudflare Tunnel
+  -> gateway:8080
+  -> influencerresearch:8770/mcp
+```
+
+The gateway and `cloudflared` containers publish no host ports. The gateway joins the existing `influencerresearch_runtime` Docker network and forwards only to the internal MCP service. Camofox remains inaccessible from the public stack.
+
+Cloudflare should be configured with:
+
+- public hostname: `<redacted-private-host>`
+- tunnel origin service: `http://gateway:8080`
+- connector endpoint: `https://<redacted-private-host>/mcp`
+- Cloudflare Access application protecting the MCP hostname/path
+
+Prepare local configuration:
+
+```powershell
+Copy-Item public\gateway.env.example public\gateway.env
+Copy-Item public\tunnel.env.example public\tunnel.env
+```
+
+Fill `public/gateway.env` with the Access team domain and Application Audience (AUD) tag. Optionally set an email allowlist for interactive Access identity. Fill `public/tunnel.env` with the token from the remotely managed Cloudflare Tunnel. Both local files are gitignored and dockerignored.
+
+Start the base runtime first, then the public edge:
+
+```powershell
+pwsh -NoProfile -File scripts\runtime.ps1 -Action Up
+pwsh -NoProfile -File scripts\public.ps1 -Action Up
+```
+
+Inspect without exposing credentials:
+
+```powershell
+pwsh -NoProfile -File scripts\public.ps1 -Action Status
+pwsh -NoProfile -File scripts\public.ps1 -Action Logs
+```
+
+Cloudflare Access remains the authentication boundary. The gateway independently verifies the Access JWT audience/issuer, restricts requests to `/mcp`, caps request size/rate, strips client credentials before proxying, and applies the same eight-tool public allowlist as the MCP server.
+
 ## Instagram authentication bootstrap
 
 Instagram authentication requires an occasional interactive browser login. This is a **bootstrap step only**, not a continuously running local service.
