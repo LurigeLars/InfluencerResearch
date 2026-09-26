@@ -24,7 +24,7 @@ function PublicCompose([string[]]$ComposeArgs) {
 
 function Require-LocalConfig {
     if (-not (Test-Path -LiteralPath $GatewayEnv -PathType Leaf)) {
-        throw "Missing local gateway config. Create the gitignored deployment-local file out of band."
+        throw "Missing local gateway config. Copy public\gateway.env.example to public\gateway.env and replace the placeholders."
     }
 
     & docker network inspect $RuntimeNetwork *> $null
