@@ -17,7 +17,7 @@ from typing import Any
 import camofox_container as camofox_container_config
 
 
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.6.0"
 NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 REEL_ABS_RE = re.compile(r"https?://(?:www\.)?instagram\.com/reel/([A-Za-z0-9_-]+)/?", re.I)
 REEL_REL_RE = re.compile(r"(?:^|[\"'\s(=])(/reel/[A-Za-z0-9_-]+/?)", re.I)
@@ -154,10 +154,15 @@ def dom_probe(tab_id: str, user_id: str, expected_handle: str) -> dict[str, Any]
       const bodyText = document.body?.innerText || "";
       const links = Array.from(document.querySelectorAll("a[href]"), a => a.href).filter(Boolean);
       const reels = Array.from(new Set(links.filter(href => /instagram\.com\/reel\//i.test(href)))).slice(0, 50);
+      const posts = Array.from(new Set(links.filter(href => /instagram\.com\/(?:p|reel)\//i.test(href)))).slice(0, 100);
       const dialogs = Array.from(document.querySelectorAll('dialog,[role="dialog"]')).slice(0, 10).map(el => ({
         role: el.getAttribute("role") || el.tagName.toLowerCase(),
         text: (el.innerText || "").slice(0, 1000),
       }));
+      const buttons = Array.from(document.querySelectorAll("button")).slice(0, 100).map(el => ({
+        text: (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim(),
+        ariaLabel: el.getAttribute("aria-label"),
+      })).filter(row => row.text || row.ariaLabel);
       const selects = Array.from(document.querySelectorAll("select")).slice(0, 20).map(el => ({
         ariaLabel: el.getAttribute("aria-label"),
         value: el.value,
@@ -170,8 +175,13 @@ def dom_probe(tab_id: str, user_id: str, expected_handle: str) -> dict[str, Any]
         body_text_length: bodyText.length,
         body_text_excerpt: bodyText.slice(0, 5000),
         reel_links: reels,
+        media_links: posts,
         dialogs,
+        buttons,
         selects,
+        cookie_consent_visible: dialogs.some(d =>
+          /allow the use of cookies from instagram|vill du tillåta användningen av cookies från instagram/i.test(d.text)
+        ),
       };
     })()"""
     response = request_json(
@@ -185,6 +195,40 @@ def dom_probe(tab_id: str, user_id: str, expected_handle: str) -> dict[str, Any]
         raise RuntimeError(f"Unexpected DOM probe response: {response}")
     body_text = str(result.get("body_text_excerpt") or "")
     result["handle_visible"] = expected_handle.casefold() in body_text.casefold()
+    return result
+
+
+def decline_optional_cookies(tab_id: str, user_id: str) -> dict[str, Any]:
+    expression = r"""(() => {
+      const normalize = value => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
+      const acceptedLabels = new Set([
+        "decline optional cookies",
+        "neka valfria cookies",
+      ]);
+      const buttons = Array.from(document.querySelectorAll("button"));
+      const target = buttons.find(button =>
+        acceptedLabels.has(normalize(button.innerText || button.textContent))
+      );
+      const available = buttons
+        .map(button => (button.innerText || button.textContent || "").replace(/\s+/g, " ").trim())
+        .filter(Boolean)
+        .slice(0, 50);
+      if (!target) {
+        return {clicked: false, reason: "decline_button_not_found", available_buttons: available};
+      }
+      const label = (target.innerText || target.textContent || "").replace(/\s+/g, " ").trim();
+      target.click();
+      return {clicked: true, label, available_buttons: available};
+    })()"""
+    response = request_json(
+        "POST",
+        f"/tabs/{urllib.parse.quote(tab_id)}/evaluate",
+        {"userId": user_id, "expression": expression},
+        timeout=20,
+    )
+    result = response.get("result") if isinstance(response, dict) else None
+    if not isinstance(result, dict):
+        raise RuntimeError(f"Unexpected cookie-consent response: {response}")
     return result
 
 
@@ -246,52 +290,39 @@ def probe_public_session(profile_url: str, handle: str, run_index: int) -> dict[
             language_dialog_dismiss_attempted = False
             language_dialog_dismissed = False
             language_dialog_dismiss_error = None
-
             language_dialog_action_info = None
-            if classified["language_dialog_visible"]:
-                language_dialog_dismiss_attempted = True
-                language_dialog_action_info = language_dialog_action(snap)
+
+            cookie_consent_attempted = False
+            cookie_consent_action = None
+            cookie_consent_error = None
+            if isinstance(dom, dict) and dom.get("cookie_consent_visible"):
+                cookie_consent_attempted = True
                 try:
-                    language_ref = language_dialog_action_info["ref"]
-                    if not language_ref:
-                        raise RuntimeError("Language dialog combobox ref was not found in snapshot.")
-                    request_json(
-                        "POST",
-                        f"/tabs/{urllib.parse.quote(tab_id)}/select",
-                        {
-                            "userId": user_id,
-                            "ref": language_ref,
-                            "option": language_dialog_action_info["target"],
-                        },
-                        timeout=15,
-                    )
-                    time.sleep(2.0)
-                    snap = request_json(
-                        "GET",
-                        f"/tabs/{urllib.parse.quote(tab_id)}/snapshot?"
-                        + urllib.parse.urlencode({"userId": user_id, "format": "text"}),
-                        timeout=30,
-                    )
-                    try:
-                        links = request_json(
-                            "GET",
-                            f"/tabs/{urllib.parse.quote(tab_id)}/links?"
-                            + urllib.parse.urlencode({"userId": user_id, "limit": 120}),
-                            timeout=20,
-                        )
-                    except Exception as exc:
-                        links_error = f"{type(exc).__name__}: {exc}"[:1000]
-                    classified = classify_snapshot(snap, handle, links)
-                    language_dialog_dismissed = not classified["language_dialog_visible"]
-                    try:
+                    cookie_consent_action = decline_optional_cookies(tab_id, user_id)
+                    if cookie_consent_action.get("clicked"):
+                        time.sleep(2.0)
                         dom = dom_probe(tab_id, user_id, handle)
+                        snap = request_json(
+                            "GET",
+                            f"/tabs/{urllib.parse.quote(tab_id)}/snapshot?"
+                            + urllib.parse.urlencode({"userId": user_id, "format": "text"}),
+                            timeout=30,
+                        )
+                        try:
+                            links = request_json(
+                                "GET",
+                                f"/tabs/{urllib.parse.quote(tab_id)}/links?"
+                                + urllib.parse.urlencode({"userId": user_id, "limit": 120}),
+                                timeout=20,
+                            )
+                        except Exception as exc:
+                            links_error = f"{type(exc).__name__}: {exc}"[:1000]
+                        classified = classify_snapshot(snap, handle, links)
                         for url in extract_reel_urls(dom.get("reel_links", [])):
                             if url not in all_reels:
                                 all_reels.append(url)
-                    except Exception as exc:
-                        dom_error = f"{type(exc).__name__}: {exc}"[:1000]
                 except Exception as exc:
-                    language_dialog_dismiss_error = f"{type(exc).__name__}: {exc}"[:1000]
+                    cookie_consent_error = f"{type(exc).__name__}: {exc}"[:1000]
 
             for url in classified["reels"]:
                 if url not in all_reels:
@@ -310,6 +341,9 @@ def probe_public_session(profile_url: str, handle: str, run_index: int) -> dict[
                     "language_dialog_action": language_dialog_action_info,
                     "language_dialog_dismissed": language_dialog_dismissed,
                     "language_dialog_dismiss_error": language_dialog_dismiss_error,
+                    "cookie_consent_attempted": cookie_consent_attempted,
+                    "cookie_consent_action": cookie_consent_action,
+                    "cookie_consent_error": cookie_consent_error,
                     "links_error": links_error,
                     "snapshot_excerpt": classified["snapshot_excerpt"],
                     "dom_probe": dom,
@@ -460,7 +494,7 @@ def main() -> int:
         decision = "CAMOFOX_PUBLIC_ACCESS_INCONCLUSIVE"
 
     interaction_used = any(
-        round_row.get("language_dialog_dismiss_attempted")
+        round_row.get("cookie_consent_attempted")
         for result_row in results
         for round_row in result_row.get("rounds", [])
     )
@@ -474,6 +508,7 @@ def main() -> int:
         "handle": handle,
         "auth_used": False,
         "cookies_used": False,
+        "cookie_consent_interaction_used": interaction_used,
         "interaction_used": interaction_used,
         "runs_requested": runs,
         "successful_runs": successful_runs,
