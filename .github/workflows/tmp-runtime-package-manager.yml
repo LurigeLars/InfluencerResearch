@@ -1,0 +1,63 @@
+name: Temporary package manager surface validation
+
+on:
+  push:
+    branches:
+      - fix/runtime-package-manager-surface-20260926
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build candidate runtime
+        run: docker build -f runtime/influencerresearch/Dockerfile -t influencerresearch-runtime-pmtest .
+
+      - name: Inspect package metadata before removing pip
+        run: |
+          docker run --rm --entrypoint sh influencerresearch-runtime-pmtest -lc '
+            python -c "import importlib.metadata as m; print("msgpack",m.version("msgpack")); print("setuptools",m.version("setuptools"))"
+            find /usr/local/lib/python3.12/site-packages -maxdepth 4 \( -iname "jaraco.context-*.dist-info" -o -iname "wheel-*.dist-info" -o -iname "setuptools-*.dist-info" -o -iname "msgpack-*.dist-info" \) -print | sort
+            echo "--- pip vendor relevant lines ---"
+            grep -E "^(msgpack|setuptools|jaraco.context|wheel)==" /usr/local/lib/python3.12/site-packages/pip/_vendor/vendor.txt || true
+          '
+
+      - name: Simulate runtime without pip
+        run: |
+          docker run --rm --user root --entrypoint sh influencerresearch-runtime-pmtest -lc '
+            set -eu
+            python -m pip check
+            python -m pip uninstall -y pip
+            test ! -d /usr/local/lib/python3.12/site-packages/pip
+            python - <<'"'"'PY'"'"'
+          import importlib
+          modules = [
+              "mcp",
+              "playwright",
+              "yt_dlp",
+              "faster_whisper",
+              "imageio_ffmpeg",
+              "msgpack",
+              "curl_cffi",
+              "cffi",
+              "pycparser",
+              "certifi",
+              "influencerresearch_mcp",
+          ]
+          for name in modules:
+              importlib.import_module(name)
+              print("IMPORT_OK", name)
+          PY
+          '
+
+      - name: Report metadata after pip removal
+        run: |
+          docker run --rm --user root --entrypoint sh influencerresearch-runtime-pmtest -lc '
+            python -m pip uninstall -y pip >/dev/null
+            find /usr/local/lib/python3.12/site-packages -maxdepth 4 \( -iname "jaraco.context-*.dist-info" -o -iname "wheel-*.dist-info" -o -iname "setuptools-*.dist-info" -o -iname "msgpack-*.dist-info" \) -print | sort
+          '
