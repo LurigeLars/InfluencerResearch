@@ -17,14 +17,11 @@ from typing import Any
 import camofox_container as camofox_container_config
 
 
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.8.0"
 NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 REEL_ABS_RE = re.compile(r"https?://(?:www\.)?instagram\.com/reel/([A-Za-z0-9_-]+)/?", re.I)
-REEL_REL_RE = re.compile(r"(?:^|[\"'\s(])(/reel/[A-Za-z0-9_-]+/?)", re.I)
-BLOCK_PATTERNS = (
-    "log in",
-    "login",
-    "sign up",
+REEL_REL_RE = re.compile(r"(?:^|[\"'\s(=])(/reel/[A-Za-z0-9_-]+/?)", re.I)
+HARD_BLOCK_PATTERNS = (
     "challenge",
     "checkpoint",
     "something went wrong",
@@ -34,6 +31,20 @@ BLOCK_PATTERNS = (
     "we restrict certain activity",
     "automated behavior",
 )
+AUTH_PROMPT_PATTERNS = (
+    "log in",
+    "login",
+    "sign up",
+)
+LANGUAGE_DIALOG_PATTERNS = (
+    "switch display language",
+    "byt visningsspråk",
+)
+LANGUAGE_COMBOBOX_RE = re.compile(
+    r'combobox "(?:Switch Display Language|Byt visningsspråk)" \[(e\d+)\]',
+    re.I,
+)
+SELECTED_LANGUAGE_RE = re.compile(r'- option "([^"]+)" \[selected\]', re.I)
 
 
 def utc_now() -> str:
@@ -95,19 +106,191 @@ def extract_reel_urls(obj: Any) -> list[str]:
     return found
 
 
-def classify_snapshot(obj: Any, expected_handle: str) -> dict[str, Any]:
-    text = "\n".join(flatten_strings(obj))
+def snapshot_body_text(obj: Any) -> str:
+    if isinstance(obj, dict) and isinstance(obj.get("snapshot"), str):
+        return str(obj["snapshot"])
+    return "\n".join(flatten_strings(obj))
+
+
+def language_dialog_action(snapshot_obj: Any) -> dict[str, Any]:
+    text = snapshot_body_text(snapshot_obj)
+    ref_match = LANGUAGE_COMBOBOX_RE.search(text)
+    selected_match = SELECTED_LANGUAGE_RE.search(text)
+    selected = selected_match.group(1) if selected_match else None
+    target = "English" if selected and selected.casefold() == "svenska" else "Svenska"
+    return {
+        "ref": ref_match.group(1) if ref_match else None,
+        "selected": selected,
+        "target": target,
+    }
+
+
+def classify_snapshot(
+    snapshot_obj: Any,
+    expected_handle: str,
+    links_obj: Any = None,
+) -> dict[str, Any]:
+    text = snapshot_body_text(snapshot_obj)
     low = text.casefold()
-    block_hits = sorted({p for p in BLOCK_PATTERNS if p in low})
+    block_hits = sorted({p for p in HARD_BLOCK_PATTERNS if p in low})
+    auth_prompt_hits = sorted({p for p in AUTH_PROMPT_PATTERNS if p in low})
+    language_dialog_hits = sorted({p for p in LANGUAGE_DIALOG_PATTERNS if p in low})
     handle_visible = expected_handle.casefold() in low
-    reels = extract_reel_urls(obj)
+    reels = extract_reel_urls({"snapshot": snapshot_obj, "links": links_obj})
     return {
         "handle_visible": handle_visible,
         "reel_count": len(reels),
         "reels": reels,
         "block_hits": block_hits,
+        "auth_prompt_hits": auth_prompt_hits,
+        "language_dialog_visible": bool(language_dialog_hits),
+        "language_dialog_hits": language_dialog_hits,
         "snapshot_excerpt": text[:1200],
     }
+
+
+def dom_probe(tab_id: str, user_id: str, expected_handle: str) -> dict[str, Any]:
+    expression = r"""(() => {
+      const bodyText = document.body?.innerText || "";
+      const links = Array.from(document.querySelectorAll("a[href]"), a => a.href).filter(Boolean);
+      const reels = Array.from(new Set(links.filter(href => /instagram\.com\/reel\//i.test(href)))).slice(0, 50);
+      const posts = Array.from(new Set(links.filter(href => /instagram\.com\/(?:p|reel)\//i.test(href)))).slice(0, 100);
+      const dialogs = Array.from(document.querySelectorAll('dialog,[role="dialog"]')).slice(0, 10).map(el => ({
+        role: el.getAttribute("role") || el.tagName.toLowerCase(),
+        text: (el.innerText || "").slice(0, 1000),
+      }));
+      const buttons = Array.from(document.querySelectorAll("button")).slice(0, 100).map(el => ({
+        text: (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim(),
+        ariaLabel: el.getAttribute("aria-label"),
+      })).filter(row => row.text || row.ariaLabel);
+      const selects = Array.from(document.querySelectorAll("select")).slice(0, 20).map(el => ({
+        ariaLabel: el.getAttribute("aria-label"),
+        value: el.value,
+        selectedText: el.selectedOptions?.[0]?.text || null,
+        options: Array.from(el.options || []).slice(0, 100).map(o => o.text),
+      }));
+      return {
+        title: document.title,
+        href: location.href,
+        body_text_length: bodyText.length,
+        body_text_excerpt: bodyText.slice(0, 5000),
+        reel_links: reels,
+        media_links: posts,
+        dialogs,
+        buttons,
+        selects,
+        cookie_consent_visible: dialogs.some(d =>
+          /allow the use of cookies from instagram|vill du tillåta användningen av cookies från instagram/i.test(d.text)
+        ),
+        media_auth_gate_visible: dialogs.some(d =>
+          /show photos, videos and more from|visa foton, videor med mera från/i.test(d.text)
+          && /(sign up|registrera dig)/i.test(d.text)
+          && /(log in|logga in)/i.test(d.text)
+        ),
+      };
+    })()"""
+    response = request_json(
+        "POST",
+        f"/tabs/{urllib.parse.quote(tab_id)}/evaluate",
+        {"userId": user_id, "expression": expression},
+        timeout=30,
+    )
+    result = response.get("result") if isinstance(response, dict) else None
+    if not isinstance(result, dict):
+        raise RuntimeError(f"Unexpected DOM probe response: {response}")
+    body_text = str(result.get("body_text_excerpt") or "")
+    result["handle_visible"] = expected_handle.casefold() in body_text.casefold()
+    return result
+
+
+def decline_optional_cookies(tab_id: str, user_id: str) -> dict[str, Any]:
+    expression = r"""(() => {
+      const normalize = value => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
+      const acceptedLabels = new Set([
+        "decline optional cookies",
+        "neka valfria cookies",
+      ]);
+      const buttons = Array.from(document.querySelectorAll("button"));
+      const target = buttons.find(button =>
+        acceptedLabels.has(normalize(button.innerText || button.textContent))
+      );
+      const available = buttons
+        .map(button => (button.innerText || button.textContent || "").replace(/\s+/g, " ").trim())
+        .filter(Boolean)
+        .slice(0, 50);
+      if (!target) {
+        return {clicked: false, reason: "decline_button_not_found", available_buttons: available};
+      }
+      const label = (target.innerText || target.textContent || "").replace(/\s+/g, " ").trim();
+      target.click();
+      return {clicked: true, label, available_buttons: available};
+    })()"""
+    response = request_json(
+        "POST",
+        f"/tabs/{urllib.parse.quote(tab_id)}/evaluate",
+        {"userId": user_id, "expression": expression},
+        timeout=20,
+    )
+    result = response.get("result") if isinstance(response, dict) else None
+    if not isinstance(result, dict):
+        raise RuntimeError(f"Unexpected cookie-consent response: {response}")
+    return result
+
+
+def dismiss_profile_media_auth_gate(tab_id: str, user_id: str) -> dict[str, Any]:
+    expression = r"""(() => {
+      const normalize = value => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
+      const dialogs = Array.from(document.querySelectorAll('dialog,[role="dialog"]'));
+      const gate = dialogs.find(dialog => {
+        const text = normalize(dialog.innerText || dialog.textContent);
+        return (
+          (text.includes("show photos, videos and more from") || text.includes("visa foton, videor med mera från"))
+          && (text.includes("sign up") || text.includes("registrera dig"))
+          && (text.includes("log in") || text.includes("logga in"))
+        );
+      });
+      if (!gate) {
+        return {clicked: false, reason: "media_auth_gate_not_found"};
+      }
+      const candidates = Array.from(gate.querySelectorAll("button,[role='button']"));
+      const close = candidates.find(el => {
+        const img = el.querySelector("img");
+        const label = normalize([
+          el.innerText,
+          el.textContent,
+          el.getAttribute("aria-label"),
+          el.getAttribute("title"),
+          img?.getAttribute("alt"),
+          img?.getAttribute("aria-label"),
+          img?.getAttribute("title"),
+        ].filter(Boolean).join(" "));
+        return label === "close" || label === "stäng" || label.includes(" close") || label.includes(" stäng");
+      });
+      if (!close) {
+        return {
+          clicked: false,
+          reason: "media_auth_gate_close_not_found",
+          controls: candidates.slice(0, 20).map(el => ({
+            text: normalize(el.innerText || el.textContent),
+            ariaLabel: el.getAttribute("aria-label"),
+            title: el.getAttribute("title"),
+            imgAlt: el.querySelector("img")?.getAttribute("alt") || null,
+          })),
+        };
+      }
+      close.click();
+      return {clicked: true};
+    })()"""
+    response = request_json(
+        "POST",
+        f"/tabs/{urllib.parse.quote(tab_id)}/evaluate",
+        {"userId": user_id, "expression": expression},
+        timeout=20,
+    )
+    result = response.get("result") if isinstance(response, dict) else None
+    if not isinstance(result, dict):
+        raise RuntimeError(f"Unexpected profile media-gate response: {response}")
+    return result
 
 
 def probe_public_session(profile_url: str, handle: str, run_index: int) -> dict[str, Any]:
@@ -154,8 +337,72 @@ def probe_public_session(profile_url: str, handle: str, run_index: int) -> dict[
             except Exception as exc:
                 links_error = f"{type(exc).__name__}: {exc}"[:1000]
 
-            combined = {"snapshot": snap, "links": links}
-            classified = classify_snapshot(combined, handle)
+            classified = classify_snapshot(snap, handle, links)
+            dom = None
+            dom_error = None
+            try:
+                dom = dom_probe(tab_id, user_id, handle)
+                for url in extract_reel_urls(dom.get("reel_links", [])):
+                    if url not in all_reels:
+                        all_reels.append(url)
+            except Exception as exc:
+                dom_error = f"{type(exc).__name__}: {exc}"[:1000]
+
+            language_dialog_dismiss_attempted = False
+            language_dialog_dismissed = False
+            language_dialog_dismiss_error = None
+            language_dialog_action_info = None
+
+            cookie_consent_attempted = False
+            cookie_consent_action = None
+            cookie_consent_error = None
+            media_auth_gate_seen = bool(isinstance(dom, dict) and dom.get("media_auth_gate_visible"))
+            media_auth_gate_dismiss_attempted = False
+            media_auth_gate_dismiss_action = None
+            media_auth_gate_dismiss_error = None
+            if isinstance(dom, dict) and dom.get("cookie_consent_visible"):
+                cookie_consent_attempted = True
+                try:
+                    cookie_consent_action = decline_optional_cookies(tab_id, user_id)
+                    if cookie_consent_action.get("clicked"):
+                        time.sleep(2.0)
+                        dom = dom_probe(tab_id, user_id, handle)
+                        snap = request_json(
+                            "GET",
+                            f"/tabs/{urllib.parse.quote(tab_id)}/snapshot?"
+                            + urllib.parse.urlencode({"userId": user_id, "format": "text"}),
+                            timeout=30,
+                        )
+                        try:
+                            links = request_json(
+                                "GET",
+                                f"/tabs/{urllib.parse.quote(tab_id)}/links?"
+                                + urllib.parse.urlencode({"userId": user_id, "limit": 120}),
+                                timeout=20,
+                            )
+                        except Exception as exc:
+                            links_error = f"{type(exc).__name__}: {exc}"[:1000]
+                        classified = classify_snapshot(snap, handle, links)
+                        for url in extract_reel_urls(dom.get("reel_links", [])):
+                            if url not in all_reels:
+                                all_reels.append(url)
+                except Exception as exc:
+                    cookie_consent_error = f"{type(exc).__name__}: {exc}"[:1000]
+
+            if isinstance(dom, dict) and dom.get("media_auth_gate_visible"):
+                media_auth_gate_seen = True
+                media_auth_gate_dismiss_attempted = True
+                try:
+                    media_auth_gate_dismiss_action = dismiss_profile_media_auth_gate(tab_id, user_id)
+                    if media_auth_gate_dismiss_action.get("clicked"):
+                        time.sleep(1.5)
+                        dom = dom_probe(tab_id, user_id, handle)
+                        for url in extract_reel_urls(dom.get("reel_links", [])):
+                            if url not in all_reels:
+                                all_reels.append(url)
+                except Exception as exc:
+                    media_auth_gate_dismiss_error = f"{type(exc).__name__}: {exc}"[:1000]
+
             for url in classified["reels"]:
                 if url not in all_reels:
                     all_reels.append(url)
@@ -166,8 +413,24 @@ def probe_public_session(profile_url: str, handle: str, run_index: int) -> dict[
                     "handle_visible": classified["handle_visible"],
                     "reel_count_total": len(all_reels),
                     "block_hits": classified["block_hits"],
+                    "auth_prompt_hits": classified["auth_prompt_hits"],
+                    "language_dialog_visible": classified["language_dialog_visible"],
+                    "language_dialog_hits": classified["language_dialog_hits"],
+                    "language_dialog_dismiss_attempted": language_dialog_dismiss_attempted,
+                    "language_dialog_action": language_dialog_action_info,
+                    "language_dialog_dismissed": language_dialog_dismissed,
+                    "language_dialog_dismiss_error": language_dialog_dismiss_error,
+                    "cookie_consent_attempted": cookie_consent_attempted,
+                    "cookie_consent_action": cookie_consent_action,
+                    "cookie_consent_error": cookie_consent_error,
+                    "media_auth_gate_seen": media_auth_gate_seen,
+                    "media_auth_gate_dismiss_attempted": media_auth_gate_dismiss_attempted,
+                    "media_auth_gate_dismiss_action": media_auth_gate_dismiss_action,
+                    "media_auth_gate_dismiss_error": media_auth_gate_dismiss_error,
                     "links_error": links_error,
                     "snapshot_excerpt": classified["snapshot_excerpt"],
+                    "dom_probe": dom,
+                    "dom_probe_error": dom_error,
                 }
             )
 
@@ -183,15 +446,251 @@ def probe_public_session(profile_url: str, handle: str, run_index: int) -> dict[
             time.sleep(1.5)
 
         blocked = any(row["block_hits"] for row in rounds)
-        handle_visible = any(row["handle_visible"] for row in rounds)
+        handle_visible = any(
+            row["handle_visible"]
+            or bool((row.get("dom_probe") or {}).get("handle_visible"))
+            for row in rounds
+        )
+        media_auth_gated = any(
+            bool(row.get("media_auth_gate_seen"))
+            and not bool((row.get("dom_probe") or {}).get("media_links"))
+            for row in rounds
+        )
         return {
             "run": run_index,
             "ok": bool(handle_visible and not blocked),
             "handle_visible": handle_visible,
             "blocked": blocked,
+            "media_auth_gated": media_auth_gated,
             "reel_count": len(all_reels),
             "reels": all_reels[:20],
+            "reel_discovery_ok": bool(all_reels),
             "rounds": rounds,
+        }
+    finally:
+        if tab_id:
+            with contextlib.suppress(Exception):
+                request_json(
+                    "DELETE",
+                    f"/tabs/{urllib.parse.quote(tab_id)}?"
+                    + urllib.parse.urlencode({"userId": user_id}),
+                    timeout=10,
+                )
+        with contextlib.suppress(Exception):
+            request_json(
+                "DELETE",
+                f"/sessions/{urllib.parse.quote(user_id)}/storage_state",
+                timeout=10,
+            )
+
+
+
+def story_dom_probe(tab_id: str, user_id: str, handle: str) -> dict[str, Any]:
+    expression = r"""(() => {
+      const bodyText = document.body?.innerText || "";
+      const href = location.href;
+      const normalize = value => (value || "").replace(/\s+/g, " ").trim();
+      const buttons = Array.from(document.querySelectorAll("button")).slice(0, 100).map(el => ({
+        text: normalize(el.innerText || el.textContent),
+        ariaLabel: el.getAttribute("aria-label"),
+      })).filter(row => row.text || row.ariaLabel);
+      const videos = Array.from(document.querySelectorAll("video")).slice(0, 20).map(el => ({
+        src: el.currentSrc || el.src || null,
+        poster: el.poster || null,
+        paused: el.paused,
+      }));
+      const images = Array.from(document.querySelectorAll("img")).slice(0, 80).map(el => ({
+        src: el.currentSrc || el.src || null,
+        alt: el.alt || null,
+      }));
+      const links = Array.from(document.querySelectorAll("a[href]"), a => a.href).filter(Boolean);
+      const storyLinks = Array.from(new Set(
+        links.filter(link => /instagram\.com\/stories\//i.test(link))
+      )).slice(0, 50);
+      const dialogs = Array.from(document.querySelectorAll('dialog,[role="dialog"]')).slice(0, 10).map(el => ({
+        role: el.getAttribute("role") || el.tagName.toLowerCase(),
+        text: (el.innerText || "").slice(0, 1500),
+      }));
+      return {
+        title: document.title,
+        href,
+        body_text_length: bodyText.length,
+        body_text_excerpt: bodyText.slice(0, 5000),
+        buttons,
+        videos,
+        images,
+        story_links: storyLinks,
+        dialogs,
+        cookie_consent_visible: dialogs.some(d =>
+          /allow the use of cookies from instagram|vill du tillåta användningen av cookies från instagram/i.test(d.text)
+        ),
+      };
+    })()"""
+    response = request_json(
+        "POST",
+        f"/tabs/{urllib.parse.quote(tab_id)}/evaluate",
+        {"userId": user_id, "expression": expression},
+        timeout=30,
+    )
+    result = response.get("result") if isinstance(response, dict) else None
+    if not isinstance(result, dict):
+        raise RuntimeError(f"Unexpected story DOM probe response: {response}")
+
+    href = str(result.get("href") or "")
+    body = str(result.get("body_text_excerpt") or "")
+    low = body.casefold()
+    story_prefix = f"https://www.instagram.com/stories/{handle.casefold()}/"
+    result["story_url_active"] = href.casefold().startswith(story_prefix)
+    story_teaser_gate = (
+        (
+            "see this story before it disappears" in low
+            or "se den här händelsen innan den försvinner" in low
+        )
+        and (
+            "sign up" in low
+            or "registrera dig" in low
+        )
+        and (
+            "log in" in low
+            or "logga in" in low
+        )
+    )
+    result["login_surface"] = (
+        "/accounts/login" in href.casefold()
+        or "log in to instagram" in low
+        or "logga in på instagram" in low
+        or "log in to see photos and videos" in low
+        or story_teaser_gate
+    )
+    result["story_teaser_auth_gate"] = story_teaser_gate
+    result["generic_error"] = any(
+        needle in low
+        for needle in (
+            "sorry, something went wrong",
+            "we're working on getting this fixed",
+            "tyvärr har något gått fel",
+        )
+    )
+    result["view_confirmation_visible"] = any(
+        needle in low
+        for needle in ("view story", "visa händelse")
+    )
+    return result
+
+
+def click_story_view_confirmation(tab_id: str, user_id: str) -> dict[str, Any]:
+    expression = r"""(() => {
+      const normalize = value => (value || "").replace(/\s+/g, " ").trim().toLowerCase();
+      const accepted = new Set(["view story", "visa händelse"]);
+      const candidates = Array.from(document.querySelectorAll("button,[role='button']"));
+      const target = candidates.find(el =>
+        accepted.has(normalize(el.innerText || el.textContent || el.getAttribute("aria-label")))
+      );
+      const available = candidates
+        .map(el => normalize(el.innerText || el.textContent || el.getAttribute("aria-label")))
+        .filter(Boolean)
+        .slice(0, 80);
+      if (!target) {
+        return {clicked: false, reason: "view_story_control_not_found", available_controls: available};
+      }
+      const label = normalize(target.innerText || target.textContent || target.getAttribute("aria-label"));
+      target.click();
+      return {clicked: true, label, available_controls: available};
+    })()"""
+    response = request_json(
+        "POST",
+        f"/tabs/{urllib.parse.quote(tab_id)}/evaluate",
+        {"userId": user_id, "expression": expression},
+        timeout=20,
+    )
+    result = response.get("result") if isinstance(response, dict) else None
+    if not isinstance(result, dict):
+        raise RuntimeError(f"Unexpected story-confirmation response: {response}")
+    return result
+
+
+def classify_story_probe(dom: dict[str, Any], handle: str) -> str:
+    href = str(dom.get("href") or "").casefold()
+    body = str(dom.get("body_text_excerpt") or "").casefold()
+
+    if dom.get("login_surface"):
+        return "STORY_REQUIRES_AUTH"
+    if dom.get("generic_error"):
+        return "STORY_PUBLIC_ACCESS_ERROR"
+    story_frame_pattern = re.compile(
+        rf"/stories/{re.escape(handle.casefold())}/\d+/?(?:[?#].*)?$",
+        re.I,
+    )
+    if (
+        story_frame_pattern.search(href)
+        or bool(dom.get("videos"))
+        or any(
+            story_frame_pattern.search(str(link).casefold())
+            for link in dom.get("story_links", [])
+        )
+    ):
+        return "PUBLIC_STORY_ACCESSIBLE"
+    if f"/stories/{handle.casefold()}/" not in href:
+        return "NO_ACTIVE_STORY_OR_REDIRECTED"
+    if any(
+        phrase in body
+        for phrase in (
+            "story isn't available",
+            "story is unavailable",
+            "händelsen är inte tillgänglig",
+        )
+    ):
+        return "NO_ACTIVE_STORY"
+    if dom.get("view_confirmation_visible"):
+        return "STORY_VIEW_CONFIRMATION_BLOCKED"
+    return "STORY_PUBLIC_ACCESS_INCONCLUSIVE"
+
+
+def probe_public_story(handle: str) -> dict[str, Any]:
+    user_id = "influencerresearch-instagram-public-story-smoke"
+    session_key = f"public-story-{handle}-{int(time.time())}"
+    story_url = f"https://www.instagram.com/stories/{handle}/"
+    tab_id: str | None = None
+    cookie_action = None
+    confirmation_action = None
+    try:
+        tab = request_json(
+            "POST",
+            "/tabs",
+            {
+                "userId": user_id,
+                "sessionKey": session_key,
+                "url": story_url,
+                "trace": False,
+            },
+            timeout=60,
+        )
+        if not isinstance(tab, dict) or not tab.get("tabId"):
+            raise RuntimeError(f"Unexpected Camofox create-tab response: {tab}")
+        tab_id = str(tab["tabId"])
+        time.sleep(5)
+
+        dom = story_dom_probe(tab_id, user_id, handle)
+
+        if dom.get("cookie_consent_visible"):
+            cookie_action = decline_optional_cookies(tab_id, user_id)
+            if cookie_action.get("clicked"):
+                time.sleep(2)
+                dom = story_dom_probe(tab_id, user_id, handle)
+
+        if dom.get("view_confirmation_visible"):
+            confirmation_action = click_story_view_confirmation(tab_id, user_id)
+            if confirmation_action.get("clicked"):
+                time.sleep(2)
+                dom = story_dom_probe(tab_id, user_id, handle)
+
+        decision = classify_story_probe(dom, handle)
+        return {
+            "story_url": story_url,
+            "decision": decision,
+            "cookie_consent_action": cookie_action,
+            "view_confirmation_action": confirmation_action,
+            "dom_probe": dom,
         }
     finally:
         if tab_id:
@@ -255,6 +754,11 @@ def main() -> int:
     parser.add_argument("--profile-url", default="https://www.instagram.com/rikatillsammans/")
     parser.add_argument("--handle", default="rikatillsammans")
     parser.add_argument("--runs", type=int, default=3)
+    parser.add_argument(
+        "--skip-story-probe",
+        action="store_true",
+        help="Skip the login-free public Story capability probe.",
+    )
     args = parser.parse_args()
 
     runs = max(1, min(int(args.runs), 5))
@@ -276,9 +780,10 @@ def main() -> int:
                     "ok": False,
                     "error": f"{type(exc).__name__}: {exc}",
                     "handle_visible": False,
-                    "blocked": True,
+                    "blocked": False,
                     "reel_count": 0,
                     "reels": [],
+                    "reel_discovery_ok": False,
                 }
             )
         if index != runs:
@@ -291,17 +796,45 @@ def main() -> int:
                 unique_reels.append(url)
 
     ytdlp = ytdlp_probe(unique_reels[0]) if unique_reels else None
+    story_probe = None
+    if not args.skip_story_probe:
+        try:
+            story_probe = probe_public_story(handle)
+        except Exception as exc:
+            story_probe = {
+                "story_url": f"https://www.instagram.com/stories/{handle}/",
+                "decision": "STORY_PUBLIC_PROBE_ERROR",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
     successful_runs = sum(1 for row in results if row.get("ok"))
     blocked_runs = sum(1 for row in results if row.get("blocked"))
 
+    media_auth_gated_runs = sum(
+        1 for row in results if row.get("media_auth_gated")
+    )
+
     if successful_runs == runs and unique_reels:
         decision = "CAMOFOX_PUBLIC_DISCOVERY_STABLE"
+    elif blocked_runs == runs:
+        decision = "CAMOFOX_PUBLIC_ACCESS_BLOCKED"
+    elif media_auth_gated_runs >= max(1, runs - 1) and not unique_reels:
+        decision = "CAMOFOX_PROFILE_METADATA_VISIBLE_MEDIA_REQUIRES_AUTH"
+    elif successful_runs >= max(1, runs - 1) and not unique_reels:
+        decision = "CAMOFOX_PROFILE_VISIBLE_REELS_NOT_DISCOVERED"
     elif successful_runs >= max(1, runs - 1):
         decision = "CAMOFOX_PROFILE_ACCESS_MOSTLY_STABLE"
     elif successful_runs:
         decision = "CAMOFOX_PUBLIC_ACCESS_UNSTABLE"
     else:
-        decision = "CAMOFOX_PUBLIC_ACCESS_BLOCKED"
+        decision = "CAMOFOX_PUBLIC_ACCESS_INCONCLUSIVE"
+
+    interaction_used = any(
+        round_row.get("cookie_consent_attempted")
+        or round_row.get("media_auth_gate_dismiss_attempted")
+        for result_row in results
+        for round_row in result_row.get("rounds", [])
+    )
 
     status = {
         "schema_version": 1,
@@ -312,13 +845,16 @@ def main() -> int:
         "handle": handle,
         "auth_used": False,
         "cookies_used": False,
-        "interaction_used": False,
+        "cookie_consent_interaction_used": interaction_used,
+        "interaction_used": interaction_used,
         "runs_requested": runs,
         "successful_runs": successful_runs,
         "blocked_runs": blocked_runs,
+        "media_auth_gated_runs": media_auth_gated_runs,
         "unique_reels_found": len(unique_reels),
         "results": results,
         "ytdlp_public_reel_probe": ytdlp,
+        "story_public_probe": story_probe,
         "decision": decision,
     }
 
