@@ -6,19 +6,16 @@ This is an original research-ingestion project, **not a fork of yt-dlp, Camofox/
 
 Project-specific design includes:
 
-- creator registration, evaluation, monitoring, and recent-content checks exposed through a bounded MCP toolset;
-- a Dockerized Python runtime with an internal-only Camofox service for supported browser-discovery workflows;
-- yt-dlp/Playwright ingestion plus Gemini or local faster-whisper transcription;
-- Cloudflare Access gateway support with an explicit public tool allowlist and no generic command-execution tool;
-- host-side DPAPI secret storage with runtime-only secret injection; and
-- hardened subprocess/path boundaries, reproducible smoke tests, and security-focused CI.
+- Creator registration, evaluation, monitoring, and recent-content checks exposed through a bounded MCP toolset.
+- A Dockerized Python runtime with an internal-only Camofox service for supported browser-discovery workflows.
+- yt-dlp/Playwright ingestion plus Gemini or local faster-whisper transcription.
+- Cloudflare Access gateway support with an explicit public tool allowlist and no generic command-execution tool.
+- Host-side DPAPI secret storage with runtime-only secret injection.
+- Hardened subprocess/path boundaries, reproducible smoke tests, and security-focused CI.
 
 Generated research data, browser state, credentials, and machine-specific configuration are intentionally kept outside the public repository.
 
-
 InfluencerResearch is a standalone research-ingestion and evaluation toolkit for collecting publicly available creator content from supported platforms, transcribing media, and building structured research queues.
-
-It is **not a fork** of yt-dlp or Camofox. The project orchestrates those tools as external dependencies alongside the official Python MCP SDK, Playwright, faster-whisper and other libraries.
 
 ## Runtime architecture
 
@@ -30,7 +27,6 @@ The canonical runtime is Docker Compose with two services on the same private `r
 Camofox has **no host-published port** and is not an MCP surface. TikTok browser discovery/metadata uses Camofox; individual media downloads remain yt-dlp's responsibility inside the `influencerresearch` container.
 
 Persistent research data uses narrow bind mounts for the existing parent-root `control/`, `state/`, `output/` and `logs/` directories. Browser/runtime secrets and cache live in the `influencerresearch-runtime` Docker volume.
-
 
 The runtime expects the host control directory one level above the repository (for example `<redacted-workspace>\control`). On a fresh installation, initialize the required settings file from the tracked non-secret template:
 
@@ -141,7 +137,6 @@ pwsh -NoProfile -File scripts\runtime.ps1 -Action ImportInstagramAuth
 ```
 
 On `-Action Up`, the runtime automatically imports the local cookie export when it exists. Instagram workers then run headless inside the `influencerresearch` container using the persistent Docker runtime volume.
-
 
 ## Gemini transcription secret
 
