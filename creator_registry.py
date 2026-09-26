@@ -159,6 +159,7 @@ def validate_registry(obj: dict) -> dict:
             if platform in seen_platforms:
                 raise ValueError(f"duplicate platform source for {key}: {platform}")
             seen_platforms.add(platform)
+            runtime_metadata = _normalize_runtime_source_metadata(platform, url, source)
             normalized_sources.append({
                 **source,
                 "platform": platform,
@@ -168,6 +169,7 @@ def validate_registry(obj: dict) -> dict:
                 "monitoring_enabled": bool(source.get("monitoring_enabled", False)),
                 "priority": int(source.get("priority", 100)),
                 "verification_status": "VERIFIED",
+                **runtime_metadata,
             })
         normalized[key] = {
             **profile,
