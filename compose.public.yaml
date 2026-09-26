@@ -1,6 +1,6 @@
 # Public ChatGPT path:
 # Cloudflare Access -> shared Tunnel -> influencer-gateway:8080 -> influencerresearch:8770/mcp
-# The gateway and cloudflared publish no host ports.
+# The gateway publishes no host ports.
 name: influencerresearch-public
 
 services:
@@ -14,8 +14,10 @@ services:
     volumes:
       - ./public/gateway:/app:ro
     networks:
-      - edge
-      - runtime
+      edge:
+        aliases:
+          - influencer-gateway
+      runtime: {}
     read_only: true
     cap_drop:
       - ALL
