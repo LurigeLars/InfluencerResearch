@@ -16,6 +16,8 @@ from urllib.parse import urlsplit
 
 from playwright.sync_api import sync_playwright
 
+from transcription_backend import transcribe_video
+
 
 APP_VERSION = "0.4.4"
 STORY_URL_RE = re.compile(r"/stories/(?P<user>[^/]+)/(?P<id>\d+)/?")
@@ -539,46 +541,37 @@ def transcribe_downloaded_videos(root: Path, creator: str, source_type: str) -> 
     if not pending:
         return {"attempted": 0, "completed": 0, "errors": []}
 
-    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
-    from faster_whisper import WhisperModel
+    settings = load_json(root / "control" / "settings.json", {})
+    tcfg = settings.get("transcription", {})
 
-    model = WhisperModel("small", device="cpu", compute_type="int8")
     errors = []
     completed = 0
 
     for video_path in pending:
         try:
-            segments, info = model.transcribe(
-                str(video_path),
-                beam_size=5,
-                vad_filter=True,
-            )
-            rows = []
-            parts = []
-            for seg in segments:
-                text = (seg.text or "").strip()
-                if text:
-                    parts.append(text)
-                rows.append({
-                    "start": round(float(seg.start), 3),
-                    "end": round(float(seg.end), 3),
-                    "text": text,
-                })
-
+            result = transcribe_video(video_path, tcfg)
             txt_path = transcript_dir / f"{video_path.stem}.txt"
             json_path = transcript_dir / f"{video_path.stem}.json"
-            txt_path.write_text(" ".join(parts).strip() + "\n", encoding="utf-8")
-            atomic_write_json(json_path, {
+            full_text = str(result.get("text") or "").strip()
+            txt_path.write_text(full_text + ("\n" if full_text else ""), encoding="utf-8")
+
+            metadata = {
                 "schema_version": 1,
                 "source_type": source_type,
                 "creator": creator,
                 "video_file": str(video_path.relative_to(root)),
-                "language": getattr(info, "language", None),
-                "language_probability": getattr(info, "language_probability", None),
-                "duration": getattr(info, "duration", None),
+                "provider": result.get("provider"),
+                "model": result.get("model"),
+                "language": result.get("language"),
+                "language_probability": result.get("language_probability"),
+                "duration": result.get("duration"),
                 "generated_at": utc_now(),
-                "segments": rows,
-            })
+                "segments": result.get("segments", []),
+            }
+            if result.get("fallback_from"):
+                metadata["fallback_from"] = result.get("fallback_from")
+                metadata["fallback_error"] = result.get("fallback_error")
+            atomic_write_json(json_path, metadata)
             completed += 1
         except Exception as exc:
             errors.append(f"{video_path.name}: {type(exc).__name__}: {exc}")
@@ -588,7 +581,6 @@ def transcribe_downloaded_videos(root: Path, creator: str, source_type: str) -> 
         "completed": completed,
         "errors": errors,
     }
-
 
 def resolve_configured_story_creators(root: Path) -> list[str]:
     cfg = load_json(root / "control" / "ephemeral_sources.json", {"creators": {}})
