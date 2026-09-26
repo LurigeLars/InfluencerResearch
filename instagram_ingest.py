@@ -418,6 +418,21 @@ def transcribe_videos(root: Path, manifest: dict, settings: dict, keys: list[str
     return {"attempted": len(keys), "completed": completed, "errors": errors}
 
 
+def resolve_creators(creators_cfg: list[dict], override: str | None) -> list[str]:
+    if override is not None:
+        return [safe_creator(override)]
+
+    creators = [
+        safe_creator(str(x.get("handle", "")))
+        for x in creators_cfg
+        if x.get("enabled", False) and str(x.get("handle", "")).strip()
+    ]
+    creators = [creator for creator in creators if creator and creator != "CHANGE_ME"]
+    if not creators:
+        raise RuntimeError("No enabled creators in control\\creators.json.")
+    return creators
+
+
 def resolve_max_new_per_creator(settings: dict, override: int | None) -> int:
     value = int(settings.get("max_new_per_creator", 10)) if override is None else int(override)
     if value < 1:
@@ -464,6 +479,11 @@ def main() -> int:
     )
     parser.add_argument("--skip-transcription", action="store_true")
     parser.add_argument(
+        "--creator",
+        default=None,
+        help="Run only one explicit Instagram creator handle.",
+    )
+    parser.add_argument(
         "--max-new-per-creator",
         type=int,
         default=None,
@@ -487,14 +507,7 @@ def main() -> int:
     )
     manifest.setdefault("items", {})
 
-    creators = [
-        safe_creator(str(x.get("handle", "")))
-        for x in creators_cfg
-        if x.get("enabled", False) and str(x.get("handle", "")).strip()
-    ]
-    creators = [c for c in creators if c and c != "CHANGE_ME"]
-    if not creators:
-        raise RuntimeError("No enabled creators in control\\creators.json.")
+    creators = resolve_creators(creators_cfg, args.creator)
 
     max_scan = int(settings.get("max_scan_per_creator", 50))
     max_new = resolve_max_new_per_creator(settings, args.max_new_per_creator)
