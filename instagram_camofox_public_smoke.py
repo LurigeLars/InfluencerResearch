@@ -17,14 +17,11 @@ from typing import Any
 import camofox_container as camofox_container_config
 
 
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
 NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 REEL_ABS_RE = re.compile(r"https?://(?:www\.)?instagram\.com/reel/([A-Za-z0-9_-]+)/?", re.I)
 REEL_REL_RE = re.compile(r"(?:^|[\"'\s(])(/reel/[A-Za-z0-9_-]+/?)", re.I)
-BLOCK_PATTERNS = (
-    "log in",
-    "login",
-    "sign up",
+HARD_BLOCK_PATTERNS = (
     "challenge",
     "checkpoint",
     "something went wrong",
@@ -34,6 +31,12 @@ BLOCK_PATTERNS = (
     "we restrict certain activity",
     "automated behavior",
 )
+AUTH_PROMPT_PATTERNS = (
+    "log in",
+    "login",
+    "sign up",
+)
+LANGUAGE_DIALOG_PATTERN = "switch display language"
 
 
 def utc_now() -> str:
@@ -98,7 +101,9 @@ def extract_reel_urls(obj: Any) -> list[str]:
 def classify_snapshot(obj: Any, expected_handle: str) -> dict[str, Any]:
     text = "\n".join(flatten_strings(obj))
     low = text.casefold()
-    block_hits = sorted({p for p in BLOCK_PATTERNS if p in low})
+    block_hits = sorted({p for p in HARD_BLOCK_PATTERNS if p in low})
+    auth_prompt_hits = sorted({p for p in AUTH_PROMPT_PATTERNS if p in low})
+    language_dialog_visible = LANGUAGE_DIALOG_PATTERN in low
     handle_visible = expected_handle.casefold() in low
     reels = extract_reel_urls(obj)
     return {
@@ -106,6 +111,8 @@ def classify_snapshot(obj: Any, expected_handle: str) -> dict[str, Any]:
         "reel_count": len(reels),
         "reels": reels,
         "block_hits": block_hits,
+        "auth_prompt_hits": auth_prompt_hits,
+        "language_dialog_visible": language_dialog_visible,
         "snapshot_excerpt": text[:1200],
     }
 
@@ -166,6 +173,8 @@ def probe_public_session(profile_url: str, handle: str, run_index: int) -> dict[
                     "handle_visible": classified["handle_visible"],
                     "reel_count_total": len(all_reels),
                     "block_hits": classified["block_hits"],
+                    "auth_prompt_hits": classified["auth_prompt_hits"],
+                    "language_dialog_visible": classified["language_dialog_visible"],
                     "links_error": links_error,
                     "snapshot_excerpt": classified["snapshot_excerpt"],
                 }
@@ -191,6 +200,7 @@ def probe_public_session(profile_url: str, handle: str, run_index: int) -> dict[
             "blocked": blocked,
             "reel_count": len(all_reels),
             "reels": all_reels[:20],
+            "reel_discovery_ok": bool(all_reels),
             "rounds": rounds,
         }
     finally:
@@ -296,12 +306,16 @@ def main() -> int:
 
     if successful_runs == runs and unique_reels:
         decision = "CAMOFOX_PUBLIC_DISCOVERY_STABLE"
+    elif blocked_runs == runs:
+        decision = "CAMOFOX_PUBLIC_ACCESS_BLOCKED"
+    elif successful_runs >= max(1, runs - 1) and not unique_reels:
+        decision = "CAMOFOX_PROFILE_VISIBLE_REELS_NOT_DISCOVERED"
     elif successful_runs >= max(1, runs - 1):
         decision = "CAMOFOX_PROFILE_ACCESS_MOSTLY_STABLE"
     elif successful_runs:
         decision = "CAMOFOX_PUBLIC_ACCESS_UNSTABLE"
     else:
-        decision = "CAMOFOX_PUBLIC_ACCESS_BLOCKED"
+        decision = "CAMOFOX_PUBLIC_ACCESS_INCONCLUSIVE"
 
     status = {
         "schema_version": 1,
