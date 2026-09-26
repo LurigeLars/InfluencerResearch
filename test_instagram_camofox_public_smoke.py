@@ -178,6 +178,38 @@ class InstagramPublicCamofoxSmokeTests(unittest.TestCase):
         )
         self.assertEqual(result, "NO_ACTIVE_STORY_OR_REDIRECTED")
 
+    def test_classify_story_probe_numeric_frame_url_is_public(self) -> None:
+        result = smoke.classify_story_probe(
+            {
+                "href": "https://www.instagram.com/stories/rikatillsammans/123456789/",
+                "body_text_excerpt": "RikaTillsammans",
+                "login_surface": False,
+                "generic_error": False,
+                "story_url_active": True,
+                "videos": [],
+                "story_links": [],
+                "view_confirmation_visible": False,
+            },
+            "rikatillsammans",
+        )
+        self.assertEqual(result, "PUBLIC_STORY_ACCESSIBLE")
+
+    def test_classify_story_probe_root_url_without_media_is_inconclusive(self) -> None:
+        result = smoke.classify_story_probe(
+            {
+                "href": "https://www.instagram.com/stories/rikatillsammans/",
+                "body_text_excerpt": "RikaTillsammans",
+                "login_surface": False,
+                "generic_error": False,
+                "story_url_active": True,
+                "videos": [],
+                "story_links": [],
+                "view_confirmation_visible": False,
+            },
+            "rikatillsammans",
+        )
+        self.assertEqual(result, "STORY_PUBLIC_ACCESS_INCONCLUSIVE")
+
     def test_handle_visibility_ignores_requested_url_metadata(self) -> None:
         result = smoke.classify_snapshot(
             {
