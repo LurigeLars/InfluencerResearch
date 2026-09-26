@@ -20,7 +20,7 @@ import camofox_container as camofox_container_config
 APP_VERSION = "0.3.0"
 NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 REEL_ABS_RE = re.compile(r"https?://(?:www\.)?instagram\.com/reel/([A-Za-z0-9_-]+)/?", re.I)
-REEL_REL_RE = re.compile(r"(?:^|[\"'\s(])(/reel/[A-Za-z0-9_-]+/?)", re.I)
+REEL_REL_RE = re.compile(r"(?:^|[\"'\s(=])(/reel/[A-Za-z0-9_-]+/?)", re.I)
 HARD_BLOCK_PATTERNS = (
     "challenge",
     "checkpoint",
