@@ -1,4 +1,4 @@
-name: Temporary package manager surface validation
+name: Temporary runtime base image validation
 
 on:
   push:
@@ -10,77 +10,58 @@ permissions:
   contents: read
 
 jobs:
-  validate:
+  trixie:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
-      - name: Build candidate runtime
-        run: docker build -f runtime/influencerresearch/Dockerfile -t influencerresearch-runtime-pmtest .
+      - name: Build current Bookworm candidate
+        run: docker build -f runtime/influencerresearch/Dockerfile -t influencerresearch-bookworm .
 
-      - name: Verify pip is absent from final runtime
+      - name: Verify Bookworm candidate baseline
         run: |
-          docker run --rm --entrypoint sh influencerresearch-runtime-pmtest -lc '
+          docker run --rm --entrypoint sh influencerresearch-bookworm -lc '
             set -eu
             test ! -d /usr/local/lib/python3.12/site-packages/pip
-            test ! -e /usr/local/bin/pip
-            test ! -e /usr/local/bin/pip3
-            echo PIP_RUNTIME_SURFACE_REMOVED
-          '
-
-      - name: Verify key runtime imports
-        run: |
-          docker run --rm influencerresearch-runtime-pmtest python - <<'PY'
-          import importlib
-          modules = [
-              "mcp",
-              "playwright",
-              "yt_dlp",
-              "faster_whisper",
-              "imageio_ffmpeg",
-              "msgpack",
-              "curl_cffi",
-              "cffi",
-              "pycparser",
-              "certifi",
-              "influencerresearch_mcp",
-          ]
-          for name in modules:
-              importlib.import_module(name)
-              print("IMPORT_OK", name)
-          PY
-
-      - name: Verify remaining package metadata
-        run: |
-          docker run --rm --entrypoint sh influencerresearch-runtime-pmtest -lc '
-            set -eu
             test -d /usr/local/lib/python3.12/site-packages/msgpack-1.2.1.dist-info
             test -d /usr/local/lib/python3.12/site-packages/setuptools-83.0.0.dist-info
             test -d /usr/local/lib/python3.12/site-packages/setuptools/_vendor/wheel-0.46.3.dist-info
             test ! -d /usr/local/lib/python3.12/site-packages/setuptools/_vendor/jaraco.context-5.3.0.dist-info
-            echo FIXED_METADATA_BASELINE_OK
+            echo BOOKWORM_BASELINE_OK
+            echo "=== PERL-RELATED DPKG PACKAGES ==="
+            dpkg-query -W -f="${Package}	${Version}	${db:Status-Status}\n" "perl*" 2>/dev/null | sort || true
           '
 
-      - name: Probe whether Perl can be removed from runtime
+      - name: Build same runtime on Debian Trixie
         run: |
-          docker run --rm --user root --entrypoint sh influencerresearch-runtime-pmtest -lc '
-            set -eu
-            echo "=== PERL PURGE PLAN ==="
-            apt-get -s purge perl | sed -n "1,160p"
-            apt-get purge -y perl
-            if dpkg-query -W -f="${Status}" perl 2>/dev/null | grep -q "install ok installed"; then
-              echo "perl package is still installed" >&2
-              exit 1
-            fi
-            python -c "import mcp, playwright, yt_dlp, faster_whisper, imageio_ffmpeg, msgpack, curl_cffi, cffi, pycparser, certifi, influencerresearch_mcp; print('IMPORTS_AFTER_PERL_PURGE_OK')"
-            python - <<'"'"'PY'"'"'
+          sed 's/^FROM python:3.12-slim-bookworm$/FROM python:3.12-slim-trixie/' runtime/influencerresearch/Dockerfile > /tmp/Dockerfile.trixie
+          docker build -f /tmp/Dockerfile.trixie -t influencerresearch-trixie .
+
+      - name: Run Python tests on Trixie
+        run: |
+          docker run --rm influencerresearch-trixie python -m unittest -v             test_camofox_container_config             test_camofox_container_runtime             test_camofox_manifest_validation             test_tiktok_media_transport             test_smoke_production_separation             test_mcp_contract
+
+      - name: Launch Playwright Chromium on Trixie
+        run: |
+          docker run --rm influencerresearch-trixie python - <<'PY'
           from playwright.sync_api import sync_playwright
           with sync_playwright() as p:
               browser = p.chromium.launch(headless=True)
               page = browser.new_page()
-              page.set_content("<title>ok</title><p>runtime</p>")
-              assert page.title() == "ok"
+              page.set_content("<title>trixie-ok</title><p>runtime</p>")
+              assert page.title() == "trixie-ok"
               browser.close()
-          print("PLAYWRIGHT_AFTER_PERL_PURGE_OK")
+          print("TRIXIE_PLAYWRIGHT_OK")
           PY
+
+      - name: Verify Python runtime imports and metadata on Trixie
+        run: |
+          docker run --rm --entrypoint sh influencerresearch-trixie -lc '
+            set -eu
+            test ! -d /usr/local/lib/python3.12/site-packages/pip
+            test -d /usr/local/lib/python3.12/site-packages/msgpack-1.2.1.dist-info
+            test -d /usr/local/lib/python3.12/site-packages/setuptools-83.0.0.dist-info
+            python -c "import mcp, playwright, yt_dlp, faster_whisper, imageio_ffmpeg, msgpack, curl_cffi, cffi, pycparser, certifi, influencerresearch_mcp; print('"'"'TRIXIE_IMPORTS_OK'"'"')"
+            echo "=== TRIXIE PERL-RELATED DPKG PACKAGES ==="
+            dpkg-query -W -f="${Package}	${Version}	${db:Status-Status}\n" "perl*" 2>/dev/null | sort || true
           '
