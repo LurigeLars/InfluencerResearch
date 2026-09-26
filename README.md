@@ -33,6 +33,14 @@ Run the container/runtime smoke:
 pwsh -NoProfile -File scripts\runtime.ps1 -Action Smoke
 ```
 
+Run the login-free Instagram public-profile smoke:
+
+```powershell
+pwsh -NoProfile -File scripts\runtime.ps1 -Action InstagramPublicSmoke
+```
+
+Override the profile, handle or run count with `-InstagramProfileUrl`, `-InstagramHandle` and `-InstagramRuns`.
+
 Stop the stack:
 
 ```powershell
