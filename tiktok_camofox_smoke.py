@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -95,7 +96,6 @@ def collect_video_urls(tab_id: str, target: int = 10) -> tuple[list[str], list[d
     diagnostics: list[dict] = []
 
     for round_idx in range(10):
-        # Snapshot is the source-of-truth check that the browser reached real TikTok content.
         snap = request_json(
             "GET",
             f"/tabs/{urllib.parse.quote(tab_id)}/snapshot?"
@@ -105,8 +105,6 @@ def collect_video_urls(tab_id: str, target: int = 10) -> tuple[list[str], list[d
 
         urls = flatten_links(snap)
 
-        # Official agent guide also exposes a links endpoint. Use it when available,
-        # but don't make the smoke depend on it because snapshot already carries refs/content.
         links_result = None
         try:
             links_result = request_json(
@@ -293,7 +291,6 @@ def main() -> int:
                 f"/sessions/{urllib.parse.quote(USER_ID)}/storage_state",
                 timeout=10,
             )
-        # The Docker-managed Camofox service is intentionally left running.
 
 
 if __name__ == "__main__":

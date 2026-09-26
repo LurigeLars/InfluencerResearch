@@ -21,6 +21,7 @@ class SmokeProductionSeparationTests(unittest.TestCase):
 
     def test_smoke_uses_separate_entrypoint_and_fail_closed_decision(self) -> None:
         source = (BASE / "tiktok_camofox_smoke.py").read_text(encoding="utf-8")
+        self.assertIn("import contextlib", source)
         self.assertIn('SESSION_KEY = "nicholas-crown-smoke"', source)
         self.assertIn('TemporaryDirectory(prefix="influencerresearch-camofox-smoke-")', source)
         self.assertIn('return 0 if decision == "PASS_HYBRID" else 1', source)
