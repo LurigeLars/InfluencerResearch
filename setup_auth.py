@@ -12,8 +12,8 @@ EXPECTED_USERNAME = os.environ.get("INFLUENCER_RESEARCH_INSTAGRAM_USERNAME", "")
 
 def host_runtime_dir() -> Path:
     if os.name == "nt":
-        return Path.home() / "AppData" / "Local" / "InstagramResearch"
-    return Path.home() / ".local" / "share" / "InstagramResearch"
+        return Path.home() / "AppData" / "Local" / "InfluencerResearch"
+    return Path.home() / ".local" / "share" / "InfluencerResearch"
 
 
 def chrome_profile_dir() -> Path:
@@ -43,7 +43,7 @@ def main() -> int:
     print(f"Instagram research account: @{EXPECTED_USERNAME}")
     print(f"Dedicated automation profile: {profile_dir}")
     print()
-    print("This is a separate Chrome data directory used ONLY by InstagramResearch.")
+    print("This is a separate Chrome data directory used ONLY by InfluencerResearch.")
     print("It does NOT read your normal Chrome profiles or decrypt their cookie databases.")
     print()
     print("A Chrome window will open.")
@@ -77,7 +77,7 @@ def main() -> int:
             cookie_path = write_cookie_export(cookies)
             print()
             print("Authentication verified.")
-            print(f"Dedicated InstagramResearch Chrome state is stored locally at: {profile_dir}")
+            print(f"Dedicated InfluencerResearch Chrome state is stored locally at: {profile_dir}")
             print(f"Portable session-cookie export written locally at: {cookie_path}")
             print("The cookie export is sensitive and must never be committed or copied to Drive.")
             return 0
