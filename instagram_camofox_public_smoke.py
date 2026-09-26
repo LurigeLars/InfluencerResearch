@@ -17,7 +17,7 @@ from typing import Any
 import camofox_container as camofox_container_config
 
 
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.4.0"
 NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 REEL_ABS_RE = re.compile(r"https?://(?:www\.)?instagram\.com/reel/([A-Za-z0-9_-]+)/?", re.I)
 REEL_REL_RE = re.compile(r"(?:^|[\"'\s(=])(/reel/[A-Za-z0-9_-]+/?)", re.I)
@@ -40,6 +40,11 @@ LANGUAGE_DIALOG_PATTERNS = (
     "switch display language",
     "byt visningsspråk",
 )
+LANGUAGE_COMBOBOX_RE = re.compile(
+    r'combobox "(?:Switch Display Language|Byt visningsspråk)" \[(e\d+)\]',
+    re.I,
+)
+SELECTED_LANGUAGE_RE = re.compile(r'- option "([^"]+)" \[selected\]', re.I)
 
 
 def utc_now() -> str:
@@ -105,6 +110,19 @@ def snapshot_body_text(obj: Any) -> str:
     if isinstance(obj, dict) and isinstance(obj.get("snapshot"), str):
         return str(obj["snapshot"])
     return "\n".join(flatten_strings(obj))
+
+
+def language_dialog_action(snapshot_obj: Any) -> dict[str, Any]:
+    text = snapshot_body_text(snapshot_obj)
+    ref_match = LANGUAGE_COMBOBOX_RE.search(text)
+    selected_match = SELECTED_LANGUAGE_RE.search(text)
+    selected = selected_match.group(1) if selected_match else None
+    target = "English" if selected and selected.casefold() == "svenska" else "Svenska"
+    return {
+        "ref": ref_match.group(1) if ref_match else None,
+        "selected": selected,
+        "target": target,
+    }
 
 
 def classify_snapshot(
@@ -180,16 +198,25 @@ def probe_public_session(profile_url: str, handle: str, run_index: int) -> dict[
             language_dialog_dismissed = False
             language_dialog_dismiss_error = None
 
+            language_dialog_action_info = None
             if classified["language_dialog_visible"]:
                 language_dialog_dismiss_attempted = True
+                language_dialog_action_info = language_dialog_action(snap)
                 try:
+                    language_ref = language_dialog_action_info["ref"]
+                    if not language_ref:
+                        raise RuntimeError("Language dialog combobox ref was not found in snapshot.")
                     request_json(
                         "POST",
-                        f"/tabs/{urllib.parse.quote(tab_id)}/press",
-                        {"userId": user_id, "key": "Escape"},
-                        timeout=10,
+                        f"/tabs/{urllib.parse.quote(tab_id)}/select",
+                        {
+                            "userId": user_id,
+                            "ref": language_ref,
+                            "option": language_dialog_action_info["target"],
+                        },
+                        timeout=15,
                     )
-                    time.sleep(0.75)
+                    time.sleep(2.0)
                     snap = request_json(
                         "GET",
                         f"/tabs/{urllib.parse.quote(tab_id)}/snapshot?"
@@ -224,6 +251,7 @@ def probe_public_session(profile_url: str, handle: str, run_index: int) -> dict[
                     "language_dialog_visible": classified["language_dialog_visible"],
                     "language_dialog_hits": classified["language_dialog_hits"],
                     "language_dialog_dismiss_attempted": language_dialog_dismiss_attempted,
+                    "language_dialog_action": language_dialog_action_info,
                     "language_dialog_dismissed": language_dialog_dismissed,
                     "language_dialog_dismiss_error": language_dialog_dismiss_error,
                     "links_error": links_error,
