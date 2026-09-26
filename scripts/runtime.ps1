@@ -47,8 +47,13 @@ $env:INFLUENCER_RESEARCH_STATE_DIR = Join-Path $Root "state"
 $env:INFLUENCER_RESEARCH_OUTPUT_DIR = Join-Path $Root "output"
 $env:INFLUENCER_RESEARCH_LOG_DIR = Join-Path $Root "logs"
 
-function Compose([string[]]$Args) {
-    & docker compose -f $Compose @Args
+function Compose {
+    param(
+        [Parameter(ValueFromRemainingArguments = $true)]
+        [string[]]$ComposeArgs
+    )
+
+    & docker compose -f $Compose @ComposeArgs
     if ($LASTEXITCODE -ne 0) { throw "docker compose failed with exit code $LASTEXITCODE" }
 }
 
@@ -78,7 +83,7 @@ function Import-InstagramAuth {
 
 switch ($Action) {
     "Up" {
-        Compose @("up", "-d", "--build")
+        Compose up -d --build
         Write-Host "INFLUENCERRESEARCH_MCP=http://127.0.0.1:$($config.mcp_port)/mcp"
         Write-Host "Camofox is internal-only at http://camofox:9377"
         $cookiePath = Join-Path $env:LOCALAPPDATA "InstagramResearch\secrets\instagram_cookies.json"
@@ -87,13 +92,13 @@ switch ($Action) {
         }
     }
     "Down" {
-        Compose @("down")
+        Compose down
     }
     "ImportInstagramAuth" {
         Import-InstagramAuth
     }
     "Status" {
-        Compose @("ps")
+        Compose ps
         try {
             $health = Invoke-RestMethod -Uri "http://127.0.0.1:$($config.mcp_port)/health" -TimeoutSec 3
             $health | ConvertTo-Json -Depth 5
@@ -102,7 +107,7 @@ switch ($Action) {
         }
     }
     "Smoke" {
-        Compose @("up", "-d", "--build")
+        Compose up -d --build
         $tests = @(
             "test_camofox_container_config",
             "test_camofox_container_runtime",
