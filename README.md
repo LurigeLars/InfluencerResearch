@@ -60,17 +60,17 @@ The optional public stack follows the same pattern as the other local MCP servic
 
 ```text
 Cloudflare Access
-  -> remotely managed Cloudflare Tunnel
-  -> gateway:8080
+  -> shared Cloudflare Tunnel
+  -> influencer-gateway:8080
   -> influencerresearch:8770/mcp
 ```
 
-The gateway and `cloudflared` containers publish no host ports. The gateway joins the existing `influencerresearch_runtime` Docker network and forwards only to the internal MCP service. Camofox remains inaccessible from the public stack.
+The gateway publishes no host ports. It joins the existing `influencerresearch_runtime` Docker network and the shared tunnel's edge network, forwarding only to the internal MCP service. Camofox remains inaccessible from the public stack.
 
 Cloudflare should be configured with:
 
 - public hostname: `influencer.lurigelars.com`
-- tunnel origin service: `http://gateway:8080`
+- shared tunnel origin service: `http://influencer-gateway:8080`
 - connector endpoint: `https://influencer.lurigelars.com/mcp`
 - Cloudflare Access application protecting the MCP hostname/path
 
@@ -78,10 +78,9 @@ Prepare local configuration:
 
 ```powershell
 Copy-Item public\gateway.env.example public\gateway.env
-Copy-Item public\tunnel.env.example public\tunnel.env
 ```
 
-Fill `public/gateway.env` with the Access team domain and Application Audience (AUD) tag. Optionally set an email allowlist for interactive Access identity. Fill `public/tunnel.env` with the token from the remotely managed Cloudflare Tunnel. Both local files are gitignored and dockerignored.
+Fill `public/gateway.env` with the Access team domain and Application Audience (AUD) tag. Optionally set an email allowlist for interactive Access identity. The shared tunnel token is managed by the separate `mcp-edge` deployment, not this repository.
 
 Start the base runtime first, then the public edge:
 
