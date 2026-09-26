@@ -51,8 +51,6 @@ switch ($Action) {
         }
 
         Write-Host "PUBLIC_GATEWAY_READY"
-        Write-Host "Cloudflare origin service: http://influencer-gateway:8080"
-        Write-Host "Connector endpoint: https://influencer.lurigelars.com/mcp"
     }
     "Down" {
         PublicCompose -ComposeArgs @("down")
