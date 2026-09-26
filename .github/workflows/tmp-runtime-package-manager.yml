@@ -1,4 +1,4 @@
-name: Temporary runtime base image validation
+name: Temporary final runtime hardening validation
 
 on:
   push:
@@ -10,58 +10,54 @@ permissions:
   contents: read
 
 jobs:
-  trixie:
+  validate:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
-      - name: Build current Bookworm candidate
-        run: docker build -f runtime/influencerresearch/Dockerfile -t influencerresearch-bookworm .
+      - name: Build final candidate runtime
+        run: docker build -f runtime/influencerresearch/Dockerfile -t influencerresearch-runtime-final .
 
-      - name: Verify Bookworm candidate baseline
+      - name: Verify package manager hardening
         run: |
-          docker run --rm --entrypoint sh influencerresearch-bookworm -lc '
+          docker run --rm --entrypoint sh influencerresearch-runtime-final -lc '
             set -eu
             test ! -d /usr/local/lib/python3.12/site-packages/pip
+            test ! -e /usr/local/bin/pip
+            test ! -e /usr/local/bin/pip3
             test -d /usr/local/lib/python3.12/site-packages/msgpack-1.2.1.dist-info
             test -d /usr/local/lib/python3.12/site-packages/setuptools-83.0.0.dist-info
             test -d /usr/local/lib/python3.12/site-packages/setuptools/_vendor/wheel-0.46.3.dist-info
             test ! -d /usr/local/lib/python3.12/site-packages/setuptools/_vendor/jaraco.context-5.3.0.dist-info
-            echo BOOKWORM_BASELINE_OK
-            echo "=== PERL-RELATED DPKG PACKAGES ==="
-            dpkg-query -W -f="${Package}	${Version}	${db:Status-Status}\n" "perl*" 2>/dev/null | sort || true
+            echo FINAL_PACKAGE_MANAGER_BASELINE_OK
           '
 
-      - name: Build same runtime on Debian Trixie
+      - name: Run runtime unit tests
         run: |
-          sed 's/^FROM python:3.12-slim-bookworm$/FROM python:3.12-slim-trixie/' runtime/influencerresearch/Dockerfile > /tmp/Dockerfile.trixie
-          docker build -f /tmp/Dockerfile.trixie -t influencerresearch-trixie .
+          docker run --rm influencerresearch-runtime-final python -m unittest -v             test_camofox_container_config             test_camofox_container_runtime             test_camofox_manifest_validation             test_tiktok_media_transport             test_smoke_production_separation             test_mcp_contract
 
-      - name: Run Python tests on Trixie
+      - name: Launch Playwright Chromium
         run: |
-          docker run --rm influencerresearch-trixie python -m unittest -v             test_camofox_container_config             test_camofox_container_runtime             test_camofox_manifest_validation             test_tiktok_media_transport             test_smoke_production_separation             test_mcp_contract
-
-      - name: Launch Playwright Chromium on Trixie
-        run: |
-          docker run --rm influencerresearch-trixie python - <<'PY'
+          docker run --rm influencerresearch-runtime-final python - <<'PY'
           from playwright.sync_api import sync_playwright
           with sync_playwright() as p:
               browser = p.chromium.launch(headless=True)
               page = browser.new_page()
-              page.set_content("<title>trixie-ok</title><p>runtime</p>")
-              assert page.title() == "trixie-ok"
+              page.set_content("<title>runtime-ok</title><p>final</p>")
+              assert page.title() == "runtime-ok"
               browser.close()
-          print("TRIXIE_PLAYWRIGHT_OK")
+          print("FINAL_PLAYWRIGHT_OK")
           PY
 
-      - name: Verify Python runtime imports and metadata on Trixie
+      - name: Verify key runtime imports
         run: |
-          docker run --rm --entrypoint sh influencerresearch-trixie -lc '
-            set -eu
-            test ! -d /usr/local/lib/python3.12/site-packages/pip
-            test -d /usr/local/lib/python3.12/site-packages/msgpack-1.2.1.dist-info
-            test -d /usr/local/lib/python3.12/site-packages/setuptools-83.0.0.dist-info
-            python -c "import mcp, playwright, yt_dlp, faster_whisper, imageio_ffmpeg, msgpack, curl_cffi, cffi, pycparser, certifi, influencerresearch_mcp; print('"'"'TRIXIE_IMPORTS_OK'"'"')"
-            echo "=== TRIXIE PERL-RELATED DPKG PACKAGES ==="
-            dpkg-query -W -f="${Package}	${Version}	${db:Status-Status}\n" "perl*" 2>/dev/null | sort || true
-          '
+          docker run --rm influencerresearch-runtime-final python - <<'PY'
+          import importlib
+          for name in [
+              "mcp", "playwright", "yt_dlp", "faster_whisper", "imageio_ffmpeg",
+              "msgpack", "curl_cffi", "cffi", "pycparser", "certifi",
+              "influencerresearch_mcp",
+          ]:
+              importlib.import_module(name)
+              print("IMPORT_OK", name)
+          PY
