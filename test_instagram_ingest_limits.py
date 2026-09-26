@@ -2,10 +2,24 @@ from __future__ import annotations
 
 import unittest
 
-from instagram_ingest import resolve_max_new_per_creator, select_transcription_keys
+from instagram_ingest import resolve_creators, resolve_max_new_per_creator, select_transcription_keys
 
 
 class InstagramIngestLimitTests(unittest.TestCase):
+    def test_explicit_creator_override_limits_run_to_one_creator(self) -> None:
+        configured = [
+            {"handle": "alpha", "enabled": True},
+            {"handle": "beta", "enabled": True},
+        ]
+        self.assertEqual(resolve_creators(configured, "rikatillsammans"), ["rikatillsammans"])
+
+    def test_configured_creators_are_used_without_override(self) -> None:
+        configured = [
+            {"handle": "alpha", "enabled": True},
+            {"handle": "beta", "enabled": False},
+        ]
+        self.assertEqual(resolve_creators(configured, None), ["alpha"])
+
     def test_max_new_override_wins(self) -> None:
         self.assertEqual(
             resolve_max_new_per_creator({"max_new_per_creator": 10}, 1),
