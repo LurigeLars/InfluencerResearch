@@ -62,6 +62,38 @@ class InstagramPublicCamofoxSmokeTests(unittest.TestCase):
         self.assertTrue(result["language_dialog_visible"])
         self.assertIn("byt visningsspråk", result["language_dialog_hits"])
 
+    def test_extracts_language_combobox_action(self) -> None:
+        result = smoke.language_dialog_action(
+            {
+                "snapshot": (
+                    '- dialog:\n'
+                    '  - combobox "Byt visningsspråk" [e1]:\n'
+                    '    - option "English"\n'
+                    '    - option "Svenska" [selected]'
+                )
+            }
+        )
+        self.assertEqual(
+            result,
+            {"ref": "e1", "selected": "Svenska", "target": "English"},
+        )
+
+    def test_language_action_targets_swedish_when_english_selected(self) -> None:
+        result = smoke.language_dialog_action(
+            {
+                "snapshot": (
+                    '- dialog:\n'
+                    '  - combobox "Switch Display Language" [e7]:\n'
+                    '    - option "English" [selected]\n'
+                    '    - option "Svenska"'
+                )
+            }
+        )
+        self.assertEqual(
+            result,
+            {"ref": "e7", "selected": "English", "target": "Svenska"},
+        )
+
     def test_handle_visibility_ignores_requested_url_metadata(self) -> None:
         result = smoke.classify_snapshot(
             {
