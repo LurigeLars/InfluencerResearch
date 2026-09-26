@@ -305,7 +305,7 @@ def register_creator(root: Path, req: dict) -> dict:
 def load_registry(root: Path) -> dict:
     path = root / "control" / "creator_registry.json"
     if not path.exists():
-        raise FileNotFoundError(f"Missing {path}")
+        return {"schema_version": REGISTRY_SCHEMA_VERSION, "creators": {}}
     return validate_registry(load_json(path))
 
 
