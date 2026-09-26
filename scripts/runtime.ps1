@@ -62,7 +62,7 @@ function Test-InfluencerResearchContainerRunning {
 }
 
 function Ensure-HostMcpPort($Config) {
-    if ($Action -notin @("Up", "Smoke")) {
+    if ($Action -notin @("Up", "Smoke", "InstagramPublicSmoke")) {
         return
     }
 
