@@ -116,6 +116,23 @@ class InstagramPublicCamofoxSmokeTests(unittest.TestCase):
         self.assertTrue(body["expression"].lstrip().startswith("(() =>"))
         self.assertTrue(body["expression"].rstrip().endswith("})()"))
 
+    def test_decline_optional_cookies_executes_dom_action(self) -> None:
+        fake_response = {
+            "ok": True,
+            "result": {
+                "clicked": True,
+                "label": "Decline optional cookies",
+                "available_buttons": ["Allow all cookies", "Decline optional cookies"],
+            },
+        }
+        with patch.object(smoke, "request_json", return_value=fake_response) as request:
+            result = smoke.decline_optional_cookies("tab-1", "user-1")
+
+        self.assertTrue(result["clicked"])
+        body = request.call_args.args[2]
+        self.assertIn("decline optional cookies", body["expression"].lower())
+        self.assertTrue(body["expression"].rstrip().endswith("})()"))
+
     def test_handle_visibility_ignores_requested_url_metadata(self) -> None:
         result = smoke.classify_snapshot(
             {
