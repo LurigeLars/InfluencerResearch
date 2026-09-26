@@ -16,6 +16,8 @@ from urllib.parse import urljoin, urlsplit
 
 from playwright.sync_api import sync_playwright
 
+from transcription_backend import transcribe_video
+
 
 APP_VERSION = "0.3.1"
 REEL_RE = re.compile(r"/reel/([A-Za-z0-9_-]+)/?")
@@ -348,26 +350,6 @@ def transcribe_videos(root: Path, manifest: dict, settings: dict, keys: list[str
     if not tcfg.get("enabled", True) or not keys:
         return {"attempted": 0, "completed": 0, "errors": []}
 
-    # Silence Hugging Face's Windows symlink warning; cache still works without symlinks.
-    os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
-
-    try:
-        from faster_whisper import WhisperModel
-    except Exception as exc:
-        return {
-            "attempted": len(keys),
-            "completed": 0,
-            "errors": [f"faster-whisper import failed: {exc}"],
-        }
-
-    model = WhisperModel(
-        str(tcfg.get("model_size", "small")),
-        device=str(tcfg.get("device", "cpu")),
-        compute_type=str(tcfg.get("compute_type", "int8")),
-    )
-    beam_size = int(tcfg.get("beam_size", 5))
-    vad_filter = bool(tcfg.get("vad_filter", True))
-
     completed = 0
     errors: list[str] = []
 
@@ -399,37 +381,31 @@ def transcribe_videos(root: Path, manifest: dict, settings: dict, keys: list[str
             continue
 
         try:
-            segments, info = model.transcribe(
-                str(video_path),
-                beam_size=beam_size,
-                vad_filter=vad_filter,
-            )
-            rows = []
-            parts = []
-            for seg in segments:
-                text = (seg.text or "").strip()
-                if text:
-                    parts.append(text)
-                rows.append({
-                    "start": round(float(seg.start), 3),
-                    "end": round(float(seg.end), 3),
-                    "text": text,
-                })
-
-            full_text = " ".join(parts).strip()
+            result = transcribe_video(video_path, tcfg)
+            full_text = str(result.get("text") or "").strip()
             txt_path.write_text(full_text + ("\n" if full_text else ""), encoding="utf-8")
-            atomic_write_json(json_path, {
+
+            metadata = {
                 "schema_version": 1,
                 "shortcode": key,
                 "creator": creator,
                 "source_url": item.get("url"),
-                "language": getattr(info, "language", None),
-                "language_probability": getattr(info, "language_probability", None),
-                "duration": getattr(info, "duration", None),
+                "provider": result.get("provider"),
+                "model": result.get("model"),
+                "language": result.get("language"),
+                "language_probability": result.get("language_probability"),
+                "duration": result.get("duration"),
                 "generated_at": utc_now(),
-                "segments": rows,
-            })
+                "segments": result.get("segments", []),
+            }
+            if result.get("fallback_from"):
+                metadata["fallback_from"] = result.get("fallback_from")
+                metadata["fallback_error"] = result.get("fallback_error")
+            atomic_write_json(json_path, metadata)
+
             item["transcription_status"] = "DONE"
+            item["transcription_provider"] = result.get("provider")
+            item["transcription_model"] = result.get("model")
             item["transcript_txt"] = str(txt_path.relative_to(root))
             item["transcript_json"] = str(json_path.relative_to(root))
             item["transcribed_at"] = utc_now()
@@ -440,7 +416,6 @@ def transcribe_videos(root: Path, manifest: dict, settings: dict, keys: list[str
             errors.append(f"{key}: {type(exc).__name__}: {exc}")
 
     return {"attempted": len(keys), "completed": completed, "errors": errors}
-
 
 def main() -> int:
     parser = argparse.ArgumentParser()
