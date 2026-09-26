@@ -512,10 +512,17 @@ def classify_story_probe(dom: dict[str, Any], handle: str) -> str:
         return "STORY_REQUIRES_AUTH"
     if dom.get("generic_error"):
         return "STORY_PUBLIC_ACCESS_ERROR"
-    if dom.get("story_url_active") and (
-        dom.get("videos")
-        or dom.get("story_links")
-        or f"/stories/{handle.casefold()}/" in href
+    story_frame_pattern = re.compile(
+        rf"/stories/{re.escape(handle.casefold())}/\\d+/?(?:[?#].*)?$",
+        re.I,
+    )
+    if (
+        story_frame_pattern.search(href)
+        or bool(dom.get("videos"))
+        or any(
+            story_frame_pattern.search(str(link).casefold())
+            for link in dom.get("story_links", [])
+        )
     ):
         return "PUBLIC_STORY_ACCESSIBLE"
     if f"/stories/{handle.casefold()}/" not in href:
@@ -529,6 +536,8 @@ def classify_story_probe(dom: dict[str, Any], handle: str) -> str:
         )
     ):
         return "NO_ACTIVE_STORY"
+    if dom.get("view_confirmation_visible"):
+        return "STORY_VIEW_CONFIRMATION_BLOCKED"
     return "STORY_PUBLIC_ACCESS_INCONCLUSIVE"
 
 
