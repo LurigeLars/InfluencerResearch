@@ -210,6 +210,32 @@ class InstagramPublicCamofoxSmokeTests(unittest.TestCase):
         )
         self.assertEqual(result, "STORY_PUBLIC_ACCESS_INCONCLUSIVE")
 
+    def test_story_dom_probe_detects_swedish_teaser_auth_gate(self) -> None:
+        fake_response = {
+            "ok": True,
+            "result": {
+                "title": "Händelser • Instagram",
+                "href": "https://www.instagram.com/stories/rikatillsammans/",
+                "body_text_excerpt": (
+                    "Se den här händelsen innan den försvinner\n"
+                    "Kolla in de senaste fotona och videorna från rikatillsammans.\n"
+                    "Registrera dig\nLogga in"
+                ),
+                "buttons": [],
+                "videos": [],
+                "images": [],
+                "story_links": [],
+                "dialogs": [],
+                "cookie_consent_visible": False,
+            },
+        }
+        with patch.object(smoke, "request_json", return_value=fake_response):
+            result = smoke.story_dom_probe("tab-1", "user-1", "rikatillsammans")
+
+        self.assertTrue(result["story_url_active"])
+        self.assertTrue(result["story_teaser_auth_gate"])
+        self.assertTrue(result["login_surface"])
+
     def test_story_teaser_gate_requires_auth(self) -> None:
         dom = {
             "href": "https://www.instagram.com/stories/rikatillsammans/",
