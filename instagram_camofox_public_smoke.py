@@ -150,7 +150,7 @@ def classify_snapshot(
 
 
 def dom_probe(tab_id: str, user_id: str, expected_handle: str) -> dict[str, Any]:
-    expression = r"""() => {
+    expression = r"""(() => {
       const bodyText = document.body?.innerText || "";
       const links = Array.from(document.querySelectorAll("a[href]"), a => a.href).filter(Boolean);
       const reels = Array.from(new Set(links.filter(href => /instagram\.com\/reel\//i.test(href)))).slice(0, 50);
@@ -173,7 +173,7 @@ def dom_probe(tab_id: str, user_id: str, expected_handle: str) -> dict[str, Any]
         dialogs,
         selects,
       };
-    }"""
+    })()"""
     response = request_json(
         "POST",
         f"/tabs/{urllib.parse.quote(tab_id)}/evaluate",
