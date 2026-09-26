@@ -90,6 +90,13 @@ class CreatorSource(BaseModel):
     evaluation_enabled: bool | None = None
     monitoring_enabled: bool = False
     priority: int = Field(default=100, ge=1, le=1000)
+    discovery_step: int | None = Field(default=None, ge=1, le=1000)
+    max_catalog: int | None = Field(default=None, ge=1, le=10000)
+    discovery_seed_video_urls: list[str] | None = Field(default=None, max_length=8)
+    discovery_seed_basis: str | None = Field(default=None, max_length=200)
+    evaluation_video_ids: list[str] | None = Field(default=None, max_length=20)
+    required_attribution_term: str | None = Field(default=None, max_length=120)
+    shared_channel: bool | None = None
 
 
 class JobManager:
