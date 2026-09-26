@@ -286,9 +286,10 @@ def main() -> int:
                     "ok": False,
                     "error": f"{type(exc).__name__}: {exc}",
                     "handle_visible": False,
-                    "blocked": True,
+                    "blocked": False,
                     "reel_count": 0,
                     "reels": [],
+                    "reel_discovery_ok": False,
                 }
             )
         if index != runs:
