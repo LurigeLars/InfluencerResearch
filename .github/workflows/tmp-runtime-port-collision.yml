@@ -1,0 +1,70 @@
+name: Temporary runtime port collision validation
+
+on:
+  push:
+    branches:
+      - fix/runtime-port-collision-20260926
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime-port-fallback:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Create fake Docker CLI
+        shell: pwsh
+        run: |
+          $fake = Join-Path $PWD ".tmp-docker"
+          New-Item -ItemType Directory -Force -Path $fake | Out-Null
+          $env:DOCKER_LOG = Join-Path $fake "docker.log"
+          "DOCKER_LOG=$env:DOCKER_LOG" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $cmd = @'
+          @echo off
+          echo %*>>"%DOCKER_LOG%"
+          exit /b 0
+          '@
+          Set-Content -LiteralPath (Join-Path $fake "docker.cmd") -Value $cmd -Encoding ascii
+          "$fake" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
+      - name: Occupy 8770 and run Up
+        shell: pwsh
+        run: |
+          $tempLocal = Join-Path $PWD ".tmp-localappdata"
+          New-Item -ItemType Directory -Force -Path (Join-Path $tempLocal "InfluencerResearch") | Out-Null
+          $env:LOCALAPPDATA = $tempLocal
+
+          $cfg = @{
+            schema_version = 1
+            camofox_access_key = "test-access-key"
+            camofox_admin_key = "test-admin-key"
+            mcp_port = 8770
+          }
+          $cfg | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $tempLocal "InfluencerResearch\docker-runtime.json") -Encoding utf8NoBOM
+
+          $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, 8770)
+          $listener.Start()
+          try {
+            pwsh -NoProfile -File ".\scripts\runtime.ps1" -Action Up
+          }
+          finally {
+            $listener.Stop()
+          }
+
+          $updated = Get-Content -LiteralPath (Join-Path $tempLocal "InfluencerResearch\docker-runtime.json") -Raw | ConvertFrom-Json
+          if ([int]$updated.mcp_port -ne 8771) {
+            throw "Expected port fallback to 8771, got $($updated.mcp_port)"
+          }
+
+      - name: Verify Compose arguments
+        shell: pwsh
+        run: |
+          $lines = Get-Content -LiteralPath $env:DOCKER_LOG
+          $lines | ForEach-Object { Write-Host $_ }
+          $up = $lines | Where-Object { $_ -match '^compose -f .+compose\.yaml up -d --build$' }
+          if (-not $up) {
+            throw "runtime.ps1 did not run docker compose up -d --build"
+          }
