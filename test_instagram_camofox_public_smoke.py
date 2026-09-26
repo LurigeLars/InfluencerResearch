@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 import instagram_camofox_public_smoke as smoke
 
@@ -93,6 +94,27 @@ class InstagramPublicCamofoxSmokeTests(unittest.TestCase):
             result,
             {"ref": "e7", "selected": "English", "target": "Svenska"},
         )
+
+    def test_dom_probe_executes_expression_and_classifies_handle(self) -> None:
+        fake_response = {
+            "ok": True,
+            "result": {
+                "title": "RikaTillsammans",
+                "href": "https://www.instagram.com/rikatillsammans/",
+                "body_text_length": 42,
+                "body_text_excerpt": "RikaTillsammans public profile",
+                "reel_links": ["https://www.instagram.com/reel/ABC123/"],
+                "dialogs": [],
+                "selects": [],
+            },
+        }
+        with patch.object(smoke, "request_json", return_value=fake_response) as request:
+            result = smoke.dom_probe("tab-1", "user-1", "rikatillsammans")
+
+        self.assertTrue(result["handle_visible"])
+        body = request.call_args.args[2]
+        self.assertTrue(body["expression"].lstrip().startswith("(() =>"))
+        self.assertTrue(body["expression"].rstrip().endswith("})()"))
 
     def test_handle_visibility_ignores_requested_url_metadata(self) -> None:
         result = smoke.classify_snapshot(
