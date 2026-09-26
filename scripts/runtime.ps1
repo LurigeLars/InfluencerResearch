@@ -180,19 +180,24 @@ function Import-GeminiKey {
     if ($LASTEXITCODE -ne 0) { throw "Gemini key verification failed." }
 }
 
+function Import-AvailableRuntimeSecrets {
+    $cookiePath = Join-Path $env:LOCALAPPDATA "InfluencerResearch\secrets\instagram_cookies.json"
+    if (Test-Path -LiteralPath $cookiePath -PathType Leaf) {
+        Import-InstagramAuth
+    }
+
+    $geminiPath = Join-Path $env:LOCALAPPDATA "InfluencerResearch\secrets\gemini_api_key.dpapi"
+    if (Test-Path -LiteralPath $geminiPath -PathType Leaf) {
+        Import-GeminiKey
+    }
+}
+
 switch ($Action) {
     "Up" {
         Compose -ComposeArgs @("up", "-d", "--build")
         Write-Host "INFLUENCERRESEARCH_MCP=http://127.0.0.1:$($config.mcp_port)/mcp"
         Write-Host "Camofox is internal-only at http://camofox:9377"
-        $cookiePath = Join-Path $env:LOCALAPPDATA "InfluencerResearch\secrets\instagram_cookies.json"
-        if (Test-Path -LiteralPath $cookiePath -PathType Leaf) {
-            Import-InstagramAuth
-        }
-        $geminiPath = Join-Path $env:LOCALAPPDATA "InfluencerResearch\secrets\gemini_api_key.dpapi"
-        if (Test-Path -LiteralPath $geminiPath -PathType Leaf) {
-            Import-GeminiKey
-        }
+        Import-AvailableRuntimeSecrets
     }
     "Down" {
         Compose -ComposeArgs @("down")
@@ -227,6 +232,7 @@ switch ($Action) {
     }
     "Smoke" {
         Compose -ComposeArgs @("up", "-d", "--build")
+        Import-AvailableRuntimeSecrets
         $tests = @(
             "test_camofox_container_config",
             "test_camofox_container_runtime",
