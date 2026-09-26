@@ -1,4 +1,4 @@
-FROM python:3.12-slim-bookworm
+FROM python:3.12-slim-trixie
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -18,6 +18,7 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
     && apt-get -y upgrade \
     && rm -rf /var/lib/apt/lists/* \
     && python -m pip check \
+    && python -m pip uninstall -y pip \
     && useradd --system --uid 10001 --create-home --home-dir /home/influencer influencer \
     && mkdir -p /research/control /research/state /research/output /research/logs /runtime/influencerresearch \
     && chown -R 10001:10001 /research /runtime/influencerresearch /opt/ms-playwright
