@@ -1,6 +1,10 @@
 param(
-    [ValidateSet("Up", "Down", "Status", "Smoke", "ImportInstagramAuth")]
-    [string]$Action = "Up"
+    [ValidateSet("Up", "Down", "Status", "Smoke", "InstagramPublicSmoke", "ImportInstagramAuth")]
+    [string]$Action = "Up",
+    [string]$InstagramProfileUrl = "https://www.instagram.com/rikatillsammans/",
+    [string]$InstagramHandle = "rikatillsammans",
+    [ValidateRange(1, 5)]
+    [int]$InstagramRuns = 3
 )
 
 $ErrorActionPreference = "Stop"
@@ -58,7 +62,7 @@ function Test-InfluencerResearchContainerRunning {
 }
 
 function Ensure-HostMcpPort($Config) {
-    if ($Action -notin @("Up", "Smoke")) {
+    if ($Action -notin @("Up", "Smoke", "InstagramPublicSmoke")) {
         return
     }
 
@@ -153,6 +157,19 @@ switch ($Action) {
     }
     "Down" {
         Compose -ComposeArgs @("down")
+    }
+    "InstagramPublicSmoke" {
+        Compose -ComposeArgs @("up", "-d", "--build")
+        & docker exec influencerresearch-mcp `
+            python -m unittest -v test_instagram_camofox_public_smoke
+        if ($LASTEXITCODE -ne 0) { throw "Instagram public smoke unit tests failed." }
+
+        & docker exec influencerresearch-mcp `
+            python /research/app/instagram_camofox_public_smoke.py `
+            --profile-url $InstagramProfileUrl `
+            --handle $InstagramHandle `
+            --runs $InstagramRuns
+        if ($LASTEXITCODE -ne 0) { throw "Instagram public Camofox smoke failed." }
     }
     "ImportInstagramAuth" {
         Import-InstagramAuth
