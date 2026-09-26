@@ -39,6 +39,19 @@ class MCPContractTests(unittest.TestCase):
         self.assertNotIn("execute_command", source)
         self.assertIn("structured_output=False", source)
 
+    def test_creator_source_exposes_runtime_metadata(self) -> None:
+        source = (BASE / "influencerresearch_mcp.py").read_text(encoding="utf-8")
+        for field in (
+            "discovery_step",
+            "max_catalog",
+            "discovery_seed_video_urls",
+            "discovery_seed_basis",
+            "evaluation_video_ids",
+            "required_attribution_term",
+            "shared_channel",
+        ):
+            self.assertIn(f"{field}:", source)
+
     def test_compose_has_separate_internal_camofox(self) -> None:
         text = (BASE / "compose.yaml").read_text(encoding="utf-8")
         self.assertIn("  influencerresearch:", text)
