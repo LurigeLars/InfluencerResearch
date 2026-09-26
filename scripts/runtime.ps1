@@ -118,7 +118,7 @@ function Compose([string[]]$ComposeArgs) {
 }
 
 function Import-InstagramAuth {
-    $cookiePath = Join-Path $env:LOCALAPPDATA "InstagramResearch\secrets\instagram_cookies.json"
+    $cookiePath = Join-Path $env:LOCALAPPDATA "InfluencerResearch\secrets\instagram_cookies.json"
     if (-not (Test-Path -LiteralPath $cookiePath -PathType Leaf)) {
         throw "Instagram cookie export is missing. Run scripts\authenticate_instagram.ps1 first."
     }
@@ -146,7 +146,7 @@ switch ($Action) {
         Compose -ComposeArgs @("up", "-d", "--build")
         Write-Host "INFLUENCERRESEARCH_MCP=http://127.0.0.1:$($config.mcp_port)/mcp"
         Write-Host "Camofox is internal-only at http://camofox:9377"
-        $cookiePath = Join-Path $env:LOCALAPPDATA "InstagramResearch\secrets\instagram_cookies.json"
+        $cookiePath = Join-Path $env:LOCALAPPDATA "InfluencerResearch\secrets\instagram_cookies.json"
         if (Test-Path -LiteralPath $cookiePath -PathType Leaf) {
             Import-InstagramAuth
         }
