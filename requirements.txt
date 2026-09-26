@@ -7,7 +7,7 @@ imageio-ffmpeg==0.6.0
 
 # Explicitly pin transitive packages with known fixes surfaced by Docker Scout.
 msgpack==1.2.1
-setuptools==78.1.1
+setuptools==83.0.0
 
 # TikTok browser-impersonation dependencies are installed separately in the Docker image,
 # wheel-only and hash-locked from requirements_tiktok_impersonation.lock.txt.
