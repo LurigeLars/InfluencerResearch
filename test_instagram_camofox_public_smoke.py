@@ -48,11 +48,29 @@ class InstagramPublicCamofoxSmokeTests(unittest.TestCase):
 
     def test_detects_language_dialog_separately(self) -> None:
         result = smoke.classify_snapshot(
-            {"text": 'RikaTillsammans - combobox "Switch Display Language"'},
+            {"snapshot": 'RikaTillsammans - combobox "Switch Display Language"'},
             "rikatillsammans",
         )
         self.assertTrue(result["language_dialog_visible"])
         self.assertEqual(result["block_hits"], [])
+
+    def test_detects_swedish_language_dialog(self) -> None:
+        result = smoke.classify_snapshot(
+            {"snapshot": '- dialog:\n  - combobox "Byt visningsspråk"'},
+            "rikatillsammans",
+        )
+        self.assertTrue(result["language_dialog_visible"])
+        self.assertIn("byt visningsspråk", result["language_dialog_hits"])
+
+    def test_handle_visibility_ignores_requested_url_metadata(self) -> None:
+        result = smoke.classify_snapshot(
+            {
+                "url": "https://www.instagram.com/rikatillsammans/",
+                "snapshot": '- dialog:\n  - combobox "Byt visningsspråk"',
+            },
+            "rikatillsammans",
+        )
+        self.assertFalse(result["handle_visible"])
 
 
 if __name__ == "__main__":
