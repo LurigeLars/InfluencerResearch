@@ -115,7 +115,7 @@ Run the bootstrap:
 pwsh -NoProfile -File scripts\authenticate_instagram.ps1
 ```
 
-The script opens a dedicated local Chrome profile, verifies the Instagram session, and exports only the session cookies to `%LOCALAPPDATA%\InstagramResearch\secrets\instagram_cookies.json`. The cookie export is sensitive and must never be committed or copied to Drive.
+The script opens a dedicated local Chrome profile, verifies the Instagram session, and exports only the session cookies to `%LOCALAPPDATA%\InfluencerResearch\secrets\instagram_cookies.json`. The cookie export is sensitive and must never be committed or copied to Drive.
 
 When the Docker runtime is already running, import/refresh the session with:
 
