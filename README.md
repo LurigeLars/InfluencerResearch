@@ -117,6 +117,54 @@ pwsh -NoProfile -File scripts\runtime.ps1 -Action ImportInstagramAuth
 
 On `-Action Up`, the runtime automatically imports the local cookie export when it exists. Instagram workers then run headless inside the `influencerresearch` container using the persistent Docker runtime volume.
 
+
+## Gemini transcription secret
+
+Gemini transcription uses a Windows-hosted DPAPI secret and a runtime-only tmpfs file. The API key is never stored in the repository, a Compose environment file, container metadata, or the persistent Docker runtime volume.
+
+Store or rotate the key once on the Windows host:
+
+```powershell
+pwsh -NoProfile -File scripts\configure_gemini.ps1
+```
+
+The encrypted DPAPI blob is written to:
+
+```text
+%LOCALAPPDATA%\InfluencerResearch\secrets\gemini_api_key.dpapi
+```
+
+It is bound to the current Windows user by DPAPI. On `runtime.ps1 -Action Up`, the host decrypts the key in memory and streams it into the running container at:
+
+```text
+/run/influencerresearch-secrets/gemini_api_key
+```
+
+That path is backed by tmpfs and disappears with the container. To refresh an already-running container after rotating the key:
+
+```powershell
+pwsh -NoProfile -File scripts\runtime.ps1 -Action ImportGeminiKey
+```
+
+The shared transcription backend supports `auto`, `gemini`, and `faster-whisper`. With the default `auto` provider, Gemini is preferred when the runtime secret is present and `faster-whisper` is the local fallback. Example `control/settings.json` transcription section:
+
+```json
+{
+  "transcription": {
+    "enabled": true,
+    "provider": "auto",
+    "gemini_model": "gemini-3.5-transcribe",
+    "model_size": "small",
+    "device": "cpu",
+    "compute_type": "int8",
+    "beam_size": 5,
+    "vad_filter": true
+  }
+}
+```
+
+The backend never reads `GEMINI_API_KEY` from process environment variables.
+
 ### One-time local namespace migration
 
 Older installations stored host-only auth/fallback state under `%LOCALAPPDATA%\\InstagramResearch`. The canonical host namespace is now `%LOCALAPPDATA%\\InfluencerResearch`.
