@@ -30,13 +30,29 @@ class InstagramPublicCamofoxSmokeTests(unittest.TestCase):
         self.assertEqual(result["reel_count"], 1)
         self.assertEqual(result["block_hits"], [])
 
-    def test_detects_login_or_challenge_surface(self) -> None:
+    def test_auth_prompt_is_not_a_hard_block(self) -> None:
         result = smoke.classify_snapshot(
-            {"text": "Log in to continue. Challenge required."},
+            {"text": "RikaTillsammans. Log in or Sign up to continue."},
             "rikatillsammans",
         )
-        self.assertIn("log in", result["block_hits"])
+        self.assertEqual(result["block_hits"], [])
+        self.assertIn("log in", result["auth_prompt_hits"])
+        self.assertIn("sign up", result["auth_prompt_hits"])
+
+    def test_detects_challenge_as_hard_block(self) -> None:
+        result = smoke.classify_snapshot(
+            {"text": "RikaTillsammans. Challenge required."},
+            "rikatillsammans",
+        )
         self.assertIn("challenge", result["block_hits"])
+
+    def test_detects_language_dialog_separately(self) -> None:
+        result = smoke.classify_snapshot(
+            {"text": 'RikaTillsammans - combobox "Switch Display Language"'},
+            "rikatillsammans",
+        )
+        self.assertTrue(result["language_dialog_visible"])
+        self.assertEqual(result["block_hits"], [])
 
 
 if __name__ == "__main__":
