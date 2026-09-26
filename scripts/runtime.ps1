@@ -161,6 +161,10 @@ switch ($Action) {
     "InstagramPublicSmoke" {
         Compose -ComposeArgs @("up", "-d", "--build")
         & docker exec influencerresearch-mcp `
+            python -m unittest -v test_instagram_camofox_public_smoke
+        if ($LASTEXITCODE -ne 0) { throw "Instagram public smoke unit tests failed." }
+
+        & docker exec influencerresearch-mcp `
             python /research/app/instagram_camofox_public_smoke.py `
             --profile-url $InstagramProfileUrl `
             --handle $InstagramHandle `
