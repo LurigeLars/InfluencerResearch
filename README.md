@@ -125,6 +125,25 @@ pwsh -NoProfile -File scripts\runtime.ps1 -Action ImportInstagramAuth
 
 On `-Action Up`, the runtime automatically imports the local cookie export when it exists. Instagram workers then run headless inside the `influencerresearch` container using the persistent Docker runtime volume.
 
+### One-time local namespace migration
+
+Older installations stored host-only auth/fallback state under `%LOCALAPPDATA%\\InstagramResearch`. The canonical host namespace is now `%LOCALAPPDATA%\\InfluencerResearch`.
+
+Preview the migration:
+
+```powershell
+pwsh -NoProfile -File scripts\\migrate_local_namespace.ps1 -Action Plan
+```
+
+Apply and verify it:
+
+```powershell
+pwsh -NoProfile -File scripts\\migrate_local_namespace.ps1 -Action Apply
+pwsh -NoProfile -File scripts\\migrate_local_namespace.ps1 -Action Verify
+```
+
+The migration refuses to run while the retired Windows request bridge still exists, never overwrites an existing active destination, deletes only explicitly retired bridge artifacts, and preserves otherwise-unclassified historical files under `%LOCALAPPDATA%\\InfluencerResearch\\legacy-archive-2026-09-26`.
+
 ## Camofox baseline
 
 The Camofox dependency tree is tracked in `runtime/camofox/package.json` and `runtime/camofox/package-lock.json`.
