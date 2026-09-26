@@ -1,5 +1,5 @@
 # Public ChatGPT path:
-# Cloudflare Access -> remotely managed Tunnel -> gateway:8080 -> influencerresearch:8770/mcp
+# Cloudflare Access -> shared Tunnel -> influencer-gateway:8080 -> influencerresearch:8770/mcp
 # The gateway and cloudflared publish no host ports.
 name: influencerresearch-public
 
@@ -31,19 +31,6 @@ services:
       timeout: 3s
       retries: 5
       start_period: 5s
-
-  cloudflared:
-    image: cloudflare/cloudflared:2026.9.3
-    container_name: influencerresearch-cloudflared
-    command: ["tunnel", "--no-autoupdate", "run"]
-    env_file:
-      - public/tunnel.env
-    networks:
-      - edge
-    depends_on:
-      gateway:
-        condition: service_healthy
-    restart: unless-stopped
 
 networks:
   edge:
