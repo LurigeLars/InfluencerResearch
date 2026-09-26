@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - fix/runtime-compose-args-20260926
+  workflow_dispatch:
 
 permissions:
   contents: read
