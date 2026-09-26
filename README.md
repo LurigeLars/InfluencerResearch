@@ -1,5 +1,21 @@
 # InfluencerResearch
 
+## Repository status
+
+This is an original research-ingestion project, **not a fork of yt-dlp, Camofox/Camoufox, Playwright, or their upstream projects**. Those components are external dependencies used behind a deliberately small MCP surface.
+
+Project-specific design includes:
+
+- creator registration, evaluation, monitoring, and recent-content checks exposed through a bounded MCP toolset;
+- a Dockerized Python runtime with an internal-only Camofox service for supported browser-discovery workflows;
+- yt-dlp/Playwright ingestion plus Gemini or local faster-whisper transcription;
+- Cloudflare Access gateway support with an explicit public tool allowlist and no generic command-execution tool;
+- host-side DPAPI secret storage with runtime-only secret injection; and
+- hardened subprocess/path boundaries, reproducible smoke tests, and security-focused CI.
+
+Generated research data, browser state, credentials, and machine-specific configuration are intentionally kept outside the public repository.
+
+
 InfluencerResearch is a standalone research-ingestion and evaluation toolkit for collecting publicly available creator content from supported platforms, transcribing media, and building structured research queues.
 
 It is **not a fork** of yt-dlp or Camofox. The project orchestrates those tools as external dependencies alongside the official Python MCP SDK, Playwright, faster-whisper and other libraries.
