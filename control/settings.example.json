@@ -1,0 +1,14 @@
+{
+  "max_scan_per_creator": 50,
+  "max_new_per_creator": 10,
+  "transcription": {
+    "enabled": true,
+    "provider": "auto",
+    "gemini_model": "gemini-3.5-transcribe",
+    "model_size": "small",
+    "device": "cpu",
+    "compute_type": "int8",
+    "beam_size": 5,
+    "vad_filter": true
+  }
+}
