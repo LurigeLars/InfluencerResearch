@@ -2,7 +2,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $App = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$Runtime = Join-Path $env:LOCALAPPDATA "InstagramResearch"
+$Runtime = Join-Path $env:LOCALAPPDATA "InfluencerResearch"
 $Venv = Join-Path $Runtime "auth-venv"
 $Python = Join-Path $Venv "Scripts\python.exe"
 $Setup = Join-Path $App "setup_auth.py"
