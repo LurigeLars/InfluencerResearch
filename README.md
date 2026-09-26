@@ -67,9 +67,9 @@ Cloudflare Access
 
 The gateway publishes no host ports. It joins the existing `influencerresearch_runtime` Docker network and the shared tunnel's edge network, forwarding only to the internal MCP service. Camofox remains inaccessible from the public stack.
 
-Public deployment identifiers are intentionally not stored in this repository. Configure the public hostname,
-connector endpoint, Access application and local gateway settings out of band. Keep all deployment-local
-configuration files gitignored. The shared tunnel is managed outside this repository.
+Real deployment identifiers are intentionally not stored in this repository. `public/gateway.env.example` contains placeholders only.
+Copy it to `public/gateway.env`, replace the placeholders with your own deployment values, and keep the real file gitignored.
+Configure the public hostname, connector endpoint and Access application for your own deployment. The shared tunnel is managed outside this repository.
 
 Start the base runtime first, then the public edge:
 
@@ -91,7 +91,7 @@ Cloudflare Access remains the authentication boundary. The gateway independently
 
 Instagram authentication requires an occasional interactive browser login. This is a **bootstrap step only**, not a continuously running local service.
 
-Configure the dedicated account username in local, gitignored runtime configuration.
+Copy `.env.example` to `.env`, replace the placeholder with your own account setting, and keep the real file gitignored.
 
 Run the bootstrap:
 
