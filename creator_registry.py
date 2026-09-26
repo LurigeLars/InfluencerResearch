@@ -25,9 +25,20 @@ REGISTRATION_VERIFICATION_METHODS = {
     "MULTI_SOURCE_CORROBORATION",
     "EXISTING_ACCEPTED_SOURCE_CONFIG",
 }
-REGISTRATION_SOURCE_KEYS = {
-    "platform", "profile_url", "evaluation_enabled", "monitoring_enabled", "priority"
+RUNTIME_SOURCE_METADATA_KEYS = {
+    "discovery_step",
+    "max_catalog",
+    "discovery_seed_video_urls",
+    "discovery_seed_basis",
+    "evaluation_video_ids",
+    "required_attribution_term",
+    "shared_channel",
 }
+REGISTRATION_SOURCE_KEYS = {
+    "platform", "profile_url", "evaluation_enabled", "monitoring_enabled", "priority",
+    *RUNTIME_SOURCE_METADATA_KEYS,
+}
+VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{6,32}$")
 RESERVED_INSTAGRAM_PATHS = {
     "p", "reel", "reels", "stories", "explore", "accounts", "direct", "about", "legal"
 }
@@ -148,6 +159,7 @@ def validate_registry(obj: dict) -> dict:
             if platform in seen_platforms:
                 raise ValueError(f"duplicate platform source for {key}: {platform}")
             seen_platforms.add(platform)
+            runtime_metadata = _normalize_runtime_source_metadata(platform, url, source)
             normalized_sources.append({
                 **source,
                 "platform": platform,
@@ -157,6 +169,7 @@ def validate_registry(obj: dict) -> dict:
                 "monitoring_enabled": bool(source.get("monitoring_enabled", False)),
                 "priority": int(source.get("priority", 100)),
                 "verification_status": "VERIFIED",
+                **runtime_metadata,
             })
         normalized[key] = {
             **profile,
@@ -167,6 +180,93 @@ def validate_registry(obj: dict) -> dict:
             "sources": normalized_sources,
         }
     return {**obj, "creators": normalized}
+
+
+def _normalize_runtime_source_metadata(platform: str, profile_url: str, source: dict) -> dict:
+    out: dict = {}
+    tiktok_only = {
+        "discovery_step", "max_catalog", "discovery_seed_video_urls", "discovery_seed_basis"
+    }
+    youtube_only = {"evaluation_video_ids", "required_attribution_term", "shared_channel"}
+
+    if platform != "TIKTOK" and any(key in source for key in tiktok_only):
+        raise ValueError("TIKTOK_RUNTIME_METADATA_ON_NON_TIKTOK_SOURCE")
+    if platform != "YOUTUBE" and any(key in source for key in youtube_only):
+        raise ValueError("YOUTUBE_RUNTIME_METADATA_ON_NON_YOUTUBE_SOURCE")
+
+    if platform == "TIKTOK":
+        for key, upper in (("discovery_step", 1000), ("max_catalog", 10000)):
+            if key not in source:
+                continue
+            value = source[key]
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= upper:
+                raise ValueError(f"BAD_{key.upper()}")
+            out[key] = value
+
+        if "discovery_seed_video_urls" in source:
+            raw_seeds = source["discovery_seed_video_urls"]
+            if not isinstance(raw_seeds, list) or len(raw_seeds) > 8:
+                raise ValueError("BAD_DISCOVERY_SEED_VIDEO_URLS")
+            expected_handle = urlparse(profile_url).path.strip("/").lstrip("@").casefold()
+            seeds: list[str] = []
+            for raw in raw_seeds:
+                value = str(raw or "").strip()
+                try:
+                    parsed = urlparse(value)
+                except Exception:
+                    raise ValueError("BAD_DISCOVERY_SEED_VIDEO_URL")
+                host = (parsed.hostname or "").casefold().rstrip(".")
+                parts = [part for part in parsed.path.split("/") if part]
+                if (
+                    parsed.scheme.casefold() != "https"
+                    or not (host == "tiktok.com" or host.endswith(".tiktok.com"))
+                    or len(parts) != 3
+                    or not parts[0].startswith("@")
+                    or parts[0][1:].casefold() != expected_handle
+                    or parts[1] != "video"
+                    or not parts[2].isdigit()
+                ):
+                    raise ValueError("BAD_DISCOVERY_SEED_VIDEO_URL")
+                canonical = f"https://www.tiktok.com/@{parts[0][1:]}/video/{parts[2]}"
+                if canonical not in seeds:
+                    seeds.append(canonical)
+            out["discovery_seed_video_urls"] = seeds
+
+        if "discovery_seed_basis" in source:
+            basis = str(source["discovery_seed_basis"] or "").strip()
+            if not basis or len(basis) > 200 or any(ord(ch) < 32 for ch in basis):
+                raise ValueError("BAD_DISCOVERY_SEED_BASIS")
+            out["discovery_seed_basis"] = basis
+
+    if platform == "YOUTUBE":
+        if "evaluation_video_ids" in source:
+            raw_ids = source["evaluation_video_ids"]
+            if not isinstance(raw_ids, list) or len(raw_ids) > 20:
+                raise ValueError("BAD_EVALUATION_VIDEO_IDS")
+            video_ids: list[str] = []
+            for raw in raw_ids:
+                video_id = str(raw or "").strip()
+                if not VIDEO_ID_RE.fullmatch(video_id):
+                    raise ValueError("BAD_EVALUATION_VIDEO_ID")
+                if video_id not in video_ids:
+                    video_ids.append(video_id)
+            out["evaluation_video_ids"] = video_ids
+
+        if "required_attribution_term" in source:
+            term = str(source["required_attribution_term"] or "").strip()
+            if not term or len(term) > 120 or any(ord(ch) < 32 for ch in term):
+                raise ValueError("BAD_REQUIRED_ATTRIBUTION_TERM")
+            out["required_attribution_term"] = term
+
+        if "shared_channel" in source:
+            if not isinstance(source["shared_channel"], bool):
+                raise ValueError("BAD_SHARED_CHANNEL")
+            out["shared_channel"] = source["shared_channel"]
+
+        if out.get("shared_channel") and not out.get("required_attribution_term"):
+            raise ValueError("SHARED_CHANNEL_ATTRIBUTION_RULE_MISSING")
+
+    return out
 
 
 def normalize_registration_request(req: dict) -> dict:
@@ -228,6 +328,7 @@ def normalize_registration_request(req: dict) -> dict:
         if isinstance(priority, bool) or not isinstance(priority, int) or not 1 <= priority <= 1000:
             raise ValueError("BAD_SOURCE_PRIORITY")
         has_eval_source = has_eval_source or evaluation_enabled
+        runtime_metadata = _normalize_runtime_source_metadata(platform, url, source)
         normalized_sources.append({
             "platform": platform,
             "profile_url": url,
@@ -237,6 +338,7 @@ def normalize_registration_request(req: dict) -> dict:
             "priority": priority,
             "verification_status": "VERIFIED",
             "verification_basis": "+".join(normalized_methods),
+            **runtime_metadata,
         })
     if not has_eval_source:
         raise ValueError("NO_EVALUATION_ENABLED_SOURCE")
@@ -277,6 +379,38 @@ def _functional_profile(profile: dict) -> dict:
     }
 
 
+def _functional_profile_without_runtime_metadata(profile: dict) -> dict:
+    functional = _functional_profile(profile)
+    functional["sources"] = [
+        {key: value for key, value in source.items() if key not in RUNTIME_SOURCE_METADATA_KEYS}
+        for source in functional["sources"]
+    ]
+    return functional
+
+
+def _enrich_runtime_source_metadata(existing: dict, candidate: dict) -> dict:
+    existing_sources = {str(source.get("platform")): source for source in existing.get("sources", [])}
+    candidate_sources = {str(source.get("platform")): source for source in candidate.get("sources", [])}
+    enriched_sources = []
+
+    for source in existing.get("sources", []):
+        platform = str(source.get("platform"))
+        candidate_source = candidate_sources.get(platform, {})
+        enriched = dict(source)
+        for key in RUNTIME_SOURCE_METADATA_KEYS:
+            if key not in candidate_source:
+                continue
+            if key in source and source[key] != candidate_source[key]:
+                raise ValueError(f"RUNTIME_METADATA_CONFLICT:{platform}:{key}")
+            enriched[key] = candidate_source[key]
+        enriched_sources.append(enriched)
+
+    if set(existing_sources) != set(candidate_sources):
+        raise ValueError("CREATOR_KEY_CONFLICT")
+
+    return {**existing, "sources": enriched_sources}
+
+
 def register_creator(root: Path, req: dict) -> dict:
     root = root.resolve()
     path = root / "control" / "creator_registry.json"
@@ -288,7 +422,15 @@ def register_creator(root: Path, req: dict) -> dict:
         candidate = {**profile, "verification": {**profile["verification"], "verified_at": (existing.get("verification") or {}).get("verified_at", profile["verification"]["verified_at"])}}
         if _functional_profile(existing) == _functional_profile(candidate):
             return {"result": "ALREADY_REGISTERED", "creator_key": key, "registry_changed": False, "source_count": len(profile["sources"])}
-        raise ValueError("CREATOR_KEY_CONFLICT")
+        if _functional_profile_without_runtime_metadata(existing) != _functional_profile_without_runtime_metadata(candidate):
+            raise ValueError("CREATOR_KEY_CONFLICT")
+        enriched = _enrich_runtime_source_metadata(existing, candidate)
+        if _functional_profile(existing) == _functional_profile(enriched):
+            return {"result": "ALREADY_REGISTERED", "creator_key": key, "registry_changed": False, "source_count": len(profile["sources"])}
+        merged = {**registry, "updated_at": now_iso(), "creators": {**registry["creators"], key: enriched}}
+        merged = validate_registry(merged)
+        atomic_json(path, merged)
+        return {"result": "ENRICHED", "creator_key": key, "registry_changed": True, "source_count": len(profile["sources"])}
 
     profile["registration"] = {
         "request_id": str(req.get("request_id") or ""),
