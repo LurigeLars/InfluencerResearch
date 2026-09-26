@@ -71,6 +71,8 @@ services:
       CAMOFOX_BIND_HOST: 0.0.0.0
       CAMOFOX_ACCESS_KEY: ${CAMOFOX_ACCESS_KEY:?CAMOFOX_ACCESS_KEY is required}
       CAMOFOX_ADMIN_KEY: ${CAMOFOX_ADMIN_KEY:?CAMOFOX_ADMIN_KEY is required}
+      CAMOFOX_LOCALE: sv-SE
+      CAMOFOX_TIMEZONE: Europe/Stockholm
       CAMOUFOX_EXECUTABLE: /opt/camoufox/camoufox-bin
       CAMOUFOX_INSTALL_DIR: /opt/camoufox
       HOME: /run/camofox
