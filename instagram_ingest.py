@@ -417,6 +417,44 @@ def transcribe_videos(root: Path, manifest: dict, settings: dict, keys: list[str
 
     return {"attempted": len(keys), "completed": completed, "errors": errors}
 
+
+def resolve_max_new_per_creator(settings: dict, override: int | None) -> int:
+    value = int(settings.get("max_new_per_creator", 10)) if override is None else int(override)
+    if value < 1:
+        raise ValueError("max_new_per_creator must be at least 1")
+    return value
+
+
+def select_transcription_keys(
+    manifest: dict,
+    summaries: list[dict],
+    *,
+    new_only: bool,
+) -> list[str]:
+    if new_only:
+        candidates = [
+            key
+            for summary in summaries
+            for key in summary.get("new_keys", [])
+        ]
+    else:
+        candidates = list(manifest.get("items", {}).keys())
+
+    selected = []
+    seen = set()
+    for key in candidates:
+        if key in seen:
+            continue
+        seen.add(key)
+        item = manifest.get("items", {}).get(key, {})
+        if (
+            item.get("download_status") == "DONE"
+            and item.get("video_file")
+            and item.get("transcription_status") != "DONE"
+        ):
+            selected.append(key)
+    return selected
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -425,6 +463,17 @@ def main() -> int:
         default=Path(__file__).resolve().parent.parent,
     )
     parser.add_argument("--skip-transcription", action="store_true")
+    parser.add_argument(
+        "--max-new-per-creator",
+        type=int,
+        default=None,
+        help="Override settings.json max_new_per_creator for this run.",
+    )
+    parser.add_argument(
+        "--transcribe-new-only",
+        action="store_true",
+        help="Transcribe only videos downloaded during this run.",
+    )
     args = parser.parse_args()
 
     root = args.root.resolve()
@@ -448,7 +497,7 @@ def main() -> int:
         raise RuntimeError("No enabled creators in control\\creators.json.")
 
     max_scan = int(settings.get("max_scan_per_creator", 50))
-    max_new = int(settings.get("max_new_per_creator", 10))
+    max_new = resolve_max_new_per_creator(settings, args.max_new_per_creator)
 
     started = utc_now()
     atomic_write_json(status_path, {
@@ -532,13 +581,11 @@ def main() -> int:
                 "skipped": True,
             }
         else:
-            pending = [
-                key
-                for key, item in manifest["items"].items()
-                if item.get("download_status") == "DONE"
-                and item.get("video_file")
-                and item.get("transcription_status") != "DONE"
-            ]
+            pending = select_transcription_keys(
+                manifest,
+                summaries,
+                new_only=args.transcribe_new_only,
+            )
             transcription = transcribe_videos(root, manifest, settings, pending)
             atomic_write_json(manifest_path, manifest)
 
