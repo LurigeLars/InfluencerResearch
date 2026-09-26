@@ -4,6 +4,7 @@ yt-dlp==2026.8.19
 yt-dlp-ejs==0.8.0
 faster-whisper==1.2.1
 imageio-ffmpeg==0.6.0
+google-genai==2.25.0
 tzdata==2026.4
 
 # Explicitly pin transitive packages with known fixes surfaced by Docker Scout.
