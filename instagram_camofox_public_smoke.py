@@ -369,6 +369,12 @@ def main() -> int:
     else:
         decision = "CAMOFOX_PUBLIC_ACCESS_INCONCLUSIVE"
 
+    interaction_used = any(
+        round_row.get("language_dialog_dismiss_attempted")
+        for result_row in results
+        for round_row in result_row.get("rounds", [])
+    )
+
     status = {
         "schema_version": 1,
         "app_version": APP_VERSION,
@@ -378,7 +384,7 @@ def main() -> int:
         "handle": handle,
         "auth_used": False,
         "cookies_used": False,
-        "interaction_used": False,
+        "interaction_used": interaction_used,
         "runs_requested": runs,
         "successful_runs": successful_runs,
         "blocked_runs": blocked_runs,
