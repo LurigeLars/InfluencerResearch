@@ -234,7 +234,8 @@ switch ($Action) {
             "test_tiktok_media_transport",
             "test_smoke_production_separation",
             "test_mcp_contract",
-            "test_local_runtime_namespace"
+            "test_local_runtime_namespace",
+            "test_transcription_backend"
         )
         & docker compose -f $Compose exec -T influencerresearch python -m unittest -v @tests
         if ($LASTEXITCODE -ne 0) { throw "Container unit smoke failed." }
