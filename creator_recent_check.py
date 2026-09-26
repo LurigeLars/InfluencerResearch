@@ -9,6 +9,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from creator_registry import get_creator, load_registry, select_monitor_sources
 from creator_monitor import manifest_done_ids, _tiktok_published_at
@@ -19,6 +20,7 @@ RECENT_CHECK_VERSION = "0.1.5"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
+STOCKHOLM_TZ = ZoneInfo("Europe/Stockholm")
 
 
 def now_utc() -> datetime:
@@ -53,19 +55,15 @@ def resolve_window(window: str, lookback_days: int | None) -> tuple[datetime, da
     end = now_utc()
     w = str(window or "TODAY").upper()
     if w == "TODAY":
-        # Use the host OS local timezone instead of Python's optional IANA tzdata
-        # package. The InfluencerResearch Windows host operates in Europe/Stockholm.
-        # time.mktime() delegates local/DST conversion to the Windows timezone rules.
-        local_now = datetime.now()
+        local_now = end.astimezone(STOCKHOLM_TZ)
         start_local = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
-        start_epoch = time.mktime(start_local.timetuple())
-        start = datetime.fromtimestamp(start_epoch, timezone.utc)
-        offset = datetime.now().astimezone().utcoffset()
+        start = start_local.astimezone(timezone.utc)
+        offset = local_now.utcoffset()
         offset_minutes = int(offset.total_seconds() // 60) if offset is not None else None
         meta = {
             "window": "TODAY",
             "timezone": "Europe/Stockholm",
-            "timezone_source": "WINDOWS_SYSTEM_LOCAL",
+            "timezone_source": "IANA_ZONEINFO",
             "calendar_date": local_now.date().isoformat(),
             "system_utc_offset_minutes": offset_minutes,
         }
