@@ -1,0 +1,76 @@
+name: Temporary Instagram Camofox smoke
+
+on:
+  pull_request:
+    paths:
+      - "instagram_camofox_smoke.py"
+      - ".github/workflows/tmp-instagram-camofox-smoke.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  anonymous-instagram-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Prepare isolated runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/influencerresearch-smoke"
+          mkdir -p "$root/control" "$root/state" "$root/output" "$root/logs"
+          echo "INFLUENCER_RESEARCH_CONTROL_DIR=$root/control" >> "$GITHUB_ENV"
+          echo "INFLUENCER_RESEARCH_STATE_DIR=$root/state" >> "$GITHUB_ENV"
+          echo "INFLUENCER_RESEARCH_OUTPUT_DIR=$root/output" >> "$GITHUB_ENV"
+          echo "INFLUENCER_RESEARCH_LOG_DIR=$root/logs" >> "$GITHUB_ENV"
+          echo "INFLUENCER_RESEARCH_MCP_PORT=18771" >> "$GITHUB_ENV"
+          python - <<'PY' >> "$GITHUB_ENV"
+          import secrets
+          print("CAMOFOX_ACCESS_KEY=" + secrets.token_urlsafe(32))
+          print("CAMOFOX_ADMIN_KEY=" + secrets.token_urlsafe(32))
+          PY
+
+      - name: Start isolated Compose runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose -f compose.yaml up -d --build
+
+      - name: Wait for Camofox
+        shell: bash
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            status="$(docker inspect -f '{{.State.Health.Status}}' influencerresearch-camofox 2>/dev/null || true)"
+            if [ "$status" = "healthy" ]; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose -f compose.yaml ps
+          docker compose -f compose.yaml logs --tail=100 camofox
+          exit 1
+
+      - name: Run anonymous Instagram smoke
+        shell: bash
+        run: |
+          set +e
+          docker compose -f compose.yaml exec -T influencerresearch             python instagram_camofox_smoke.py             --profile https://www.instagram.com/rikatillsammans/             --attempts 3
+          rc=$?
+          echo "INSTAGRAM_SMOKE_RC=$rc"
+          exit 0
+
+      - name: Runtime diagnostics
+        if: always()
+        shell: bash
+        run: |
+          docker compose -f compose.yaml ps
+          docker compose -f compose.yaml logs --tail=80 camofox || true
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: docker compose -f compose.yaml down -v || true
