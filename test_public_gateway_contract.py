@@ -10,10 +10,10 @@ class PublicGatewayContractTests(unittest.TestCase):
     def test_public_compose_has_no_host_ports(self) -> None:
         text = (BASE / "compose.public.yaml").read_text(encoding="utf-8")
         self.assertIn("influencerresearch-gateway", text)
-        self.assertIn("influencerresearch-cloudflared", text)
+        self.assertIn("influencer-gateway", text)
         self.assertIn("name: influencerresearch_runtime", text)
         self.assertNotIn("\n    ports:", text)
-        self.assertIn('command: ["tunnel", "--no-autoupdate", "run"]', text)
+        self.assertNotIn("cloudflared:", text)
 
     def test_gateway_has_fixed_upstream_and_access_auth(self) -> None:
         text = (BASE / "public" / "gateway" / "gateway.mjs").read_text(encoding="utf-8")
@@ -41,9 +41,11 @@ class PublicGatewayContractTests(unittest.TestCase):
     def test_local_secret_files_are_ignored(self) -> None:
         gitignore = (BASE / ".gitignore").read_text(encoding="utf-8")
         dockerignore = (BASE / ".dockerignore").read_text(encoding="utf-8")
-        for path in ("public/gateway.env", "public/tunnel.env"):
-            self.assertIn(path, gitignore)
-            self.assertIn(path, dockerignore)
+        path = "public/gateway.env"
+        self.assertIn(path, gitignore)
+        self.assertIn(path, dockerignore)
+        self.assertNotIn("public/tunnel.env", gitignore)
+        self.assertNotIn("public/tunnel.env", dockerignore)
 
 
 if __name__ == "__main__":
