@@ -133,6 +133,51 @@ class InstagramPublicCamofoxSmokeTests(unittest.TestCase):
         self.assertIn("decline optional cookies", body["expression"].lower())
         self.assertTrue(body["expression"].rstrip().endswith("})()"))
 
+    def test_classify_story_probe_requires_auth(self) -> None:
+        result = smoke.classify_story_probe(
+            {
+                "href": "https://www.instagram.com/accounts/login/",
+                "body_text_excerpt": "Log in to Instagram",
+                "login_surface": True,
+                "generic_error": False,
+                "story_url_active": False,
+                "videos": [],
+                "story_links": [],
+            },
+            "rikatillsammans",
+        )
+        self.assertEqual(result, "STORY_REQUIRES_AUTH")
+
+    def test_classify_story_probe_public_accessible(self) -> None:
+        result = smoke.classify_story_probe(
+            {
+                "href": "https://www.instagram.com/stories/rikatillsammans/123456789/",
+                "body_text_excerpt": "RikaTillsammans",
+                "login_surface": False,
+                "generic_error": False,
+                "story_url_active": True,
+                "videos": [{"src": "https://cdn.example/story.mp4"}],
+                "story_links": [],
+            },
+            "rikatillsammans",
+        )
+        self.assertEqual(result, "PUBLIC_STORY_ACCESSIBLE")
+
+    def test_classify_story_probe_redirected_without_story(self) -> None:
+        result = smoke.classify_story_probe(
+            {
+                "href": "https://www.instagram.com/rikatillsammans/",
+                "body_text_excerpt": "RikaTillsammans",
+                "login_surface": False,
+                "generic_error": False,
+                "story_url_active": False,
+                "videos": [],
+                "story_links": [],
+            },
+            "rikatillsammans",
+        )
+        self.assertEqual(result, "NO_ACTIVE_STORY_OR_REDIRECTED")
+
     def test_handle_visibility_ignores_requested_url_metadata(self) -> None:
         result = smoke.classify_snapshot(
             {
