@@ -91,11 +91,7 @@ Cloudflare Access remains the authentication boundary. The gateway independently
 
 Instagram authentication requires an occasional interactive browser login. This is a **bootstrap step only**, not a continuously running local service.
 
-Set the dedicated account username:
-
-```powershell
-$env:INFLUENCER_RESEARCH_INSTAGRAM_USERNAME="your_instagram_username"
-```
+Configure the dedicated account username in local, gitignored runtime configuration.
 
 Run the bootstrap:
 
