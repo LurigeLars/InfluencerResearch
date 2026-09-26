@@ -60,3 +60,27 @@ jobs:
             test ! -d /usr/local/lib/python3.12/site-packages/setuptools/_vendor/jaraco.context-5.3.0.dist-info
             echo FIXED_METADATA_BASELINE_OK
           '
+
+      - name: Probe whether Perl can be removed from runtime
+        run: |
+          docker run --rm --user root --entrypoint sh influencerresearch-runtime-pmtest -lc '
+            set -eu
+            echo "=== PERL PURGE PLAN ==="
+            apt-get -s purge perl | sed -n "1,160p"
+            apt-get purge -y perl
+            if dpkg-query -W -f="${Status}" perl 2>/dev/null | grep -q "install ok installed"; then
+              echo "perl package is still installed" >&2
+              exit 1
+            fi
+            python -c "import mcp, playwright, yt_dlp, faster_whisper, imageio_ffmpeg, msgpack, curl_cffi, cffi, pycparser, certifi, influencerresearch_mcp; print('IMPORTS_AFTER_PERL_PURGE_OK')"
+            python - <<'"'"'PY'"'"'
+          from playwright.sync_api import sync_playwright
+          with sync_playwright() as p:
+              browser = p.chromium.launch(headless=True)
+              page = browser.new_page()
+              page.set_content("<title>ok</title><p>runtime</p>")
+              assert page.title() == "ok"
+              browser.close()
+          print("PLAYWRIGHT_AFTER_PERL_PURGE_OK")
+          PY
+          '
