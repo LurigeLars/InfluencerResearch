@@ -14,6 +14,10 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
     && python -m pip install --no-cache-dir -r requirements.txt \
     && python -m pip install --no-cache-dir --only-binary=:all: --no-deps --require-hashes -r requirements_tiktok_impersonation.lock.txt \
     && python -m playwright install --with-deps chromium \
+    && apt-get update \
+    && apt-get -y upgrade \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip check \
     && useradd --system --uid 10001 --create-home --home-dir /home/influencer influencer \
     && mkdir -p /research/control /research/state /research/output /research/logs /runtime/influencerresearch \
     && chown -R 10001:10001 /research /runtime/influencerresearch /opt/ms-playwright
