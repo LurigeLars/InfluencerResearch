@@ -57,8 +57,8 @@ def runtime_dir() -> Path:
     if os.environ.get("INFLUENCER_RESEARCH_CONTAINER", "").strip() == "1":
         return Path("/runtime/influencerresearch")
     if os.name == "nt":
-        return Path.home() / "AppData" / "Local" / "InstagramResearch"
-    return Path.home() / ".local" / "share" / "InstagramResearch"
+        return Path.home() / "AppData" / "Local" / "InfluencerResearch"
+    return Path.home() / ".local" / "share" / "InfluencerResearch"
 
 
 def profile_dir() -> Path:
@@ -121,7 +121,7 @@ def write_netscape_cookiefile(context, path: Path) -> None:
     cookies = context.cookies()
     lines = [
         "# Netscape HTTP Cookie File",
-        "# Temporary InstagramResearch cookie export. Never copy to Drive.",
+        "# Temporary InfluencerResearch cookie export. Never copy to Drive.",
     ]
     for c in cookies:
         domain = str(c.get("domain", ""))

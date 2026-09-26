@@ -115,7 +115,7 @@ Run the bootstrap:
 pwsh -NoProfile -File scripts\authenticate_instagram.ps1
 ```
 
-The script opens a dedicated local Chrome profile, verifies the Instagram session, and exports only the session cookies to `%LOCALAPPDATA%\InstagramResearch\secrets\instagram_cookies.json`. The cookie export is sensitive and must never be committed or copied to Drive.
+The script opens a dedicated local Chrome profile, verifies the Instagram session, and exports only the session cookies to `%LOCALAPPDATA%\InfluencerResearch\secrets\instagram_cookies.json`. The cookie export is sensitive and must never be committed or copied to Drive.
 
 When the Docker runtime is already running, import/refresh the session with:
 
@@ -124,6 +124,25 @@ pwsh -NoProfile -File scripts\runtime.ps1 -Action ImportInstagramAuth
 ```
 
 On `-Action Up`, the runtime automatically imports the local cookie export when it exists. Instagram workers then run headless inside the `influencerresearch` container using the persistent Docker runtime volume.
+
+### One-time local namespace migration
+
+Older installations stored host-only auth/fallback state under `%LOCALAPPDATA%\\InstagramResearch`. The canonical host namespace is now `%LOCALAPPDATA%\\InfluencerResearch`.
+
+Preview the migration:
+
+```powershell
+pwsh -NoProfile -File scripts\\migrate_local_namespace.ps1 -Action Plan
+```
+
+Apply and verify it:
+
+```powershell
+pwsh -NoProfile -File scripts\\migrate_local_namespace.ps1 -Action Apply
+pwsh -NoProfile -File scripts\\migrate_local_namespace.ps1 -Action Verify
+```
+
+The migration refuses to run while the retired Windows request bridge still exists, never overwrites an existing active destination, deletes only explicitly retired bridge artifacts, and preserves otherwise-unclassified historical files under `%LOCALAPPDATA%\\InfluencerResearch\\legacy-archive-2026-09-26`.
 
 ## Camofox baseline
 
