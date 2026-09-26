@@ -50,6 +50,12 @@ class LocalRuntimeNamespaceTests(unittest.TestCase):
         self.assertIn("/run/influencerresearch-secrets/gemini_api_key", runtime)
         self.assertIn("/run/influencerresearch-secrets:", compose)
 
+    def test_smoke_rehydrates_ephemeral_runtime_secrets(self) -> None:
+        runtime = (BASE / "scripts/runtime.ps1").read_text(encoding="utf-8")
+        self.assertIn("function Import-AvailableRuntimeSecrets", runtime)
+        smoke = runtime.split('"Smoke" {', 1)[1]
+        self.assertIn("Import-AvailableRuntimeSecrets", smoke)
+
     def test_tiktok_host_fallback_uses_new_namespace(self) -> None:
         text = (BASE / "tiktok_camofox_sync.py").read_text(encoding="utf-8")
         self.assertIn(
