@@ -67,20 +67,9 @@ Cloudflare Access
 
 The gateway publishes no host ports. It joins the existing `influencerresearch_runtime` Docker network and the shared tunnel's edge network, forwarding only to the internal MCP service. Camofox remains inaccessible from the public stack.
 
-Cloudflare should be configured with:
-
-- public hostname: `<redacted-private-host>`
-- shared tunnel origin service: `http://influencer-gateway:8080`
-- connector endpoint: `https://<redacted-private-host>/mcp`
-- Cloudflare Access application protecting the MCP hostname/path
-
-Prepare local configuration:
-
-```powershell
-Copy-Item public\gateway.env.example public\gateway.env
-```
-
-Fill `public/gateway.env` with the Access team domain and Application Audience (AUD) tag. Optionally set an email allowlist for interactive Access identity. The shared tunnel token is managed by the separate `mcp-edge` deployment, not this repository.
+Public deployment identifiers are intentionally not stored in this repository. Configure the public hostname,
+connector endpoint, Access application and local gateway settings out of band. Keep all deployment-local
+configuration files gitignored. The shared tunnel is managed outside this repository.
 
 Start the base runtime first, then the public edge:
 
