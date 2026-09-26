@@ -17,7 +17,7 @@ from typing import Any
 import camofox_container as camofox_container_config
 
 
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.5.0"
 NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 REEL_ABS_RE = re.compile(r"https?://(?:www\.)?instagram\.com/reel/([A-Za-z0-9_-]+)/?", re.I)
 REEL_REL_RE = re.compile(r"(?:^|[\"'\s(=])(/reel/[A-Za-z0-9_-]+/?)", re.I)
@@ -149,6 +149,45 @@ def classify_snapshot(
     }
 
 
+def dom_probe(tab_id: str, user_id: str, expected_handle: str) -> dict[str, Any]:
+    expression = r"""() => {
+      const bodyText = document.body?.innerText || "";
+      const links = Array.from(document.querySelectorAll("a[href]"), a => a.href).filter(Boolean);
+      const reels = Array.from(new Set(links.filter(href => /instagram\.com\/reel\//i.test(href)))).slice(0, 50);
+      const dialogs = Array.from(document.querySelectorAll('dialog,[role="dialog"]')).slice(0, 10).map(el => ({
+        role: el.getAttribute("role") || el.tagName.toLowerCase(),
+        text: (el.innerText || "").slice(0, 1000),
+      }));
+      const selects = Array.from(document.querySelectorAll("select")).slice(0, 20).map(el => ({
+        ariaLabel: el.getAttribute("aria-label"),
+        value: el.value,
+        selectedText: el.selectedOptions?.[0]?.text || null,
+        options: Array.from(el.options || []).slice(0, 100).map(o => o.text),
+      }));
+      return {
+        title: document.title,
+        href: location.href,
+        body_text_length: bodyText.length,
+        body_text_excerpt: bodyText.slice(0, 5000),
+        reel_links: reels,
+        dialogs,
+        selects,
+      };
+    }"""
+    response = request_json(
+        "POST",
+        f"/tabs/{urllib.parse.quote(tab_id)}/evaluate",
+        {"userId": user_id, "expression": expression},
+        timeout=30,
+    )
+    result = response.get("result") if isinstance(response, dict) else None
+    if not isinstance(result, dict):
+        raise RuntimeError(f"Unexpected DOM probe response: {response}")
+    body_text = str(result.get("body_text_excerpt") or "")
+    result["handle_visible"] = expected_handle.casefold() in body_text.casefold()
+    return result
+
+
 def probe_public_session(profile_url: str, handle: str, run_index: int) -> dict[str, Any]:
     user_id = f"influencerresearch-instagram-public-smoke-{run_index}"
     session_key = f"public-{handle}-{run_index}-{int(time.time())}"
@@ -194,6 +233,16 @@ def probe_public_session(profile_url: str, handle: str, run_index: int) -> dict[
                 links_error = f"{type(exc).__name__}: {exc}"[:1000]
 
             classified = classify_snapshot(snap, handle, links)
+            dom = None
+            dom_error = None
+            try:
+                dom = dom_probe(tab_id, user_id, handle)
+                for url in extract_reel_urls(dom.get("reel_links", [])):
+                    if url not in all_reels:
+                        all_reels.append(url)
+            except Exception as exc:
+                dom_error = f"{type(exc).__name__}: {exc}"[:1000]
+
             language_dialog_dismiss_attempted = False
             language_dialog_dismissed = False
             language_dialog_dismiss_error = None
@@ -234,6 +283,13 @@ def probe_public_session(profile_url: str, handle: str, run_index: int) -> dict[
                         links_error = f"{type(exc).__name__}: {exc}"[:1000]
                     classified = classify_snapshot(snap, handle, links)
                     language_dialog_dismissed = not classified["language_dialog_visible"]
+                    try:
+                        dom = dom_probe(tab_id, user_id, handle)
+                        for url in extract_reel_urls(dom.get("reel_links", [])):
+                            if url not in all_reels:
+                                all_reels.append(url)
+                    except Exception as exc:
+                        dom_error = f"{type(exc).__name__}: {exc}"[:1000]
                 except Exception as exc:
                     language_dialog_dismiss_error = f"{type(exc).__name__}: {exc}"[:1000]
 
@@ -256,6 +312,8 @@ def probe_public_session(profile_url: str, handle: str, run_index: int) -> dict[
                     "language_dialog_dismiss_error": language_dialog_dismiss_error,
                     "links_error": links_error,
                     "snapshot_excerpt": classified["snapshot_excerpt"],
+                    "dom_probe": dom,
+                    "dom_probe_error": dom_error,
                 }
             )
 
@@ -271,7 +329,11 @@ def probe_public_session(profile_url: str, handle: str, run_index: int) -> dict[
             time.sleep(1.5)
 
         blocked = any(row["block_hits"] for row in rounds)
-        handle_visible = any(row["handle_visible"] for row in rounds)
+        handle_visible = any(
+            row["handle_visible"]
+            or bool((row.get("dom_probe") or {}).get("handle_visible"))
+            for row in rounds
+        )
         return {
             "run": run_index,
             "ok": bool(handle_visible and not blocked),
