@@ -513,7 +513,7 @@ def classify_story_probe(dom: dict[str, Any], handle: str) -> str:
     if dom.get("generic_error"):
         return "STORY_PUBLIC_ACCESS_ERROR"
     story_frame_pattern = re.compile(
-        rf"/stories/{re.escape(handle.casefold())}/\\d+/?(?:[?#].*)?$",
+        rf"/stories/{re.escape(handle.casefold())}/\d+/?(?:[?#].*)?$",
         re.I,
     )
     if (
