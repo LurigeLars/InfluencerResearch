@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import os
-import re
 import subprocess
 import tempfile
 from pathlib import Path
