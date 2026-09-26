@@ -13,7 +13,6 @@ ACTIVE_NAMESPACE_FILES = (
     "instagram_ingest.py",
     "ephemeral_ingest.py",
     "tiktok_camofox_sync.py",
-    "README.md",
 )
 
 
@@ -50,6 +49,12 @@ class LocalRuntimeNamespaceTests(unittest.TestCase):
         self.assertIn('$OldRoot = Join-Path $env:LOCALAPPDATA "InstagramResearch"', text)
         self.assertIn('$NewRoot = Join-Path $env:LOCALAPPDATA "InfluencerResearch"', text)
         self.assertIn("LOCAL_NAMESPACE_MIGRATION_OK", text)
+
+    def test_readme_documents_one_time_legacy_migration(self) -> None:
+        text = (BASE / "README.md").read_text(encoding="utf-8")
+        self.assertIn("%LOCALAPPDATA%\\InfluencerResearch", text)
+        self.assertIn("%LOCALAPPDATA%\\InstagramResearch", text)
+        self.assertIn("migrate_local_namespace.ps1 -Action Apply", text)
 
 
 if __name__ == "__main__":
