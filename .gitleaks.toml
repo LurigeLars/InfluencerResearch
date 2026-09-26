@@ -1,0 +1,15 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Public gateway example placeholders"
+paths = ['''^public/gateway\.env\.example$''']
+
+[[allowlists]]
+description = "Pinned npm sha512 integrity digests, not credentials"
+paths = ['''^tiktok_camofox_sync\.py$''']
+regexTarget = "match"
+regexes = [
+  '''sha512-avH15oUZ0gRReQQQVSQHfJYbERz\+5ZhP97LpxGvfWgdj6rWpYUjSX5inzZv\+bTHS3yKy2yAoqO\+E5d8UZzXC9A==''',
+  '''sha512-N7lZazKop9V\+KZNcNlCa6unhachjXOSD4ZVo8L8dQ\+PULMV810/8p1F3fu8wRWX4fvcsee1kUFyXRv3GxSzg0w=='''
+]
