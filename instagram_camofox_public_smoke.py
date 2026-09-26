@@ -831,6 +831,7 @@ def main() -> int:
 
     interaction_used = any(
         round_row.get("cookie_consent_attempted")
+        or round_row.get("media_auth_gate_dismiss_attempted")
         for result_row in results
         for round_row in result_row.get("rounds", [])
     )
