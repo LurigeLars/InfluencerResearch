@@ -11,6 +11,7 @@ from typing import Any
 GEMINI_SECRET_PATH = Path("/run/influencerresearch-secrets/gemini_api_key")
 DEFAULT_GEMINI_MODEL = "gemini-3.5-transcribe"
 ALLOWED_PROVIDERS = {"auto", "gemini", "faster-whisper"}
+_WHISPER_MODEL_CACHE: dict[tuple[str, str, str], Any] = {}
 
 
 def read_gemini_api_key(path: Path | None = None) -> str | None:
@@ -25,12 +26,11 @@ def read_gemini_api_key(path: Path | None = None) -> str | None:
 
 
 def _safe_error(exc: Exception) -> str:
-    text = str(exc)
-    text = re.sub(r"AIza[0-9A-Za-z_-]{20,}", "[REDACTED]", text)
-    text = re.sub(r"(?i)(api[_-]?key\s*[=:]\s*)[^\s,;]+", r"\1[REDACTED]", text)
-    if len(text) > 500:
-        text = text[:500] + "..."
-    return f"{type(exc).__name__}: {text}"
+    code = getattr(exc, "code", None)
+    if code is None:
+        code = getattr(exc, "status_code", None)
+    suffix = f" status={code}" if code is not None else ""
+    return f"{type(exc).__name__}: Gemini transcription failed{suffix}"
 
 
 def _extract_audio(video_path: Path) -> Path:
@@ -123,11 +123,17 @@ def transcribe_faster_whisper(video_path: Path, settings: dict[str, Any]) -> dic
     from faster_whisper import WhisperModel
 
     model_size = str(settings.get("model_size", "small"))
-    model = WhisperModel(
-        model_size,
-        device=str(settings.get("device", "cpu")),
-        compute_type=str(settings.get("compute_type", "int8")),
-    )
+    device = str(settings.get("device", "cpu"))
+    compute_type = str(settings.get("compute_type", "int8"))
+    cache_key = (model_size, device, compute_type)
+    model = _WHISPER_MODEL_CACHE.get(cache_key)
+    if model is None:
+        model = WhisperModel(
+            model_size,
+            device=device,
+            compute_type=compute_type,
+        )
+        _WHISPER_MODEL_CACHE[cache_key] = model
     segments, info = model.transcribe(
         str(video_path),
         beam_size=int(settings.get("beam_size", 5)),
