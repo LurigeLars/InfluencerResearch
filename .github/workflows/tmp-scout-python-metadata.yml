@@ -1,0 +1,63 @@
+name: Temporary Scout Python metadata diagnosis
+
+on:
+  push:
+    branches:
+      - diagnose/scout-python-metadata-20260926
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build current runtime image
+        run: docker build -f runtime/influencerresearch/Dockerfile -t influencerresearch-runtime-diagnose .
+
+      - name: Print active Python package versions
+        run: |
+          docker run --rm influencerresearch-runtime-diagnose python - <<'PY'
+          import importlib.metadata as m
+          for name in ["msgpack", "setuptools", "jaraco.context", "wheel"]:
+              try:
+                  print(name, m.version(name))
+              except Exception as exc:
+                  print(name, "NOT_ACTIVE", type(exc).__name__, exc)
+          PY
+
+      - name: Find all package metadata copies
+        run: |
+          docker run --rm --entrypoint sh influencerresearch-runtime-diagnose -lc '
+            set -eu
+            echo "=== DIST-INFO / EGG-INFO PATHS ==="
+            find / -xdev \( \
+              -iname "msgpack-*.dist-info" -o \
+              -iname "setuptools-*.dist-info" -o \
+              -iname "jaraco_context-*.dist-info" -o \
+              -iname "jaraco.context-*.dist-info" -o \
+              -iname "wheel-*.dist-info" -o \
+              -iname "msgpack-*.egg-info" -o \
+              -iname "setuptools-*.egg-info" -o \
+              -iname "jaraco_context-*.egg-info" -o \
+              -iname "wheel-*.egg-info" \
+            \) -print 2>/dev/null | sort
+
+            echo "=== METADATA NAME/VERSION HITS ==="
+            find / -xdev -type f \( -name METADATA -o -name PKG-INFO \) -print0 2>/dev/null |
+              xargs -0 -r awk '"'"'
+                BEGIN { n=""; v="" }
+                /^Name: (msgpack|setuptools|jaraco-context|wheel)$/ { n=$0 }
+                /^Version: / && n != "" { v=$0; print FILENAME " :: " n " :: " v; n=""; v="" }
+              '"'"' | sort
+          '
+
+      - name: Find vendored package markers
+        run: |
+          docker run --rm --entrypoint sh influencerresearch-runtime-diagnose -lc '
+            echo "=== VENDORED / EMBEDDED HITS ==="
+            grep -RIl --exclude-dir=__pycache__ -E "^(Name: )?(msgpack|setuptools|jaraco-context|wheel)$|msgpack==1\.1\.2|setuptools==70\.3\.0|jaraco.context==5\.3\.0|wheel==0\.45\.1" /usr/local/lib /opt 2>/dev/null | head -200 || true
+          '
