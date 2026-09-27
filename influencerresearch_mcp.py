@@ -99,6 +99,14 @@ class CreatorSource(BaseModel):
     shared_channel: bool | None = None
 
 
+def resolve_job_state(kind: str, returncode: int, status: dict | None) -> str:
+    if kind == "creator_recent_check" and isinstance(status, dict):
+        state = str(status.get("state") or "").upper()
+        if state in {"COMPLETE", "PARTIAL", "FAILED"}:
+            return state
+    return "COMPLETE" if returncode == 0 else "FAILED"
+
+
 class JobManager:
     STATUS_FILES = {
         "creator_evaluate": Path("/research/state/creator_evaluation_status.json"),
@@ -144,8 +152,8 @@ class JobManager:
         self._cleanup_request()
         job["returncode"] = int(rc)
         job["finished_at"] = utc_now()
-        job["state"] = "COMPLETE" if rc == 0 else "FAILED"
         job["status"] = summarize_status(job["status_path"])
+        job["state"] = resolve_job_state(job["kind"], int(rc), job["status"])
         public = self._public(job)
         self._last = public
         self._active = None
