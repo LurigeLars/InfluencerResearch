@@ -66,7 +66,10 @@ def profile_dir() -> Path:
 
 
 def secret_dir() -> Path:
-    d = runtime_dir() / "secrets"
+    if os.environ.get("INFLUENCER_RESEARCH_CONTAINER", "").strip() == "1":
+        d = Path("/run/influencerresearch-secrets")
+    else:
+        d = runtime_dir() / "secrets"
     d.mkdir(parents=True, exist_ok=True)
     return d
 

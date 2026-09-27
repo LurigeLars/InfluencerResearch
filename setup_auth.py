@@ -21,7 +21,12 @@ def chrome_profile_dir() -> Path:
 
 
 def cookie_export_path() -> Path:
-    return host_runtime_dir() / "secrets" / "instagram_cookies.json"
+    configured = os.environ.get("INFLUENCER_RESEARCH_COOKIE_EXPORT_PATH", "").strip()
+    if not configured:
+        raise RuntimeError(
+            "INFLUENCER_RESEARCH_COOKIE_EXPORT_PATH is required; run the PowerShell authentication wrapper."
+        )
+    return Path(configured).expanduser().resolve()
 
 
 def write_cookie_export(cookies: list[dict]) -> Path:
@@ -78,8 +83,8 @@ def main() -> int:
             print()
             print("Authentication verified.")
             print(f"Dedicated InfluencerResearch Chrome state is stored locally at: {profile_dir}")
-            print(f"Portable session-cookie export written locally at: {cookie_path}")
-            print("The cookie export is sensitive and must never be committed or copied to Drive.")
+            print(f"Temporary session-cookie export written locally at: {cookie_path}")
+            print("The PowerShell wrapper will DPAPI-protect and remove this plaintext file.")
             return 0
         finally:
             context.close()

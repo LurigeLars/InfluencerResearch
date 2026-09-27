@@ -26,7 +26,7 @@ The canonical runtime is Docker Compose with two services on the same private `r
 
 Camofox has **no host-published port** and is not an MCP surface. TikTok browser discovery/metadata uses Camofox; individual media downloads remain yt-dlp's responsibility inside the `influencerresearch` container.
 
-Persistent research data uses narrow bind mounts for the existing parent-root `control/`, `state/`, `output/` and `logs/` directories. Browser cache and imported Instagram runtime state use the `influencerresearch-runtime` Docker volume. Camofox service keys and the Gemini API key are stored on the Windows host with DPAPI and injected only into per-container tmpfs at runtime.
+Persistent research data uses narrow bind mounts for the existing parent-root `control/`, `state/`, `output/` and `logs/` directories. Browser cache uses the `influencerresearch-runtime` Docker volume. Camofox service keys, the Instagram portable session export and the Gemini API key are protected on the Windows host with DPAPI and injected only into per-container tmpfs at runtime.
 
 The runtime expects the host control directory one level above the repository (for example `<redacted-workspace>\control`). On a fresh installation, initialize the required settings file from the tracked non-secret template:
 
@@ -167,7 +167,13 @@ Run the bootstrap:
 pwsh -NoProfile -File scripts\authenticate_instagram.ps1
 ```
 
-The script opens a dedicated local Chrome profile, verifies the Instagram session, and exports only the session cookies to `%LOCALAPPDATA%\InfluencerResearch\secrets\instagram_cookies.json`. The cookie export is sensitive and must never be committed or copied to Drive.
+The script opens a dedicated local Chrome profile, verifies the Instagram session, exports the cookies only to a short-lived local temp file, then protects the JSON with Windows DPAPI CurrentUser at:
+
+```text
+%LOCALAPPDATA%\InfluencerResearch\secrets\instagram_cookies.dpapi
+```
+
+The temporary plaintext export is removed after a successful DPAPI round-trip verification. Existing installations with the old `instagram_cookies.json` format are migrated on the next import/start; the plaintext file is deleted only after the DPAPI value decrypts successfully and matches the old payload.
 
 When the Docker runtime is already running, import/refresh the session with:
 
@@ -175,7 +181,7 @@ When the Docker runtime is already running, import/refresh the session with:
 pwsh -NoProfile -File scripts\runtime.ps1 -Action ImportInstagramAuth
 ```
 
-On `-Action Up`, the runtime automatically imports the local cookie export when it exists. Instagram workers then run headless inside the `influencerresearch` container using the persistent Docker runtime volume.
+On `-Action Up`, the runtime decrypts the DPAPI blob in memory and streams the cookie JSON into `/run/influencerresearch-secrets/instagram_cookies.json`. That path is tmpfs-backed, so the portable Instagram session is absent from Docker container metadata and the persistent runtime volume and disappears when the container is recreated.
 
 ## Camofox service secrets
 

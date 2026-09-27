@@ -23,17 +23,39 @@ class LocalRuntimeNamespaceTests(unittest.TestCase):
             self.assertNotIn("InstagramResearch", text, relative)
             self.assertIn("InfluencerResearch", text, relative)
 
-    def test_runtime_cookie_import_uses_new_namespace(self) -> None:
+    def test_runtime_cookie_import_uses_dpapi_and_tmpfs(self) -> None:
         text = (BASE / "scripts/runtime.ps1").read_text(encoding="utf-8")
-        self.assertIn(
-            'InfluencerResearch\\secrets\\instagram_cookies.json',
+        self.assertIn("instagram_cookies.dpapi", text)
+        self.assertIn("/run/influencerresearch-secrets/instagram_cookies.json", text)
+        self.assertIn("Ensure-InstagramCookieStore", text)
+        self.assertIn("refusing to remove the legacy file", text)
+        self.assertNotIn(
+            "/runtime/influencerresearch/secrets/instagram_cookies.json",
             text,
         )
 
-    def test_auth_bootstrap_uses_new_namespace(self) -> None:
+    def test_auth_bootstrap_dpapi_protects_temporary_cookie_export(self) -> None:
         text = (BASE / "scripts/authenticate_instagram.ps1").read_text(encoding="utf-8")
         self.assertIn(
             'Join-Path $env:LOCALAPPDATA "InfluencerResearch"',
+            text,
+        )
+        self.assertIn("instagram_cookies.dpapi", text)
+        self.assertIn("ConvertFrom-SecureString", text)
+        self.assertIn("INFLUENCER_RESEARCH_COOKIE_EXPORT_PATH", text)
+        self.assertIn("Remove-Item -LiteralPath $TempExport", text)
+
+    def test_instagram_workers_keep_cookie_material_on_tmpfs(self) -> None:
+        for relative in ("instagram_ingest.py", "ephemeral_ingest.py"):
+            text = (BASE / relative).read_text(encoding="utf-8")
+            self.assertIn('Path("/run/influencerresearch-secrets")', text, relative)
+            self.assertIn('"instagram_cookies.json"', text, relative)
+
+    def test_setup_auth_requires_wrapper_selected_temporary_export(self) -> None:
+        text = (BASE / "setup_auth.py").read_text(encoding="utf-8")
+        self.assertIn("INFLUENCER_RESEARCH_COOKIE_EXPORT_PATH", text)
+        self.assertNotIn(
+            'return host_runtime_dir() / "secrets" / "instagram_cookies.json"',
             text,
         )
 
