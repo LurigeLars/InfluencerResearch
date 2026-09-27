@@ -80,6 +80,12 @@ class CamofoxContainerRuntimeTests(TestCase):
         self.assertIn("mem_limit: 2g", text)
         self.assertIn("cpus: 2.0", text)
         self.assertIn("pids_limit: 256", text)
+        self.assertNotIn("CAMOFOX_ACCESS_KEY: ${CAMOFOX_ACCESS_KEY", text)
+        self.assertNotIn("CAMOFOX_ADMIN_KEY: ${CAMOFOX_ADMIN_KEY", text)
+        self.assertIn("/run/camofox-secrets:rw,nosuid,nodev,noexec", text)
+        self.assertIn("/run/camofox-secrets/access_key", text)
+        self.assertIn("/run/camofox-secrets/admin_key", text)
+        self.assertIn("post_start:", text)
 
     def test_camofox_config_disables_unneeded_plugins(self) -> None:
         config = json.loads(
