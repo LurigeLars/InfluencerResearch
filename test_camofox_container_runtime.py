@@ -22,6 +22,22 @@ class CamofoxContainerRuntimeTests(TestCase):
         self.assertIn("USER node", text)
         self.assertNotIn("releases/latest", text)
 
+    def test_runtime_manifest_pins_patched_camofox_commit(self) -> None:
+        package = json.loads(
+            (BASE / "runtime" / "camofox" / "package.json").read_text(encoding="utf-8")
+        )
+        lock = json.loads(
+            (BASE / "runtime" / "camofox" / "package-lock.json").read_text(encoding="utf-8")
+        )
+        expected = "https://github.com/LurigeLars/camofox-browser/archive/a869df5f7ea7f3771bfd589d83bfc89adb879aa4.tar.gz"
+        self.assertEqual(package["dependencies"]["@askjo/camofox-browser"], expected)
+        self.assertEqual(lock["packages"][""]["dependencies"]["@askjo/camofox-browser"], expected)
+        camofox = lock["packages"]["node_modules/@askjo/camofox-browser"]
+        self.assertEqual(camofox["version"], "1.17.0")
+        self.assertEqual(camofox["resolved"], expected)
+        self.assertEqual(camofox["integrity"], "sha512-0z2IQVLEocubPAxOCnsmUr3StBfyi8t3IwmGZ6IG7svSHuOfdEnKjg1bGOwAVh8/DvJUzao/NCWz9SeLpBgLXA==")
+        self.assertEqual(sync.CAMOFOX_CONTAINER_SOURCE_COMMIT, "a869df5f7ea7f3771bfd589d83bfc89adb879aa4")
+
     def test_runtime_manifest_pins_required_impit_linux_binding(self) -> None:
         package = json.loads(
             (BASE / 'runtime' / 'camofox' / 'package.json').read_text(encoding='utf-8')
