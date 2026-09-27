@@ -45,7 +45,7 @@ CAMOFOX_FALLBACK_EXPECTED_GIT_BLOBS = {
     "plugins/persistence/index.js": "7c5199d3b00c39325b660699581f4298a334808e",
 }
 CAMOFOX_FALLBACK_SOURCE_COMMIT = "389c996ae3c7d42e539295a336ee6f975847f066"
-CAMOFOX_CONTAINER_SOURCE_COMMIT = "a869df5f7ea7f3771bfd589d83bfc89adb879aa4"
+CAMOFOX_CONTAINER_SOURCE_COMMIT = "011faad7a88797e780556321d328bdd00b8f68b7"
 CAMOUFOX_JS_SOURCE_COMMIT = "3fe80d8448653d8dc1a2c186c7506f89e74c4ed4"
 CAMOFOX_ACCEPTED_ROOT_PACKAGE_NAME = "influencerresearch-camofox-runtime"
 CAMOFOX_ACCEPTED_ROOT_DEPENDENCIES = {
@@ -170,22 +170,65 @@ def _release_tiktok_run_lock() -> None:
             handle.close()
 
 
+class CamoFoxHttpError(RuntimeError):
+    def __init__(
+        self,
+        status: int,
+        path: str,
+        *,
+        code: str | None = None,
+        retryable: bool = False,
+        reason: str | None = None,
+        detail: str = "",
+    ) -> None:
+        self.status = int(status)
+        self.path = path
+        self.code = code
+        self.retryable = bool(retryable)
+        self.reason = reason
+        self.detail = detail
+        suffix = f" code={code}" if code else ""
+        if reason:
+            suffix += f" reason={reason}"
+        super().__init__(f"CamoFox HTTP {self.status} {path}:{suffix} {detail[:1000]}".strip())
+
+
 def request_json(method: str, path: str, body: dict | None = None, timeout: int = 30) -> Any:
     """Use the constrained Camofox browser service for TikTok discovery/metadata.
 
-    Individual TikTok media is downloaded by yt-dlp. The browser service stays
-    loopback-only and authenticated and is not used as a media-transfer path.
+    Only explicitly retryable tab-admission/browser-lifecycle failures are
+    retried, at most twice, against the same overall timeout budget.
     """
     deadline = time.monotonic() + max(0.1, float(timeout))
     server = _ensure_fallback_server(deadline=deadline)
-    return _fallback_request_json(
-        server,
-        method,
-        path,
-        body,
-        deadline=deadline,
-        timeout_cap=max(0.1, float(timeout)),
-    )
+    max_attempts = 3 if method.upper() == "POST" and path == "/tabs" else 1
+    retry_codes = {"admission_rejected", "browser_unavailable", "session_expired"}
+
+    for attempt in range(max_attempts):
+        try:
+            return _fallback_request_json(
+                server,
+                method,
+                path,
+                body,
+                deadline=deadline,
+                timeout_cap=max(0.1, float(timeout)),
+            )
+        except CamoFoxHttpError as exc:
+            should_retry = (
+                exc.retryable
+                and exc.status == 503
+                and exc.code in retry_codes
+                and attempt + 1 < max_attempts
+            )
+            if not should_retry:
+                raise
+            delay = min(1.0, 0.5 * (2 ** attempt))
+            if time.monotonic() + delay >= deadline:
+                raise
+            time.sleep(delay)
+
+    raise RuntimeError("unreachable CamoFox request retry state")
 
 
 def _runtime_is_available(server: dict[str, Any] | None) -> bool:
@@ -752,7 +795,21 @@ def _fallback_request_json(
             return raw.decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"CamoFox HTTP {exc.code} {path}: {detail[:1000]}") from exc
+        payload: dict[str, Any] = {}
+        try:
+            parsed = json.loads(detail)
+            if isinstance(parsed, dict):
+                payload = parsed
+        except json.JSONDecodeError:
+            pass
+        raise CamoFoxHttpError(
+            int(exc.code),
+            path,
+            code=str(payload.get("code") or "") or None,
+            retryable=bool(payload.get("retryable")),
+            reason=str(payload.get("reason") or "") or None,
+            detail=detail,
+        ) from exc
     except (TimeoutError, socket.timeout) as exc:
         # Do not create a new teardown budget here. The owning operation catches
         # TimeoutError and tears the process down against its original hard deadline.
@@ -1420,6 +1477,14 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
                     + urllib.parse.urlencode({"userId": user_id}),
                     timeout=10,
                 )
+        # Each creator sync owns a short-lived CamoFox session. Close it
+        # explicitly so capacity does not depend on the background reaper.
+        with contextlib.suppress(Exception):
+            request_json(
+                "DELETE",
+                f"/sessions/{urllib.parse.quote(user_id)}",
+                timeout=10,
+            )
 
     main_manifest = load_json(root / "state" / "manifest.json", {"schema_version": 1, "items": {}})
     main_items = main_manifest.get("items", {})

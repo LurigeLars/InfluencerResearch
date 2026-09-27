@@ -125,13 +125,17 @@ def build_packet(
     root: Path,
     shortcode: str,
     item: dict,
-    transcript_path: Path,
+    transcript_path: Path | None,
     *,
     evidence_lineage_id: str,
     duplicate_of: str | None,
     duplicate_basis: str | None,
 ) -> dict:
-    transcript = read_text(transcript_path)
+    transcript = (
+        read_text(transcript_path)
+        if transcript_path is not None
+        else str(item.get("browser_text") or "").strip()
+    )
     caption = str(item.get("caption") or "").strip()
 
     return {
@@ -141,9 +145,12 @@ def build_packet(
         "shortcode": shortcode,
         "creator": item.get("creator"),
         "source_platform": item.get("source_platform"),
+        "source_subtype": item.get("source_subtype"),
         "source_id": item.get("source_id"),
         "source_url": item.get("url"),
         "published_at": item.get("published_at"),
+        "published_at_basis": item.get("published_at_basis"),
+        "observed_at": item.get("observed_at"),
         "downloaded_at": item.get("downloaded_at"),
         "transcribed_at": item.get("transcribed_at"),
         "source_class": "INFLUENCER_DISCOVERY_SECONDARY",
@@ -159,7 +166,9 @@ def build_packet(
         "duplicate_of": duplicate_of,
         "duplicate_basis": duplicate_basis,
         "caption": caption,
-        "transcript_file": str(transcript_path.relative_to(root)),
+        "transcript_file": (
+            str(transcript_path.relative_to(root)) if transcript_path is not None else None
+        ),
         "transcript_text": transcript,
         "transcript_source": item.get("transcript_source"),
         "word_count": len(transcript.split()),
@@ -167,6 +176,7 @@ def build_packet(
         "visual_evidence_index": item.get("visual_evidence_index"),
         "visual_frame_count": item.get("visual_frame_count"),
         "visual_capture_strategy": item.get("visual_capture_strategy"),
+        "screenshot_file": item.get("screenshot_file"),
         "full_video_persisted": item.get("full_video_persisted"),
         "media_retention": item.get("media_retention"),
         "discovery_tags": keyword_tags(caption + "\n" + transcript),
@@ -278,7 +288,12 @@ def main() -> int:
     for shortcode, item in manifest.get("items", {}).items():
         if item.get("download_status") != "DONE":
             continue
-        if item.get("transcription_status") != "DONE":
+        is_visual_story = (
+            str(item.get("source_platform") or "").upper() == "INSTAGRAM"
+            and str(item.get("source_subtype") or "").upper() == "STORY"
+            and bool(item.get("screenshot_file"))
+        )
+        if item.get("transcription_status") != "DONE" and not is_visual_story:
             continue
         creator = str(item.get("creator") or "").lower()
         is_creator_evaluation = (
@@ -290,10 +305,14 @@ def main() -> int:
 
         transcript_path = normalize_manifest_path(root, item.get("transcript_txt"))
         if transcript_path is None or not transcript_path.exists():
-            skipped_missing_transcript += 1
-            continue
-
-        transcript = read_text(transcript_path)
+            if is_visual_story:
+                transcript_path = None
+                transcript = str(item.get("browser_text") or "").strip()
+            else:
+                skipped_missing_transcript += 1
+                continue
+        else:
+            transcript = read_text(transcript_path)
         fp = transcript_fingerprint(transcript)
         url_key = canonicalize_url(item.get("url"))
         records.append({

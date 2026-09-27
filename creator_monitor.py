@@ -54,8 +54,17 @@ def source_key(creator_key: str, source: dict) -> str:
 
 def manifest_done_ids(root: Path, platform: str) -> set[str]:
     manifest = load_json(root / "state" / "manifest.json", {"items": {}})
-    prefix = "yt_" if platform == "YOUTUBE" else "tt_"
+    platform = str(platform or "").upper()
     out = set()
+    if platform == "INSTAGRAM":
+        for key, item in (manifest.get("items") or {}).items():
+            if not isinstance(item, dict) or str(item.get("source_platform") or "").upper() != "INSTAGRAM":
+                continue
+            if item.get("download_status") == "DONE" and item.get("transcription_status") == "DONE":
+                out.add(str(item.get("source_id") or key))
+        return out
+
+    prefix = "yt_" if platform == "YOUTUBE" else "tt_"
     for key, item in (manifest.get("items") or {}).items():
         if not str(key).startswith(prefix) or not isinstance(item, dict):
             continue

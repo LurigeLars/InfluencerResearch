@@ -1,0 +1,173 @@
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
+
+import creator_recent_check as crc
+
+
+class RecentInstagramTests(unittest.TestCase):
+    def test_registered_instagram_can_be_selected_without_registry_mutation(self) -> None:
+        profile = {
+            "sources": [
+                {
+                    "platform": "INSTAGRAM",
+                    "profile_url": "https://www.instagram.com/example/",
+                    "enabled": True,
+                    "evaluation_enabled": False,
+                    "priority": 50,
+                }
+            ]
+        }
+        self.assertEqual(crc._eligible_evaluation_sources(profile), [])
+        selected = crc._eligible_evaluation_sources(
+            profile,
+            include_registered_instagram=True,
+        )
+        self.assertEqual([row["platform"] for row in selected], ["INSTAGRAM"])
+        self.assertFalse(profile["sources"][0]["evaluation_enabled"])
+
+    def test_instagram_discovery_filters_reels_by_window(self) -> None:
+        end = datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc)
+        cutoff = end - timedelta(days=7)
+        probe = {
+            "ok": True,
+            "reel_count": 2,
+            "blocked": False,
+            "media_auth_gated": False,
+            "reel_items": [
+                {
+                    "url": "https://www.instagram.com/reel/RECENT123/",
+                    "published_at": (end - timedelta(hours=3)).isoformat(),
+                    "error": None,
+                },
+                {
+                    "url": "https://www.instagram.com/reel/OLD456/",
+                    "published_at": (end - timedelta(days=10)).isoformat(),
+                    "error": None,
+                },
+            ],
+        }
+        with mock.patch.object(crc.instagram_smoke, "probe_public_session", return_value=probe) as run:
+            result = crc.discover_instagram(
+                {"creator_key": "creator"},
+                {"profile_url": "https://www.instagram.com/example/"},
+                cutoff,
+                end,
+                15,
+            )
+
+        self.assertEqual([item["source_id"] for item in result["items"]], ["RECENT123"])
+        self.assertTrue(result["window_complete"])
+        run.assert_called_once_with(
+            "https://www.instagram.com/example/",
+            "example",
+            run_index=1,
+            inspect_reel_times=True,
+        )
+
+    def test_instagram_ingest_is_bounded_to_selected_shortcodes(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "app").mkdir(parents=True)
+            (root / "app" / "instagram_ingest.py").write_text("# test\n", encoding="utf-8")
+            (root / "state").mkdir(parents=True)
+
+            def fake_run(cmd, **kwargs):
+                manifest = {
+                    "schema_version": 1,
+                    "items": {
+                        "REEL123": {
+                            "download_status": "DONE",
+                            "transcription_status": "DONE",
+                        }
+                    },
+                }
+                (root / "state" / "manifest.json").write_text(
+                    json.dumps(manifest),
+                    encoding="utf-8",
+                )
+                fake_run.cmd = cmd
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            with (
+                mock.patch.object(crc.subprocess, "run", side_effect=fake_run),
+                mock.patch.object(crc.tts, "run_research_queue", return_value={"ok": True}),
+            ):
+                result = crc._ingest_instagram(
+                    root,
+                    {"creator_key": "creator"},
+                    {"profile_url": "https://www.instagram.com/example/"},
+                    ["REEL123"],
+                    {"REEL123": "2026-09-27T10:00:00+00:00"},
+                )
+
+            self.assertIn("--only-shortcodes", fake_run.cmd)
+            self.assertEqual(fake_run.cmd[fake_run.cmd.index("--only-shortcodes") + 1], "REEL123")
+            self.assertEqual(result["completed_ids"], ["REEL123"])
+            manifest = json.loads((root / "state" / "manifest.json").read_text(encoding="utf-8"))
+            item = manifest["items"]["REEL123"]
+            self.assertEqual(item["creator"], "creator")
+            self.assertEqual(item["source_platform"], "INSTAGRAM")
+            self.assertEqual(item["source_id"], "REEL123")
+            self.assertEqual(item["published_at"], "2026-09-27T10:00:00+00:00")
+
+    def test_story_promotion_deduplicates_and_preserves_creator_attribution(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            shot = root / "output" / "example" / "stories" / "screenshots" / "123.png"
+            shot.parent.mkdir(parents=True)
+            shot.write_bytes(b"png")
+            ephemeral_manifest = {
+                "schema_version": 1,
+                "items": {
+                    "STORY:example:123": {
+                        "source_type": "STORY",
+                        "creator": "example",
+                        "evidence_id": "123",
+                        "story_id": "123",
+                        "source_url": "https://www.instagram.com/stories/example/123/",
+                        "observed_at": "2026-09-27T10:00:00+00:00",
+                        "screenshot_file": str(shot.relative_to(root)),
+                        "browser_text": "A market observation",
+                    }
+                },
+            }
+            ep_path = root / "state" / "ephemeral" / "manifest.json"
+            ep_path.parent.mkdir(parents=True)
+            ep_path.write_text(json.dumps(ephemeral_manifest), encoding="utf-8")
+
+            first = crc._promote_story_items(
+                root,
+                {"creator_key": "registered-key"},
+                "example",
+                datetime(2026, 9, 20, tzinfo=timezone.utc),
+                5,
+            )
+            second = crc._promote_story_items(
+                root,
+                {"creator_key": "registered-key"},
+                "example",
+                datetime(2026, 9, 20, tzinfo=timezone.utc),
+                5,
+            )
+
+            self.assertEqual(len(first), 1)
+            self.assertEqual(second, [])
+            manifest = json.loads((root / "state" / "manifest.json").read_text(encoding="utf-8"))
+            item = manifest["items"]["ig_story_123"]
+            self.assertEqual(item["creator"], "registered-key")
+            self.assertEqual(item["source_platform"], "INSTAGRAM")
+            self.assertEqual(item["source_subtype"], "STORY")
+            self.assertEqual(item["source_id"], "story:123")
+            self.assertEqual(item["published_at_basis"], "ACTIVE_STORY_OBSERVED_AT")
+            self.assertEqual(item["visual_evidence_status"], "DONE")
+
+
+if __name__ == "__main__":
+    unittest.main()
