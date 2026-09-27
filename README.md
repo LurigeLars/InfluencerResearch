@@ -83,6 +83,45 @@ Long-running research operations are fixed allowlisted jobs. Only one research j
 
 The former Windows request-file/Scheduled-Task research bridge is retired and is not part of the canonical runtime.
 
+## Connecting a local client
+
+The MCP surface is streamable HTTP on loopback only. Local agents connect to it directly; cloud
+chats reach it through the Cloudflare gateway described below, and nothing else is exposed.
+
+| Client | Connection |
+|---|---|
+| Claude Code, Codex | loopback HTTP |
+| Claude Desktop, Cursor | a stdio bridge to the same loopback endpoint |
+| ChatGPT and other cloud chats | Cloudflare Access to the public gateway |
+
+**The host port is configurable and worth checking before you assume it.** `compose.yaml` publishes
+`127.0.0.1:${INFLUENCER_RESEARCH_MCP_PORT:-8770}:8770`, so the container always listens on 8770
+internally while the host port follows that variable. Set it when another local service already
+holds 8770, which is easy to do when several MCP services run on one machine. Confirm the port in
+use before configuring a client:
+
+```powershell
+docker ps --filter name=influencerresearch-mcp --format "{{.Ports}}"
+```
+
+**Claude Code and Codex**, substituting the port you found:
+
+```bash
+claude mcp add --transport http influencerresearch http://127.0.0.1:<port>/mcp
+codex mcp add influencerresearch --url http://127.0.0.1:<port>/mcp
+```
+
+**Claude Desktop and Cursor** read stdio commands from their configuration files rather than URLs,
+so an HTTP-only server needs a small stdio bridge that forwards to the loopback endpoint. That is
+the same `local-mcp` proxy pattern the other local MCP services in this fleet use.
+
+No credential is needed on loopback: the authentication boundary is Cloudflare Access on the public
+path, not the local one. Keep the endpoint bound to `127.0.0.1` so that stays true.
+
+**Verify** by listing the tools. The local surface is eight: `creator_register`, `creator_list`,
+`creator_get`, `creator_evaluate`, `creator_monitor`, `creator_recent_check`, `research_status` and
+`research_stop`. The public allowlist is the same eight.
+
 ## Public Cloudflare access
 
 The optional public stack follows the same pattern as the other local MCP services:
