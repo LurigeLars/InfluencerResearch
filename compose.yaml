@@ -43,10 +43,10 @@ services:
           - -c
           - >-
             umask 077;
-            test -n "$INFLUENCER_CAMOFOX_ACCESS_SECRET";
-            test -n "$INFLUENCER_CAMOFOX_ADMIN_SECRET";
-            printf '%s' "$INFLUENCER_CAMOFOX_ACCESS_SECRET" > /run/influencerresearch-secrets/camofox_access_key;
-            printf '%s' "$INFLUENCER_CAMOFOX_ADMIN_SECRET" > /run/influencerresearch-secrets/camofox_admin_key
+            test -n "$$INFLUENCER_CAMOFOX_ACCESS_SECRET";
+            test -n "$$INFLUENCER_CAMOFOX_ADMIN_SECRET";
+            printf '%s' "$$INFLUENCER_CAMOFOX_ACCESS_SECRET" > /run/influencerresearch-secrets/camofox_access_key;
+            printf '%s' "$$INFLUENCER_CAMOFOX_ADMIN_SECRET" > /run/influencerresearch-secrets/camofox_admin_key
         environment:
           INFLUENCER_CAMOFOX_ACCESS_SECRET: ${INFLUENCER_CAMOFOX_ACCESS_SECRET:?Camofox access runtime secret is required}
           INFLUENCER_CAMOFOX_ADMIN_SECRET: ${INFLUENCER_CAMOFOX_ADMIN_SECRET:?Camofox admin runtime secret is required}
@@ -118,10 +118,10 @@ services:
           - -c
           - >-
             umask 077;
-            test -n "$INFLUENCER_CAMOFOX_ACCESS_SECRET";
-            test -n "$INFLUENCER_CAMOFOX_ADMIN_SECRET";
-            printf '%s' "$INFLUENCER_CAMOFOX_ACCESS_SECRET" > /run/camofox-secrets/access_key;
-            printf '%s' "$INFLUENCER_CAMOFOX_ADMIN_SECRET" > /run/camofox-secrets/admin_key
+            test -n "$$INFLUENCER_CAMOFOX_ACCESS_SECRET";
+            test -n "$$INFLUENCER_CAMOFOX_ADMIN_SECRET";
+            printf '%s' "$$INFLUENCER_CAMOFOX_ACCESS_SECRET" > /run/camofox-secrets/access_key;
+            printf '%s' "$$INFLUENCER_CAMOFOX_ADMIN_SECRET" > /run/camofox-secrets/admin_key
         environment:
           INFLUENCER_CAMOFOX_ACCESS_SECRET: ${INFLUENCER_CAMOFOX_ACCESS_SECRET:?Camofox access runtime secret is required}
           INFLUENCER_CAMOFOX_ADMIN_SECRET: ${INFLUENCER_CAMOFOX_ADMIN_SECRET:?Camofox admin runtime secret is required}
@@ -130,8 +130,8 @@ services:
       - -c
       - >-
         while [ ! -s /run/camofox-secrets/access_key ] || [ ! -s /run/camofox-secrets/admin_key ]; do sleep 0.05; done;
-        export CAMOFOX_ACCESS_KEY="$(cat /run/camofox-secrets/access_key)";
-        export CAMOFOX_ADMIN_KEY="$(cat /run/camofox-secrets/admin_key)";
+        export CAMOFOX_ACCESS_KEY="$$(cat /run/camofox-secrets/access_key)";
+        export CAMOFOX_ADMIN_KEY="$$(cat /run/camofox-secrets/admin_key)";
         exec node --max-old-space-size=192 /app/node_modules/@askjo/camofox-browser/server.js
     cap_drop:
       - ALL
