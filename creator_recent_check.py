@@ -15,9 +15,10 @@ from creator_registry import get_creator, load_registry, select_monitor_sources
 from creator_monitor import manifest_done_ids, _tiktok_published_at
 import youtube_creator_evaluation as yte
 import tiktok_camofox_sync as tts
+import instagram_camofox_public_smoke as instagram_smoke
 
-RECENT_CHECK_VERSION = "0.1.5"
-SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK"}
+RECENT_CHECK_VERSION = "0.2.0"
+SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
 STOCKHOLM_TZ = ZoneInfo("Europe/Stockholm")
@@ -92,13 +93,19 @@ def _coverage_complete(*, discovered_count: int, requested_limit: int, known_tim
     """A window is proven complete when discovery exhausts or crosses the time cutoff."""
     return discovered_count < requested_limit or any(x < cutoff for x in known_times)
 
-def _eligible_evaluation_sources(profile: dict) -> list[dict]:
+def _eligible_evaluation_sources(profile: dict, *, include_registered_instagram: bool = False) -> list[dict]:
     return sorted(
         [
             s for s in profile.get("sources", [])
             if s.get("enabled")
-            and s.get("evaluation_enabled")
             and str(s.get("platform", "")).upper() in SUPPORTED_PLATFORMS
+            and (
+                s.get("evaluation_enabled")
+                or (
+                    include_registered_instagram
+                    and str(s.get("platform", "")).upper() == "INSTAGRAM"
+                )
+            )
         ],
         key=lambda s: (int(s.get("priority", 100)), str(s.get("platform", ""))),
     )
@@ -109,7 +116,7 @@ def select_profiles_and_sources(root: Path, scope: str, creator_keys: list[str])
         out = []
         for key in creator_keys:
             profile = get_creator(root, key)
-            sources = _eligible_evaluation_sources(profile)
+            sources = _eligible_evaluation_sources(profile, include_registered_instagram=True)
             if not sources:
                 raise ValueError(f"NO_REGISTERED_ELIGIBLE_SOURCE:{key}")
             out.append((profile, sources))
@@ -126,7 +133,7 @@ def select_profiles_and_sources(root: Path, scope: str, creator_keys: list[str])
                 out.append((profile, sources))
     elif mode == "ALL_REGISTERED":
         for profile in profiles:
-            sources = _eligible_evaluation_sources(profile)
+            sources = _eligible_evaluation_sources(profile, include_registered_instagram=True)
             if sources:
                 out.append((profile, sources))
     else:
@@ -260,6 +267,80 @@ def discover_youtube(profile: dict, source: dict, cutoff: datetime, end: datetim
     }
 
 
+def _instagram_handle(source: dict) -> str:
+    value = str(source.get("profile_url") or "").rstrip("/")
+    handle = value.rsplit("/", 1)[-1].strip().lstrip("@")
+    if not handle:
+        raise ValueError("INSTAGRAM_PROFILE_URL_REQUIRED")
+    return handle
+
+
+def discover_instagram(profile: dict, source: dict, cutoff: datetime, end: datetime, discovery_limit: int) -> dict:
+    target = min(20, max(1, int(discovery_limit)))
+    handle = _instagram_handle(source)
+    probe = instagram_smoke.probe_public_session(
+        source["profile_url"],
+        handle,
+        run_index=1,
+        inspect_reel_times=True,
+    )
+    entries = list(probe.get("reel_items") or [])
+    known_times: list[datetime] = []
+    items: list[dict] = []
+    missing_time: list[str] = []
+
+    for entry in entries:
+        urls = instagram_smoke.extract_reel_urls(str(entry.get("url") or ""))
+        if not urls:
+            continue
+        shortcode = urls[0].rstrip("/").rsplit("/", 1)[-1]
+        raw = entry.get("published_at")
+        if not raw:
+            missing_time.append(shortcode)
+            continue
+        try:
+            published = parse_iso_utc(str(raw))
+        except Exception:
+            missing_time.append(shortcode)
+            continue
+        known_times.append(published)
+        if cutoff <= published <= end + timedelta(minutes=5):
+            items.append({
+                "creator_key": profile["creator_key"],
+                "platform": "INSTAGRAM",
+                "source_id": shortcode,
+                "item_key": shortcode,
+                "url": urls[0],
+                "title": "",
+                "published_at": published.isoformat(),
+                "profile_url": source["profile_url"],
+            })
+
+    window_complete = _coverage_complete(
+        discovered_count=len(entries),
+        requested_limit=target,
+        known_times=known_times,
+        cutoff=cutoff,
+    )
+    return {
+        "creator_key": profile["creator_key"],
+        "platform": "INSTAGRAM",
+        "profile_url": source["profile_url"],
+        "items": items,
+        "discovery_count": len(entries),
+        "discovery_limit_used": target,
+        "window_complete": window_complete,
+        "coverage_limit_reached": False,
+        "missing_publish_time_ids": missing_time,
+        "discovery": {
+            "ok": bool(probe.get("ok")),
+            "reel_count": int(probe.get("reel_count") or 0),
+            "blocked": bool(probe.get("blocked")),
+            "media_auth_gated": bool(probe.get("media_auth_gated")),
+        },
+    }
+
+
 def _tiktok_catalog(root: Path, creator_key: str) -> dict:
     return load_json(root / "state" / "tiktok" / f"{creator_key}_catalog.json", {"order": [], "items": {}})
 
@@ -371,6 +452,70 @@ def _ingest_youtube(root: Path, creator_key: str, ids: list[str]) -> dict:
     return {"requested": len(ids), "completed_ids": completed, "returncode": int(p.returncode), "evaluation_state": status.get("state")}
 
 
+def _ingest_instagram(
+    root: Path,
+    profile: dict,
+    source: dict,
+    ids: list[str],
+    published_by_id: dict[str, str],
+) -> dict:
+    handle = _instagram_handle(source)
+    if not ids:
+        return {"requested_ids": [], "completed_ids": [], "errors": [], "queue": None}
+
+    script = root / "app" / "instagram_ingest.py"
+    cmd = [
+        sys.executable,
+        str(script),
+        "--root", str(root),
+        "--creator", handle,
+        "--max-new-per-creator", str(len(ids)),
+        "--transcribe-new-only",
+        "--only-shortcodes", ",".join(ids),
+    ]
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+
+    manifest_path = root / "state" / "manifest.json"
+    manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
+    changed = False
+    completed: list[str] = []
+    for source_id in ids:
+        item = (manifest.get("items") or {}).get(source_id)
+        if not isinstance(item, dict):
+            continue
+        desired = {
+            "creator": profile["creator_key"],
+            "source_platform": "INSTAGRAM",
+            "source_id": source_id,
+            "published_at": published_by_id.get(source_id),
+            "permanent_source": True,
+        }
+        for key, value in desired.items():
+            if item.get(key) != value:
+                item[key] = value
+                changed = True
+        if item.get("download_status") == "DONE" and item.get("transcription_status") == "DONE":
+            completed.append(source_id)
+    if changed:
+        atomic_json(manifest_path, manifest)
+
+    queue = tts.run_research_queue(root)
+    errors = []
+    if p.returncode != 0:
+        errors.append(f"instagram_ingest exit {p.returncode}: {(p.stderr or p.stdout or '')[-1500:]}")
+    if not queue.get("ok"):
+        errors.append(f"research_queue failed: {queue}")
+    return {
+        "requested_ids": ids,
+        "completed_ids": completed,
+        "errors": errors,
+        "queue": queue,
+        "returncode": int(p.returncode),
+        "stdout_tail": (p.stdout or "")[-2000:],
+        "stderr_tail": (p.stderr or "")[-2000:],
+    }
+
+
 def _ingest_tiktok(root: Path, profile: dict, source: dict, ids: list[str], discovery_limit: int) -> dict:
     if not ids:
         return {"requested": 0, "completed_ids": [], "returncode": 0, "failures": []}
@@ -462,6 +607,8 @@ def _main_impl() -> int:
                         d = discover_youtube(profile, source, cutoff, end, discovery_limit)
                     elif platform == "TIKTOK":
                         d = discover_tiktok(root, profile, source, cutoff, end, discovery_limit)
+                    elif platform == "INSTAGRAM":
+                        d = discover_instagram(profile, source, cutoff, end, discovery_limit)
                     else:
                         continue
                     discoveries.append(d)
@@ -484,8 +631,10 @@ def _main_impl() -> int:
         deferred = pending[max_items:]
 
         grouped: dict[tuple[str, str], list[str]] = defaultdict(list)
+        selected_metadata: dict[tuple[str, str, str], dict] = {}
         for item in selected_pending:
             grouped[(item["creator_key"], item["platform"])].append(item["source_id"])
+            selected_metadata[(item["creator_key"], item["platform"], item["source_id"])] = item
 
         ingestion_results = []
         for (creator_key, platform), ids in grouped.items():
@@ -493,8 +642,23 @@ def _main_impl() -> int:
             try:
                 if platform == "YOUTUBE":
                     ing = _ingest_youtube(root, creator_key, ids)
-                else:
+                elif platform == "TIKTOK":
                     ing = _ingest_tiktok(root, profile, source, ids, discovery_limit)
+                elif platform == "INSTAGRAM":
+                    ing = _ingest_instagram(
+                        root,
+                        profile,
+                        source,
+                        ids,
+                        {
+                            source_id: str(
+                                selected_metadata[(creator_key, platform, source_id)].get("published_at") or ""
+                            )
+                            for source_id in ids
+                        },
+                    )
+                else:
+                    continue
                 ingestion_results.append({"creator_key": creator_key, "platform": platform, **ing})
                 if int(ing.get("returncode", 0)) != 0:
                     errors.append({"creator_key": creator_key, "platform": platform, "stage": "INGESTION", "error": f"RETURNCODE:{ing.get('returncode')}"})
