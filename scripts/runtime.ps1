@@ -18,8 +18,12 @@ $Root = (Resolve-Path (Join-Path $Repo "..")).Path
 $Compose = Join-Path $Repo "compose.yaml"
 $ConfigDir = Join-Path $env:LOCALAPPDATA "InfluencerResearch"
 $ConfigPath = Join-Path $ConfigDir "docker-runtime.json"
+$SecretDir = Join-Path $ConfigDir "secrets"
+$CamofoxAccessDpapiPath = Join-Path $SecretDir "camofox_access_key.dpapi"
+$CamofoxAdminDpapiPath = Join-Path $SecretDir "camofox_admin_key.dpapi"
 
 New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
+New-Item -ItemType Directory -Force -Path $SecretDir | Out-Null
 foreach ($name in @("control", "state", "output", "logs")) {
     New-Item -ItemType Directory -Force -Path (Join-Path $Root $name) | Out-Null
 }
@@ -36,6 +40,86 @@ function Save-RuntimeConfig($Config) {
         ($Config | ConvertTo-Json -Depth 4),
         [Text.UTF8Encoding]::new($false)
     )
+}
+
+function Save-DpapiSecret([string]$Path, [string]$Value, [string]$Label) {
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        throw "$Label secret is empty."
+    }
+
+    $secure = ConvertTo-SecureString -String $Value -AsPlainText -Force
+    try {
+        $encrypted = ConvertFrom-SecureString -SecureString $secure
+        [IO.File]::WriteAllText($Path, $encrypted, [Text.UTF8Encoding]::new($false))
+    }
+    finally {
+        $secure = $null
+    }
+
+    $roundTrip = Get-DpapiSecretValue -Path $Path -Label $Label
+    try {
+        if ($roundTrip -ne $Value) {
+            throw "$Label DPAPI verification failed."
+        }
+    }
+    finally {
+        $roundTrip = $null
+    }
+}
+
+function Get-DpapiSecretValue([string]$Path, [string]$Label) {
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        throw "$Label DPAPI secret is missing."
+    }
+
+    $encrypted = Get-Content -LiteralPath $Path -Raw
+    $secure = ConvertTo-SecureString -String $encrypted
+    $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
+    try {
+        $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr)
+        if ([string]::IsNullOrWhiteSpace($plain)) {
+            throw "$Label DPAPI secret decrypted to an empty value."
+        }
+        return $plain
+    }
+    finally {
+        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
+        $secure = $null
+    }
+}
+
+function Ensure-CamofoxSecretStore($Config) {
+    $legacyAccess = $null
+    $legacyAdmin = $null
+    if ($Config.PSObject.Properties.Name -contains "camofox_access_key") {
+        $legacyAccess = [string]$Config.camofox_access_key
+    }
+    if ($Config.PSObject.Properties.Name -contains "camofox_admin_key") {
+        $legacyAdmin = [string]$Config.camofox_admin_key
+    }
+
+    if (-not (Test-Path -LiteralPath $CamofoxAccessDpapiPath -PathType Leaf)) {
+        $value = if (-not [string]::IsNullOrWhiteSpace($legacyAccess)) { $legacyAccess } else { New-Token }
+        try {
+            Save-DpapiSecret -Path $CamofoxAccessDpapiPath -Value $value -Label "Camofox access"
+        }
+        finally {
+            $value = $null
+        }
+    }
+
+    if (-not (Test-Path -LiteralPath $CamofoxAdminDpapiPath -PathType Leaf)) {
+        $value = if (-not [string]::IsNullOrWhiteSpace($legacyAdmin)) { $legacyAdmin } else { New-Token }
+        try {
+            Save-DpapiSecret -Path $CamofoxAdminDpapiPath -Value $value -Label "Camofox admin"
+        }
+        finally {
+            $value = $null
+        }
+    }
+
+    $legacyAccess = $null
+    $legacyAdmin = $null
 }
 
 function Test-TcpPortFree([int]$Port) {
@@ -91,25 +175,37 @@ function Ensure-HostMcpPort($Config) {
 }
 
 if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
-    $config = [ordered]@{
-        schema_version = 1
-        camofox_access_key = New-Token
-        camofox_admin_key = New-Token
+    $config = [pscustomobject]@{
+        schema_version = 2
         mcp_port = 8770
     }
     Save-RuntimeConfig $config
+} else {
+    $config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
+    $schemaVersion = [int]$config.schema_version
+    if ($schemaVersion -notin @(1, 2)) { throw "Unsupported runtime config schema." }
+
+    Ensure-CamofoxSecretStore $config
+
+    if ($schemaVersion -eq 1 -or
+        $config.PSObject.Properties.Name -contains "camofox_access_key" -or
+        $config.PSObject.Properties.Name -contains "camofox_admin_key") {
+        $config = [pscustomobject]@{
+            schema_version = 2
+            mcp_port = [int]$config.mcp_port
+        }
+        Save-RuntimeConfig $config
+    }
 }
 
-$config = Get-Content -LiteralPath $ConfigPath -Raw | ConvertFrom-Json
-if ([int]$config.schema_version -ne 1) { throw "Unsupported runtime config schema." }
+Ensure-CamofoxSecretStore $config
+
 if ([int]$config.mcp_port -lt 1024 -or [int]$config.mcp_port -gt 65535) {
     throw "Invalid MCP host port in runtime config."
 }
 
 Ensure-HostMcpPort $config
 
-$env:CAMOFOX_ACCESS_KEY = [string]$config.camofox_access_key
-$env:CAMOFOX_ADMIN_KEY = [string]$config.camofox_admin_key
 $env:INFLUENCER_RESEARCH_MCP_PORT = [string]$config.mcp_port
 $env:INFLUENCER_RESEARCH_CONTROL_DIR = Join-Path $Root "control"
 $env:INFLUENCER_RESEARCH_STATE_DIR = Join-Path $Root "state"
@@ -119,6 +215,35 @@ $env:INFLUENCER_RESEARCH_LOG_DIR = Join-Path $Root "logs"
 function Compose([string[]]$ComposeArgs) {
     & docker compose -f $Compose @ComposeArgs
     if ($LASTEXITCODE -ne 0) { throw "docker compose failed with exit code $LASTEXITCODE" }
+}
+
+function Invoke-ComposeUp {
+    $accessWasSet = Test-Path Env:INFLUENCER_CAMOFOX_ACCESS_SECRET
+    $adminWasSet = Test-Path Env:INFLUENCER_CAMOFOX_ADMIN_SECRET
+    $oldAccess = if ($accessWasSet) { $env:INFLUENCER_CAMOFOX_ACCESS_SECRET } else { $null }
+    $oldAdmin = if ($adminWasSet) { $env:INFLUENCER_CAMOFOX_ADMIN_SECRET } else { $null }
+
+    $access = Get-DpapiSecretValue -Path $CamofoxAccessDpapiPath -Label "Camofox access"
+    $admin = Get-DpapiSecretValue -Path $CamofoxAdminDpapiPath -Label "Camofox admin"
+    try {
+        $env:INFLUENCER_CAMOFOX_ACCESS_SECRET = $access
+        $env:INFLUENCER_CAMOFOX_ADMIN_SECRET = $admin
+        Invoke-ComposeUp
+    }
+    finally {
+        $access = $null
+        $admin = $null
+        if ($accessWasSet) {
+            $env:INFLUENCER_CAMOFOX_ACCESS_SECRET = $oldAccess
+        } else {
+            Remove-Item Env:INFLUENCER_CAMOFOX_ACCESS_SECRET -ErrorAction SilentlyContinue
+        }
+        if ($adminWasSet) {
+            $env:INFLUENCER_CAMOFOX_ADMIN_SECRET = $oldAdmin
+        } else {
+            Remove-Item Env:INFLUENCER_CAMOFOX_ADMIN_SECRET -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 function Import-InstagramAuth {
@@ -194,7 +319,7 @@ function Import-AvailableRuntimeSecrets {
 
 switch ($Action) {
     "Up" {
-        Compose -ComposeArgs @("up", "-d", "--build")
+        Invoke-ComposeUp
         Write-Host "INFLUENCERRESEARCH_MCP=http://127.0.0.1:$($config.mcp_port)/mcp"
         Write-Host "Camofox is internal-only at http://camofox:9377"
         Import-AvailableRuntimeSecrets
@@ -203,7 +328,7 @@ switch ($Action) {
         Compose -ComposeArgs @("down")
     }
     "InstagramPublicSmoke" {
-        Compose -ComposeArgs @("up", "-d", "--build")
+        Invoke-ComposeUp
         & docker exec influencerresearch-mcp `
             python -m unittest -v test_instagram_camofox_public_smoke
         if ($LASTEXITCODE -ne 0) { throw "Instagram public smoke unit tests failed." }
@@ -231,7 +356,7 @@ switch ($Action) {
         }
     }
     "Smoke" {
-        Compose -ComposeArgs @("up", "-d", "--build")
+        Invoke-ComposeUp
         Import-AvailableRuntimeSecrets
         $tests = @(
             "test_camofox_container_config",
