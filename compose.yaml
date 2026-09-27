@@ -12,8 +12,6 @@ services:
       INFLUENCER_RESEARCH_MCP_PORT: "8770"
       INFLUENCER_RESEARCH_ALLOWED_HOSTS: "127.0.0.1:*,localhost:*,influencerresearch:*"
       INFLUENCER_RESEARCH_CAMOFOX_MODE: container
-      CAMOFOX_ACCESS_KEY: ${CAMOFOX_ACCESS_KEY:?CAMOFOX_ACCESS_KEY is required}
-      CAMOFOX_ADMIN_KEY: ${CAMOFOX_ADMIN_KEY:?CAMOFOX_ADMIN_KEY is required}
       XDG_CACHE_HOME: /runtime/influencerresearch/cache
       HOME: /home/influencer
     ports:
@@ -39,6 +37,19 @@ services:
     tmpfs:
       - /tmp:rw,nosuid,nodev,size=512m,mode=1777
       - /run/influencerresearch-secrets:rw,nosuid,nodev,noexec,size=64k,uid=10001,gid=10001,mode=0700
+    post_start:
+      - command:
+          - sh
+          - -c
+          - >-
+            umask 077;
+            test -n "$$INFLUENCER_CAMOFOX_ACCESS_SECRET";
+            test -n "$$INFLUENCER_CAMOFOX_ADMIN_SECRET";
+            printf '%s' "$$INFLUENCER_CAMOFOX_ACCESS_SECRET" > /run/influencerresearch-secrets/camofox_access_key;
+            printf '%s' "$$INFLUENCER_CAMOFOX_ADMIN_SECRET" > /run/influencerresearch-secrets/camofox_admin_key
+        environment:
+          INFLUENCER_CAMOFOX_ACCESS_SECRET: ${INFLUENCER_CAMOFOX_ACCESS_SECRET:?Camofox access runtime secret is required}
+          INFLUENCER_CAMOFOX_ADMIN_SECRET: ${INFLUENCER_CAMOFOX_ADMIN_SECRET:?Camofox admin runtime secret is required}
     cap_drop:
       - ALL
     security_opt:
@@ -70,8 +81,6 @@ services:
       NODE_ENV: production
       CAMOFOX_PORT: "9377"
       CAMOFOX_BIND_HOST: 0.0.0.0
-      CAMOFOX_ACCESS_KEY: ${CAMOFOX_ACCESS_KEY:?CAMOFOX_ACCESS_KEY is required}
-      CAMOFOX_ADMIN_KEY: ${CAMOFOX_ADMIN_KEY:?CAMOFOX_ADMIN_KEY is required}
       CAMOFOX_LOCALE: sv-SE
       CAMOFOX_TIMEZONE: Europe/Stockholm
       CAMOUFOX_EXECUTABLE: /opt/camoufox/camoufox-bin
@@ -102,6 +111,28 @@ services:
     tmpfs:
       - /tmp:rw,nosuid,nodev,size=256m,mode=1777
       - /run/camofox:rw,nosuid,nodev,size=256m,uid=1000,gid=1000,mode=0700
+      - /run/camofox-secrets:rw,nosuid,nodev,noexec,size=64k,uid=1000,gid=1000,mode=0700
+    post_start:
+      - command:
+          - sh
+          - -c
+          - >-
+            umask 077;
+            test -n "$$INFLUENCER_CAMOFOX_ACCESS_SECRET";
+            test -n "$$INFLUENCER_CAMOFOX_ADMIN_SECRET";
+            printf '%s' "$$INFLUENCER_CAMOFOX_ACCESS_SECRET" > /run/camofox-secrets/access_key;
+            printf '%s' "$$INFLUENCER_CAMOFOX_ADMIN_SECRET" > /run/camofox-secrets/admin_key
+        environment:
+          INFLUENCER_CAMOFOX_ACCESS_SECRET: ${INFLUENCER_CAMOFOX_ACCESS_SECRET:?Camofox access runtime secret is required}
+          INFLUENCER_CAMOFOX_ADMIN_SECRET: ${INFLUENCER_CAMOFOX_ADMIN_SECRET:?Camofox admin runtime secret is required}
+    command:
+      - sh
+      - -c
+      - >-
+        while [ ! -s /run/camofox-secrets/access_key ] || [ ! -s /run/camofox-secrets/admin_key ]; do sleep 0.05; done;
+        export CAMOFOX_ACCESS_KEY="$$(cat /run/camofox-secrets/access_key)";
+        export CAMOFOX_ADMIN_KEY="$$(cat /run/camofox-secrets/admin_key)";
+        exec node --max-old-space-size=192 /app/node_modules/@askjo/camofox-browser/server.js
     cap_drop:
       - ALL
     security_opt:

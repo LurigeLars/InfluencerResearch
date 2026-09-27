@@ -26,7 +26,7 @@ The canonical runtime is Docker Compose with two services on the same private `r
 
 Camofox has **no host-published port** and is not an MCP surface. TikTok browser discovery/metadata uses Camofox; individual media downloads remain yt-dlp's responsibility inside the `influencerresearch` container.
 
-Persistent research data uses narrow bind mounts for the existing parent-root `control/`, `state/`, `output/` and `logs/` directories. Browser/runtime secrets and cache live in the `influencerresearch-runtime` Docker volume.
+Persistent research data uses narrow bind mounts for the existing parent-root `control/`, `state/`, `output/` and `logs/` directories. Browser cache and imported Instagram runtime state use the `influencerresearch-runtime` Docker volume. Camofox service keys and the Gemini API key are stored on the Windows host with DPAPI and injected only into per-container tmpfs at runtime.
 
 The runtime expects the host control directory one level above the repository (for example `<redacted-workspace>\control`). On a fresh installation, initialize the required settings file from the tracked non-secret template:
 
@@ -176,6 +176,21 @@ pwsh -NoProfile -File scripts\runtime.ps1 -Action ImportInstagramAuth
 ```
 
 On `-Action Up`, the runtime automatically imports the local cookie export when it exists. Instagram workers then run headless inside the `influencerresearch` container using the persistent Docker runtime volume.
+
+## Camofox service secrets
+
+The internal Camofox access/admin keys are generated locally and protected with Windows DPAPI. They are not stored in the repository, Compose environment, Docker container metadata, or the persistent runtime volume.
+
+The encrypted host blobs live at:
+
+```text
+%LOCALAPPDATA%\InfluencerResearch\secrets\camofox_access_key.dpapi
+%LOCALAPPDATA%\InfluencerResearch\secrets\camofox_admin_key.dpapi
+```
+
+On `runtime.ps1 -Action Up`, the host decrypts them only for the Compose startup operation. Compose `post_start` hooks write the values into tmpfs-backed files for the Python service and the Camofox service. The Camofox process exports the values only inside its own process immediately before starting the reviewed server.
+
+Existing installations are migrated automatically: a schema-v1 `docker-runtime.json` containing `camofox_access_key` / `camofox_admin_key` is copied into DPAPI-backed blobs, verified, and rewritten as schema v2 containing only non-secret runtime configuration such as the MCP port.
 
 ## Gemini transcription secret
 

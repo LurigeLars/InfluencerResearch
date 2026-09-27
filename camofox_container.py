@@ -8,6 +8,8 @@ from pathlib import Path
 CAMOFOX_CONTAINER_SCHEMA_VERSION = 1
 CAMOFOX_CONTAINER_BASE_URL = "http://127.0.0.1:9377"
 CAMOFOX_CONTAINER_CONFIG_NAME = "camofox-container.json"
+CAMOFOX_CONTAINER_ACCESS_SECRET = Path("/run/influencerresearch-secrets/camofox_access_key")
+CAMOFOX_CONTAINER_ADMIN_SECRET = Path("/run/influencerresearch-secrets/camofox_admin_key")
 
 
 def _localappdata_root() -> Path:
@@ -25,13 +27,25 @@ def config_path() -> Path:
     return path
 
 
+def _read_container_secret(path: Path, label: str) -> str:
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise RuntimeError(f"Container Camofox {label} secret is unavailable") from exc
+    if len(value) < 32:
+        raise RuntimeError(f"Container Camofox {label} secret is missing or too short")
+    return value
+
+
 def load_config(env: dict[str, str] | None = None) -> dict[str, object]:
     source = os.environ if env is None else env
     if str(source.get("INFLUENCER_RESEARCH_CONTAINER") or "").strip() == "1":
-        service_access_key = str(source.get("CAMOFOX_ACCESS_KEY") or "").strip()
-        service_admin_key = str(source.get("CAMOFOX_ADMIN_KEY") or "").strip()
-        if len(service_access_key) < 32 or len(service_admin_key) < 32:
-            raise RuntimeError("Container Camofox keys are missing or too short")
+        service_access_key = _read_container_secret(
+            CAMOFOX_CONTAINER_ACCESS_SECRET, "access"
+        )
+        service_admin_key = _read_container_secret(
+            CAMOFOX_CONTAINER_ADMIN_SECRET, "admin"
+        )
         return {
             "base_url": "http://camofox:9377",
             "access_key": service_access_key,

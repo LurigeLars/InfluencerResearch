@@ -1,0 +1,28 @@
+name: Runtime regression
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  runtime-regression:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Run runtime secret regression tests
+        run: >-
+          python -m unittest -v
+          test_camofox_container_config
+          test_local_runtime_namespace
+          test_mcp_contract

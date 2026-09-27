@@ -63,11 +63,13 @@ class MCPContractTests(unittest.TestCase):
             text,
         )
 
-    def test_camofox_env_config_is_supported(self) -> None:
+    def test_camofox_container_config_uses_runtime_secret_files(self) -> None:
         source = (BASE / "camofox_container.py").read_text(encoding="utf-8")
         self.assertIn('"base_url": "http://camofox:9377"', source)
-        self.assertIn("CAMOFOX_ACCESS_KEY", source)
-        self.assertIn("CAMOFOX_ADMIN_KEY", source)
+        self.assertIn("CAMOFOX_CONTAINER_ACCESS_SECRET", source)
+        self.assertIn("CAMOFOX_CONTAINER_ADMIN_SECRET", source)
+        self.assertNotIn('source.get("CAMOFOX_ACCESS_KEY")', source)
+        self.assertNotIn('source.get("CAMOFOX_ADMIN_KEY")', source)
 
     def test_job_launcher_uses_fixed_worker_command(self) -> None:
         source = (BASE / "influencerresearch_mcp.py").read_text(encoding="utf-8")
