@@ -16,6 +16,7 @@ from creator_monitor import manifest_done_ids, _tiktok_published_at
 import youtube_creator_evaluation as yte
 import tiktok_camofox_sync as tts
 import instagram_camofox_public_smoke as instagram_smoke
+import ephemeral_ingest as ephemeral
 
 RECENT_CHECK_VERSION = "0.2.0"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
@@ -516,6 +517,162 @@ def _ingest_instagram(
     }
 
 
+def _story_transcript_path(root: Path, handle: str, identity: str) -> Path | None:
+    path = root / "output" / handle / "stories" / "transcripts" / f"{identity}.txt"
+    return path if path.exists() else None
+
+
+def _promote_story_items(
+    root: Path,
+    profile: dict,
+    handle: str,
+    cutoff: datetime,
+    max_new: int,
+) -> list[dict]:
+    """Bridge already captured Story evidence into the canonical manifest.
+
+    Active Stories are necessarily recent; when Instagram does not expose an exact
+    publish timestamp we persist observed_at explicitly as the time basis rather
+    than inventing a more precise timestamp.
+    """
+    if max_new <= 0:
+        return []
+    ephemeral_manifest = load_json(
+        root / "state" / "ephemeral" / "manifest.json",
+        {"schema_version": 1, "items": {}},
+    )
+    manifest_path = root / "state" / "manifest.json"
+    manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
+    manifest.setdefault("items", {})
+
+    candidates: list[tuple[datetime, dict]] = []
+    for item in (ephemeral_manifest.get("items") or {}).values():
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("source_type") or "").upper() != "STORY":
+            continue
+        if str(item.get("creator") or "").casefold() != handle.casefold():
+            continue
+        try:
+            observed = parse_iso_utc(str(item.get("observed_at") or ""))
+        except Exception:
+            continue
+        if observed < cutoff:
+            continue
+        candidates.append((observed, item))
+
+    candidates.sort(key=lambda row: row[0], reverse=True)
+    promoted: list[dict] = []
+    changed = False
+    for observed, item in candidates:
+        if len(promoted) >= max_new:
+            break
+        identity = str(item.get("story_id") or item.get("evidence_id") or "").strip()
+        if not identity:
+            continue
+        key = f"ig_story_{identity}"
+        if key in manifest["items"]:
+            continue
+
+        screenshot_rel = str(item.get("screenshot_file") or "").strip()
+        screenshot_path = root / screenshot_rel if screenshot_rel else None
+        transcript_path = _story_transcript_path(root, handle, identity)
+        has_screenshot = bool(screenshot_path and screenshot_path.exists())
+        has_transcript = transcript_path is not None
+        if not has_screenshot and not has_transcript:
+            continue
+
+        manifest["items"][key] = {
+            "schema_version": 1,
+            "creator": profile["creator_key"],
+            "source_platform": "INSTAGRAM",
+            "source_subtype": "STORY",
+            "source_id": f"story:{identity}",
+            "url": item.get("source_url"),
+            "published_at": observed.isoformat(),
+            "published_at_basis": "ACTIVE_STORY_OBSERVED_AT",
+            "observed_at": observed.isoformat(),
+            "download_status": "DONE",
+            "downloaded_at": observed.isoformat(),
+            "transcription_status": "DONE" if has_transcript else "NOT_APPLICABLE",
+            "transcript_txt": (
+                str(transcript_path.relative_to(root)) if transcript_path is not None else None
+            ),
+            "transcript_source": "STORY_VIDEO" if has_transcript else None,
+            "browser_text": str(item.get("browser_text") or ""),
+            "screenshot_file": screenshot_rel or None,
+            "visual_evidence_status": "DONE" if has_screenshot else "NOT_AVAILABLE",
+            "visual_evidence_index": screenshot_rel or None,
+            "visual_frame_count": 1 if has_screenshot else 0,
+            "visual_capture_strategy": "INSTAGRAM_STORY_SCREENSHOT",
+            "full_video_persisted": bool(has_transcript),
+            "media_retention": "EPHEMERAL_CAPTURE",
+            "permanent_source": True,
+            "research_status": "PENDING",
+            "source_class": "INFLUENCER_DISCOVERY_SECONDARY",
+        }
+        changed = True
+        promoted.append({
+            "creator_key": profile["creator_key"],
+            "platform": "INSTAGRAM",
+            "source_id": f"story:{identity}",
+            "item_key": key,
+            "url": item.get("source_url"),
+            "title": "",
+            "published_at": observed.isoformat(),
+            "profile_url": f"https://www.instagram.com/{handle}/",
+            "source_subtype": "STORY",
+        })
+
+    if changed:
+        atomic_json(manifest_path, manifest)
+    return promoted
+
+
+def _ingest_instagram_stories(
+    root: Path,
+    profile: dict,
+    source: dict,
+    cutoff: datetime,
+    max_new: int,
+) -> dict:
+    handle = _instagram_handle(source)
+    if max_new <= 0:
+        return {"promoted": [], "capture": None, "queue": None, "warnings": []}
+
+    run = ephemeral.run_one(
+        root=root,
+        mode="stories",
+        creator=handle,
+        highlight_label=None,
+        force=False,
+        max_items=min(6, max(1, max_new + 2)),
+    )
+    promoted = _promote_story_items(root, profile, handle, cutoff, max_new)
+    queue = tts.run_research_queue(root) if promoted else None
+
+    warnings: list[str] = []
+    capture = run.get("capture") or {}
+    reason = str(capture.get("reason") or "")
+    benign_reasons = {
+        "OK",
+        "ENDED_OR_EXITED_STORY_VIEW",
+        "NO_ACTIVE_STORY_OR_STORY_VIEW_REDIRECTED",
+    }
+    if run.get("state") == "DONE_WITH_ERRORS" and reason not in benign_reasons:
+        warnings.extend(str(x) for x in (run.get("errors") or []))
+    if queue is not None and not queue.get("ok"):
+        warnings.append(f"research_queue failed: {queue}")
+
+    return {
+        "promoted": promoted,
+        "capture": capture,
+        "queue": queue,
+        "warnings": warnings,
+        "state": run.get("state"),
+    }
+
+
 def _ingest_tiktok(root: Path, profile: dict, source: dict, ids: list[str], discovery_limit: int) -> dict:
     if not ids:
         return {"requested": 0, "completed_ids": [], "returncode": 0, "failures": []}
@@ -665,10 +822,58 @@ def _main_impl() -> int:
             except Exception as exc:
                 errors.append({"creator_key": creator_key, "platform": platform, "stage": "INGESTION", "error": f"{type(exc).__name__}: {exc}"})
 
+        story_results = []
+        story_selected: list[dict] = []
+        remaining_story_slots = max(0, max_items - len(selected_pending))
+        if remaining_story_slots:
+            seen_instagram_creators: set[str] = set()
+            for profile, sources in selected:
+                if remaining_story_slots <= 0:
+                    break
+                instagram_sources = [
+                    source for source in sources
+                    if str(source.get("platform") or "").upper() == "INSTAGRAM"
+                ]
+                if not instagram_sources:
+                    continue
+                creator_key = str(profile["creator_key"])
+                if creator_key in seen_instagram_creators:
+                    continue
+                seen_instagram_creators.add(creator_key)
+                try:
+                    story_result = _ingest_instagram_stories(
+                        root,
+                        profile,
+                        instagram_sources[0],
+                        cutoff,
+                        remaining_story_slots,
+                    )
+                    promoted = list(story_result.get("promoted") or [])
+                    story_selected.extend(promoted)
+                    remaining_story_slots -= len(promoted)
+                    story_results.append({"creator_key": creator_key, **story_result})
+                    if story_result.get("warnings"):
+                        errors.append({
+                            "creator_key": creator_key,
+                            "platform": "INSTAGRAM",
+                            "stage": "STORY_INGESTION",
+                            "error": "; ".join(story_result["warnings"])[:2000],
+                        })
+                except Exception as exc:
+                    errors.append({
+                        "creator_key": creator_key,
+                        "platform": "INSTAGRAM",
+                        "stage": "STORY_INGESTION",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    })
+
         selected_keys = {x["item_key"] for x in selected_pending}
+        selected_keys.update(x["item_key"] for x in story_selected)
         analysis_targets = _queue_targets(root, selected_keys)
         completed_keys = {x["queue_id"] for x in analysis_targets}
         for item in selected_pending:
+            item["queued_for_analysis"] = item["item_key"] in completed_keys
+        for item in story_selected:
             item["queued_for_analysis"] = item["item_key"] in completed_keys
 
         incomplete_windows = [
@@ -700,7 +905,7 @@ def _main_impl() -> int:
             "recent_found_count": len(all_recent),
             "already_ingested_count": sum(1 for x in all_recent if x["already_ingested"]),
             "pending_found_count": len(pending),
-            "selected_for_ingestion_count": len(selected_pending),
+            "selected_for_ingestion_count": len(selected_pending) + len(story_selected),
             "deferred_due_to_cap_count": len(deferred),
             "queued_for_analysis_count": len(analysis_targets),
             "auto_ingest": True,
@@ -711,11 +916,12 @@ def _main_impl() -> int:
                 "note": "Local runtime prepares evidence/queue; the requesting Ekonomi session performs model analysis.",
             },
             "recent_items": all_recent[:100],
-            "selected_items": selected_pending,
+            "selected_items": selected_pending + story_selected,
             "deferred_items": deferred[:100],
             "analysis_targets": analysis_targets,
             "discoveries": discoveries,
             "ingestion_results": ingestion_results,
+            "story_ingestion_results": story_results,
             "error_count": len(errors),
             "errors": errors,
         }
