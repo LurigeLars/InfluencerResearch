@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import camofox_container as camofox_container_config
+import tiktok_camofox_sync as tts
 
 
 APP_VERSION = "0.8.0"
@@ -52,28 +53,7 @@ def utc_now() -> str:
 
 
 def request_json(method: str, path: str, body: dict | None = None, timeout: int = 30) -> Any:
-    cfg = camofox_container_config.load_config()
-    url = str(cfg["base_url"]) + path
-    payload = None
-    headers = {
-        "Accept": "application/json",
-        "Authorization": f"Bearer {cfg['access_key']}",
-    }
-    if body is not None:
-        payload = json.dumps(body).encode("utf-8")
-        headers["Content-Type"] = "application/json"
-
-    req = urllib.request.Request(url, data=payload, method=method, headers=headers)
-    try:
-        with NO_PROXY_OPENER.open(req, timeout=timeout) as resp:
-            raw = resp.read()
-            ctype = resp.headers.get("Content-Type", "")
-            if "json" in ctype or raw[:1] in (b"{", b"["):
-                return json.loads(raw.decode("utf-8", errors="replace"))
-            return raw.decode("utf-8", errors="replace")
-    except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"HTTP {exc.code} {url}: {detail[:1500]}") from exc
+    return tts.request_json(method, path, body, timeout=timeout)
 
 
 def flatten_strings(obj: Any) -> list[str]:
@@ -293,7 +273,13 @@ def dismiss_profile_media_auth_gate(tab_id: str, user_id: str) -> dict[str, Any]
     return result
 
 
-def probe_public_session(profile_url: str, handle: str, run_index: int) -> dict[str, Any]:
+def probe_public_session(
+    profile_url: str,
+    handle: str,
+    run_index: int,
+    *,
+    inspect_reel_times: bool = False,
+) -> dict[str, Any]:
     user_id = f"influencerresearch-instagram-public-smoke-{run_index}"
     session_key = f"public-{handle}-{run_index}-{int(time.time())}"
     tab_id: str | None = None
@@ -445,6 +431,40 @@ def probe_public_session(profile_url: str, handle: str, run_index: int) -> dict[
             )
             time.sleep(1.5)
 
+        reel_items: list[dict[str, Any]] = []
+        if inspect_reel_times:
+            for reel_url in all_reels[:20]:
+                published_at = None
+                error = None
+                try:
+                    request_json(
+                        "POST",
+                        f"/tabs/{urllib.parse.quote(tab_id)}/navigate",
+                        {"userId": user_id, "url": reel_url},
+                        timeout=30,
+                    )
+                    time.sleep(1.0)
+                    response = request_json(
+                        "POST",
+                        f"/tabs/{urllib.parse.quote(tab_id)}/evaluate",
+                        {
+                            "userId": user_id,
+                            "expression": (
+                                "(() => { const t = document.querySelector('time[datetime]'); "
+                                "return {published_at: t ? t.getAttribute('datetime') : null, href: location.href}; })()"
+                            ),
+                        },
+                        timeout=20,
+                    )
+                    value = response.get("result") if isinstance(response, dict) else None
+                    if isinstance(value, dict):
+                        published_at = value.get("published_at")
+                except Exception as exc:
+                    error = f"{type(exc).__name__}: {exc}"[:1000]
+                reel_items.append({"url": reel_url, "published_at": published_at, "error": error})
+        else:
+            reel_items = [{"url": url, "published_at": None, "error": None} for url in all_reels[:20]]
+
         blocked = any(row["block_hits"] for row in rounds)
         handle_visible = any(
             row["handle_visible"]
@@ -464,6 +484,7 @@ def probe_public_session(profile_url: str, handle: str, run_index: int) -> dict[
             "media_auth_gated": media_auth_gated,
             "reel_count": len(all_reels),
             "reels": all_reels[:20],
+            "reel_items": reel_items,
             "reel_discovery_ok": bool(all_reels),
             "rounds": rounds,
         }
@@ -476,6 +497,12 @@ def probe_public_session(profile_url: str, handle: str, run_index: int) -> dict[
                     + urllib.parse.urlencode({"userId": user_id}),
                     timeout=10,
                 )
+        with contextlib.suppress(Exception):
+            request_json(
+                "DELETE",
+                f"/sessions/{urllib.parse.quote(user_id)}",
+                timeout=10,
+            )
         with contextlib.suppress(Exception):
             request_json(
                 "DELETE",
@@ -701,6 +728,12 @@ def probe_public_story(handle: str) -> dict[str, Any]:
                     + urllib.parse.urlencode({"userId": user_id}),
                     timeout=10,
                 )
+        with contextlib.suppress(Exception):
+            request_json(
+                "DELETE",
+                f"/sessions/{urllib.parse.quote(user_id)}",
+                timeout=10,
+            )
         with contextlib.suppress(Exception):
             request_json(
                 "DELETE",

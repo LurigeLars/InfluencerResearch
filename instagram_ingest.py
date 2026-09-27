@@ -315,6 +315,8 @@ def download_with_ytdlp(
         "schema_version": 1,
         "shortcode": shortcode,
         "creator": creator,
+        "source_platform": "INSTAGRAM",
+        "source_id": shortcode,
         "url": reel_url,
         "video_file": str(media_path.relative_to(root)),
         "downloaded_at": utc_now(),
@@ -494,7 +496,21 @@ def main() -> int:
         action="store_true",
         help="Transcribe only videos downloaded during this run.",
     )
+    parser.add_argument(
+        "--only-shortcodes",
+        default=None,
+        help="Optional comma-separated Reel shortcodes to ingest; maximum 20.",
+    )
     args = parser.parse_args()
+
+    only_shortcodes: set[str] | None = None
+    if args.only_shortcodes:
+        values = [value.strip() for value in str(args.only_shortcodes).split(",") if value.strip()]
+        if not 1 <= len(values) <= 20:
+            raise ValueError("only_shortcodes must contain 1-20 values")
+        if any(not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", value) for value in values):
+            raise ValueError("BAD_ONLY_SHORTCODE")
+        only_shortcodes = set(values)
 
     root = args.root.resolve()
     settings = load_json(root / "control" / "settings.json")
@@ -549,6 +565,8 @@ def main() -> int:
                                 break
 
                             key = reel_shortcode(reel_url)
+                            if only_shortcodes is not None and key not in only_shortcodes:
+                                continue
                             existing = manifest["items"].get(key)
 
                             if existing and existing_item_is_valid(root, existing):
