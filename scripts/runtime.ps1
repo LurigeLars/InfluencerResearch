@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("Up", "Down", "Status", "Smoke", "InstagramPublicSmoke", "ImportInstagramAuth", "ImportGeminiKey")]
+    [ValidateSet("Up", "Redeploy", "Down", "Status", "Smoke", "InstagramPublicSmoke", "ImportInstagramAuth", "ImportGeminiKey")]
     [string]$Action = "Up",
     [string]$InstagramProfileUrl = "https://www.instagram.com/rikatillsammans/",
     [string]$InstagramHandle = "rikatillsammans",
@@ -209,7 +209,7 @@ function Test-InfluencerResearchContainerRunning {
 }
 
 function Ensure-HostMcpPort($Config) {
-    if ($Action -notin @("Up", "Smoke", "InstagramPublicSmoke")) {
+    if ($Action -notin @("Up", "Redeploy", "Smoke", "InstagramPublicSmoke")) {
         return
     }
 
@@ -237,7 +237,7 @@ function Ensure-HostMcpPort($Config) {
     throw "MCP host port $configuredPort is already in use and no free fallback port was found in 8771-8799."
 }
 
-$needsCamofoxSecrets = $Action -in @("Up", "Smoke", "InstagramPublicSmoke")
+$needsCamofoxSecrets = $Action -in @("Up", "Redeploy", "Smoke", "InstagramPublicSmoke")
 
 if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
     $config = [pscustomobject]@{
@@ -286,7 +286,7 @@ function Compose([string[]]$ComposeArgs) {
     if ($LASTEXITCODE -ne 0) { throw "docker compose failed with exit code $LASTEXITCODE" }
 }
 
-function Invoke-ComposeUp {
+function Invoke-ComposeUp([bool]$ForceRecreate = $false) {
     $accessWasSet = Test-Path Env:INFLUENCER_CAMOFOX_ACCESS_SECRET
     $adminWasSet = Test-Path Env:INFLUENCER_CAMOFOX_ADMIN_SECRET
     $oldAccess = if ($accessWasSet) { $env:INFLUENCER_CAMOFOX_ACCESS_SECRET } else { $null }
@@ -299,7 +299,9 @@ function Invoke-ComposeUp {
         $admin = Get-DpapiSecretValue -Path $CamofoxAdminDpapiPath -Label "Camofox admin"
         $env:INFLUENCER_CAMOFOX_ACCESS_SECRET = $access
         $env:INFLUENCER_CAMOFOX_ADMIN_SECRET = $admin
-        Compose -ComposeArgs @("up", "-d", "--build")
+        $composeArgs = @("up", "-d", "--build")
+        if ($ForceRecreate) { $composeArgs += "--force-recreate" }
+        Compose -ComposeArgs $composeArgs
     }
     finally {
         $access = $null
@@ -395,6 +397,12 @@ function Import-AvailableRuntimeSecrets {
 switch ($Action) {
     "Up" {
         Invoke-ComposeUp
+        Write-Host "INFLUENCERRESEARCH_MCP=http://127.0.0.1:$($config.mcp_port)/mcp"
+        Write-Host "Camofox is internal-only at http://camofox:9377"
+        Import-AvailableRuntimeSecrets
+    }
+    "Redeploy" {
+        Invoke-ComposeUp -ForceRecreate $true
         Write-Host "INFLUENCERRESEARCH_MCP=http://127.0.0.1:$($config.mcp_port)/mcp"
         Write-Host "Camofox is internal-only at http://camofox:9377"
         Import-AvailableRuntimeSecrets
