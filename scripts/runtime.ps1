@@ -228,7 +228,7 @@ function Invoke-ComposeUp {
     try {
         $env:INFLUENCER_CAMOFOX_ACCESS_SECRET = $access
         $env:INFLUENCER_CAMOFOX_ADMIN_SECRET = $admin
-        Invoke-ComposeUp
+        Compose -ComposeArgs @("up", "-d", "--build")
     }
     finally {
         $access = $null
