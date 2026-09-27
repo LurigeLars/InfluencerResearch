@@ -35,24 +35,40 @@ class CamofoxContainerConfigTests(TestCase):
                 (local.resolve() / "InfluencerResearch" / "camofox-transfer").exists()
             )
 
-    def test_loads_internal_service_config_from_environment(self) -> None:
-        result = cc.load_config({
-            "INFLUENCER_RESEARCH_CONTAINER": "1",
-            "CAMOFOX_ACCESS_KEY": "a" * 43,
-            "CAMOFOX_ADMIN_KEY": "b" * 43,
-        })
+    def test_loads_internal_service_config_from_runtime_secret_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            access_path = root / "camofox_access_key"
+            admin_path = root / "camofox_admin_key"
+            access_path.write_text("a" * 43, encoding="utf-8")
+            admin_path.write_text("b" * 43, encoding="utf-8")
+            with (
+                mock.patch.object(cc, "CAMOFOX_CONTAINER_ACCESS_SECRET", access_path),
+                mock.patch.object(cc, "CAMOFOX_CONTAINER_ADMIN_SECRET", admin_path),
+            ):
+                result = cc.load_config({
+                    "INFLUENCER_RESEARCH_CONTAINER": "1",
+                    "CAMOFOX_ACCESS_KEY": "SHOULD_NOT_BE_USED",
+                    "CAMOFOX_ADMIN_KEY": "SHOULD_NOT_BE_USED",
+                })
         self.assertEqual(result["base_url"], "http://camofox:9377")
         self.assertEqual(result["access_key"], "a" * 43)
         self.assertEqual(result["admin_key"], "b" * 43)
         self.assertIsNone(result["config_path"])
 
-    def test_rejects_short_service_keys(self) -> None:
-        with self.assertRaisesRegex(RuntimeError, "too short"):
-            cc.load_config({
-                "INFLUENCER_RESEARCH_CONTAINER": "1",
-                "CAMOFOX_ACCESS_KEY": "short",
-                "CAMOFOX_ADMIN_KEY": "short",
-            })
+    def test_rejects_short_service_secret_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            access_path = root / "camofox_access_key"
+            admin_path = root / "camofox_admin_key"
+            access_path.write_text("short", encoding="utf-8")
+            admin_path.write_text("b" * 43, encoding="utf-8")
+            with (
+                mock.patch.object(cc, "CAMOFOX_CONTAINER_ACCESS_SECRET", access_path),
+                mock.patch.object(cc, "CAMOFOX_CONTAINER_ADMIN_SECRET", admin_path),
+                self.assertRaisesRegex(RuntimeError, "too short"),
+            ):
+                cc.load_config({"INFLUENCER_RESEARCH_CONTAINER": "1"})
 
     def test_rejects_short_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
