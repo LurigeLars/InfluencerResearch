@@ -45,6 +45,7 @@ CAMOFOX_FALLBACK_EXPECTED_GIT_BLOBS = {
     "plugins/persistence/index.js": "7c5199d3b00c39325b660699581f4298a334808e",
 }
 CAMOFOX_FALLBACK_SOURCE_COMMIT = "389c996ae3c7d42e539295a336ee6f975847f066"
+CAMOFOX_CONTAINER_SOURCE_COMMIT = "a869df5f7ea7f3771bfd589d83bfc89adb879aa4"
 CAMOUFOX_JS_SOURCE_COMMIT = "3fe80d8448653d8dc1a2c186c7506f89e74c4ed4"
 CAMOFOX_ACCEPTED_ROOT_PACKAGE_NAME = "influencerresearch-camofox-runtime"
 CAMOFOX_ACCEPTED_ROOT_DEPENDENCIES = {
@@ -217,7 +218,11 @@ def _server_public_status(server: dict[str, Any], *, started: bool) -> dict[str,
         "port": int(server["port"]),
         "bind_host": urllib.parse.urlparse(str(server["base_url"])).hostname,
         "access_key_required": True,
-        "source_commit": CAMOFOX_FALLBACK_SOURCE_COMMIT,
+        "source_commit": (
+            CAMOFOX_CONTAINER_SOURCE_COMMIT
+            if runtime_mode == "container"
+            else CAMOFOX_FALLBACK_SOURCE_COMMIT
+        ),
     }
 
 
@@ -900,6 +905,7 @@ def _ensure_container_camofox_server(*, deadline: float) -> dict[str, Any]:
         "runtime_mode": "container",
         "provenance": {
             "runtime_mode": "container",
+            "source_commit": CAMOFOX_CONTAINER_SOURCE_COMMIT,
             "camofox_version": CAMOFOX_FALLBACK_EXPECTED_CAMOFOX_VERSION,
             "camoufox_js_version": CAMOFOX_FALLBACK_EXPECTED_CAMOUFOX_JS_VERSION,
             "browser": dict(CAMOUFOX_BROWSER_VERSION_FIELDS),
