@@ -21,6 +21,8 @@ $ConfigPath = Join-Path $ConfigDir "docker-runtime.json"
 $SecretDir = Join-Path $ConfigDir "secrets"
 $CamofoxAccessDpapiPath = Join-Path $SecretDir "camofox_access_key.dpapi"
 $CamofoxAdminDpapiPath = Join-Path $SecretDir "camofox_admin_key.dpapi"
+$InstagramDpapiPath = Join-Path $SecretDir "instagram_cookies.dpapi"
+$LegacyInstagramPath = Join-Path $SecretDir "instagram_cookies.json"
 
 New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
 New-Item -ItemType Directory -Force -Path $SecretDir | Out-Null
@@ -136,6 +138,51 @@ function Ensure-CamofoxSecretStore($Config) {
         $legacyAccess = $null
         $legacyAdmin = $null
     }
+}
+
+function Test-InstagramCookieJson([string]$Json) {
+    try {
+        $cookies = @($Json | ConvertFrom-Json)
+    }
+    catch {
+        throw "Instagram cookie payload is not valid JSON."
+    }
+    if (-not ($cookies | Where-Object { [string]$_.name -eq "sessionid" })) {
+        throw "Instagram cookie payload does not contain sessionid."
+    }
+}
+
+function Ensure-InstagramCookieStore {
+    $legacy = $null
+    if (Test-Path -LiteralPath $LegacyInstagramPath -PathType Leaf) {
+        $legacy = Get-Content -LiteralPath $LegacyInstagramPath -Raw
+        Test-InstagramCookieJson $legacy
+    }
+
+    if (-not (Test-Path -LiteralPath $InstagramDpapiPath -PathType Leaf)) {
+        if ([string]::IsNullOrWhiteSpace($legacy)) {
+            return $false
+        }
+        Save-DpapiSecret -Path $InstagramDpapiPath -Value $legacy -Label "Instagram session"
+    }
+
+    $stored = $null
+    try {
+        $stored = Get-DpapiSecretValue -Path $InstagramDpapiPath -Label "Instagram session"
+        Test-InstagramCookieJson $stored
+        if (-not [string]::IsNullOrWhiteSpace($legacy) -and $stored -ne $legacy) {
+            throw "Instagram DPAPI session does not match the legacy cookie export; refusing to remove the legacy file."
+        }
+    }
+    finally {
+        $stored = $null
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($legacy)) {
+        Remove-Item -LiteralPath $LegacyInstagramPath -Force
+    }
+    $legacy = $null
+    return $true
 }
 
 function Test-TcpPortFree([int]$Port) {
@@ -271,14 +318,8 @@ function Invoke-ComposeUp {
 }
 
 function Import-InstagramAuth {
-    $cookiePath = Join-Path $env:LOCALAPPDATA "InfluencerResearch\secrets\instagram_cookies.json"
-    if (-not (Test-Path -LiteralPath $cookiePath -PathType Leaf)) {
-        throw "Instagram cookie export is missing. Run scripts\authenticate_instagram.ps1 first."
-    }
-
-    $cookies = @(Get-Content -LiteralPath $cookiePath -Raw | ConvertFrom-Json)
-    if (-not ($cookies | Where-Object { [string]$_.name -eq "sessionid" })) {
-        throw "Instagram cookie export does not contain sessionid."
+    if (-not (Ensure-InstagramCookieStore)) {
+        throw "Instagram DPAPI session is missing. Run scripts\authenticate_instagram.ps1 first."
     }
 
     $serviceId = (& docker compose -f $Compose ps -q influencerresearch).Trim()
@@ -286,11 +327,19 @@ function Import-InstagramAuth {
         throw "InfluencerResearch container is not running. Run scripts\runtime.ps1 -Action Up first."
     }
 
-    Get-Content -LiteralPath $cookiePath -Raw |
-        & docker compose -f $Compose exec -T influencerresearch sh -c 'umask 077; mkdir -p /runtime/influencerresearch/secrets; cat > /runtime/influencerresearch/secrets/instagram_cookies.json'
-    if ($LASTEXITCODE -ne 0) { throw "Instagram auth import failed." }
+    $plain = $null
+    try {
+        $plain = Get-DpapiSecretValue -Path $InstagramDpapiPath -Label "Instagram session"
+        Test-InstagramCookieJson $plain
+        $plain |
+            & docker compose -f $Compose exec -T influencerresearch sh -c 'umask 077; cat > /run/influencerresearch-secrets/instagram_cookies.json'
+        if ($LASTEXITCODE -ne 0) { throw "Instagram auth import failed." }
+    }
+    finally {
+        $plain = $null
+    }
 
-    & docker compose -f $Compose exec -T influencerresearch python -c 'import json; p="/runtime/influencerresearch/secrets/instagram_cookies.json"; c=json.load(open(p,encoding="utf-8")); assert any(x.get("name")=="sessionid" for x in c); print("INSTAGRAM_AUTH_IMPORTED")'
+    & docker compose -f $Compose exec -T influencerresearch python -c 'import json; p="/run/influencerresearch-secrets/instagram_cookies.json"; c=json.load(open(p,encoding="utf-8")); assert any(x.get("name")=="sessionid" for x in c); print("INSTAGRAM_AUTH_IMPORTED")'
     if ($LASTEXITCODE -ne 0) { throw "Instagram auth verification failed." }
 }
 
@@ -330,8 +379,10 @@ function Import-GeminiKey {
 }
 
 function Import-AvailableRuntimeSecrets {
-    $cookiePath = Join-Path $env:LOCALAPPDATA "InfluencerResearch\secrets\instagram_cookies.json"
-    if (Test-Path -LiteralPath $cookiePath -PathType Leaf) {
+    if (
+        (Test-Path -LiteralPath $InstagramDpapiPath -PathType Leaf) -or
+        (Test-Path -LiteralPath $LegacyInstagramPath -PathType Leaf)
+    ) {
         Import-InstagramAuth
     }
 
