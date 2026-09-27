@@ -50,6 +50,21 @@ class LocalRuntimeNamespaceTests(unittest.TestCase):
         self.assertIn("/run/influencerresearch-secrets/gemini_api_key", runtime)
         self.assertIn("/run/influencerresearch-secrets:", compose)
 
+    def test_camofox_runtime_secrets_use_dpapi_and_tmpfs_not_service_env(self) -> None:
+        runtime = (BASE / "scripts/runtime.ps1").read_text(encoding="utf-8")
+        compose = (BASE / "compose.yaml").read_text(encoding="utf-8")
+        self.assertIn("camofox_access_key.dpapi", runtime)
+        self.assertIn("camofox_admin_key.dpapi", runtime)
+        self.assertNotIn("$env:CAMOFOX_ACCESS_KEY", runtime)
+        self.assertNotIn("$env:CAMOFOX_ADMIN_KEY", runtime)
+        self.assertNotIn("CAMOFOX_ACCESS_KEY: ${CAMOFOX_ACCESS_KEY", compose)
+        self.assertNotIn("CAMOFOX_ADMIN_KEY: ${CAMOFOX_ADMIN_KEY", compose)
+        self.assertIn("/run/influencerresearch-secrets/camofox_access_key", compose)
+        self.assertIn("/run/influencerresearch-secrets/camofox_admin_key", compose)
+        self.assertIn("/run/camofox-secrets/access_key", compose)
+        self.assertIn("/run/camofox-secrets/admin_key", compose)
+        self.assertIn("post_start:", compose)
+
     def test_smoke_rehydrates_ephemeral_runtime_secrets(self) -> None:
         runtime = (BASE / "scripts/runtime.ps1").read_text(encoding="utf-8")
         self.assertIn("function Import-AvailableRuntimeSecrets", runtime)
