@@ -20,6 +20,24 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      - name: Parse PowerShell runtime scripts
+        shell: pwsh
+        run: |
+          $failed = $false
+          foreach ($path in @("scripts/runtime.ps1", "scripts/authenticate_instagram.ps1")) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $path),
+              [ref]$tokens,
+              [ref]$errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $failed = $true
+              $errors | ForEach-Object { Write-Error "$path: $($_.Message)" }
+            }
+          }
+          if ($failed) { exit 1 }
       - name: Run runtime secret regression tests
         run: >-
           python -m unittest -v
