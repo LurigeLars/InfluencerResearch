@@ -118,8 +118,24 @@ function Ensure-CamofoxSecretStore($Config) {
         }
     }
 
-    $legacyAccess = $null
-    $legacyAdmin = $null
+    $storedAccess = $null
+    $storedAdmin = $null
+    try {
+        $storedAccess = Get-DpapiSecretValue -Path $CamofoxAccessDpapiPath -Label "Camofox access"
+        $storedAdmin = Get-DpapiSecretValue -Path $CamofoxAdminDpapiPath -Label "Camofox admin"
+        if (-not [string]::IsNullOrWhiteSpace($legacyAccess) -and $storedAccess -ne $legacyAccess) {
+            throw "Camofox access DPAPI secret does not match the legacy runtime config; refusing to remove the legacy value."
+        }
+        if (-not [string]::IsNullOrWhiteSpace($legacyAdmin) -and $storedAdmin -ne $legacyAdmin) {
+            throw "Camofox admin DPAPI secret does not match the legacy runtime config; refusing to remove the legacy value."
+        }
+    }
+    finally {
+        $storedAccess = $null
+        $storedAdmin = $null
+        $legacyAccess = $null
+        $legacyAdmin = $null
+    }
 }
 
 function Test-TcpPortFree([int]$Port) {
