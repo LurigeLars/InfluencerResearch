@@ -174,6 +174,8 @@ function Ensure-HostMcpPort($Config) {
     throw "MCP host port $configuredPort is already in use and no free fallback port was found in 8771-8799."
 }
 
+$needsCamofoxSecrets = $Action -in @("Up", "Smoke", "InstagramPublicSmoke")
+
 if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
     $config = [pscustomobject]@{
         schema_version = 2
@@ -185,20 +187,24 @@ if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
     $schemaVersion = [int]$config.schema_version
     if ($schemaVersion -notin @(1, 2)) { throw "Unsupported runtime config schema." }
 
-    Ensure-CamofoxSecretStore $config
+    if ($needsCamofoxSecrets) {
+        Ensure-CamofoxSecretStore $config
 
-    if ($schemaVersion -eq 1 -or
-        $config.PSObject.Properties.Name -contains "camofox_access_key" -or
-        $config.PSObject.Properties.Name -contains "camofox_admin_key") {
-        $config = [pscustomobject]@{
-            schema_version = 2
-            mcp_port = [int]$config.mcp_port
+        if ($schemaVersion -eq 1 -or
+            $config.PSObject.Properties.Name -contains "camofox_access_key" -or
+            $config.PSObject.Properties.Name -contains "camofox_admin_key") {
+            $config = [pscustomobject]@{
+                schema_version = 2
+                mcp_port = [int]$config.mcp_port
+            }
+            Save-RuntimeConfig $config
         }
-        Save-RuntimeConfig $config
     }
 }
 
-Ensure-CamofoxSecretStore $config
+if ($needsCamofoxSecrets -and [int]$config.schema_version -eq 2) {
+    Ensure-CamofoxSecretStore $config
+}
 
 if ([int]$config.mcp_port -lt 1024 -or [int]$config.mcp_port -gt 65535) {
     throw "Invalid MCP host port in runtime config."
@@ -223,9 +229,11 @@ function Invoke-ComposeUp {
     $oldAccess = if ($accessWasSet) { $env:INFLUENCER_CAMOFOX_ACCESS_SECRET } else { $null }
     $oldAdmin = if ($adminWasSet) { $env:INFLUENCER_CAMOFOX_ADMIN_SECRET } else { $null }
 
-    $access = Get-DpapiSecretValue -Path $CamofoxAccessDpapiPath -Label "Camofox access"
-    $admin = Get-DpapiSecretValue -Path $CamofoxAdminDpapiPath -Label "Camofox admin"
+    $access = $null
+    $admin = $null
     try {
+        $access = Get-DpapiSecretValue -Path $CamofoxAccessDpapiPath -Label "Camofox access"
+        $admin = Get-DpapiSecretValue -Path $CamofoxAdminDpapiPath -Label "Camofox admin"
         $env:INFLUENCER_CAMOFOX_ACCESS_SECRET = $access
         $env:INFLUENCER_CAMOFOX_ADMIN_SECRET = $admin
         Compose -ComposeArgs @("up", "-d", "--build")
