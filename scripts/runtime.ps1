@@ -394,6 +394,20 @@ function Import-AvailableRuntimeSecrets {
     }
 }
 
+$outerAccessWasSet = Test-Path Env:INFLUENCER_CAMOFOX_ACCESS_SECRET
+$outerAdminWasSet = Test-Path Env:INFLUENCER_CAMOFOX_ADMIN_SECRET
+$outerAccessOriginal = if ($outerAccessWasSet) { $env:INFLUENCER_CAMOFOX_ACCESS_SECRET } else { $null }
+$outerAdminOriginal = if ($outerAdminWasSet) { $env:INFLUENCER_CAMOFOX_ADMIN_SECRET } else { $null }
+
+try {
+    # Compose reparses post_start interpolation for ps/exec/status/down too. Keep
+    # inert placeholders present outside up/redeploy so those commands do not
+    # require or expose the real Camofox secrets. Invoke-ComposeUp temporarily
+    # replaces these placeholders with the DPAPI-decrypted values only while
+    # the post_start hooks write them into tmpfs.
+    $env:INFLUENCER_CAMOFOX_ACCESS_SECRET = "compose-config-only"
+    $env:INFLUENCER_CAMOFOX_ADMIN_SECRET = "compose-config-only"
+
 switch ($Action) {
     "Up" {
         Invoke-ComposeUp
@@ -456,5 +470,18 @@ switch ($Action) {
         if ($LASTEXITCODE -ne 0) { throw "Container unit smoke failed." }
         & docker compose -f $Compose exec -T influencerresearch python tiktok_camofox_smoke.py
         if ($LASTEXITCODE -ne 0) { throw "TikTok/Camofox smoke failed." }
+    }
+}
+}
+finally {
+    if ($outerAccessWasSet) {
+        $env:INFLUENCER_CAMOFOX_ACCESS_SECRET = $outerAccessOriginal
+    } else {
+        Remove-Item Env:INFLUENCER_CAMOFOX_ACCESS_SECRET -ErrorAction SilentlyContinue
+    }
+    if ($outerAdminWasSet) {
+        $env:INFLUENCER_CAMOFOX_ADMIN_SECRET = $outerAdminOriginal
+    } else {
+        Remove-Item Env:INFLUENCER_CAMOFOX_ADMIN_SECRET -ErrorAction SilentlyContinue
     }
 }

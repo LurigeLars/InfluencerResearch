@@ -86,6 +86,22 @@ class LocalRuntimeNamespaceTests(unittest.TestCase):
         self.assertIn("/run/camofox-secrets/access_key", compose)
         self.assertIn("/run/camofox-secrets/admin_key", compose)
         self.assertIn("post_start:", compose)
+        self.assertIn(
+            '$env:INFLUENCER_CAMOFOX_ACCESS_SECRET = "compose-config-only"',
+            runtime,
+        )
+        self.assertIn(
+            '$env:INFLUENCER_CAMOFOX_ADMIN_SECRET = "compose-config-only"',
+            runtime,
+        )
+        self.assertIn(
+            "Remove-Item Env:INFLUENCER_CAMOFOX_ACCESS_SECRET",
+            runtime,
+        )
+        self.assertIn(
+            "Remove-Item Env:INFLUENCER_CAMOFOX_ADMIN_SECRET",
+            runtime,
+        )
 
     def test_smoke_rehydrates_ephemeral_runtime_secrets(self) -> None:
         runtime = (BASE / "scripts/runtime.ps1").read_text(encoding="utf-8")
