@@ -49,6 +49,7 @@ STORY_OCR_MIN_WORDS = 8
 STORY_OCR_MIN_CHARS = 48
 STORY_OCR_MIN_MEANINGFUL_RATIO = 0.60
 STORY_OCR_MAX_NOISE_RATIO = 0.30
+STORY_OCR_MAX_FRAGMENTED_LINE_RATIO = 0.40
 
 
 def canonical_instagram_ephemeral_url(value: str) -> str:
@@ -825,6 +826,46 @@ def _story_evidence_text_sufficient(text: str) -> bool:
     return len(text.split()) >= STORY_OCR_MIN_WORDS or len(text) >= STORY_OCR_MIN_CHARS
 
 
+def _story_ocr_fragmented_line_ratio(text: str) -> float:
+    """Estimate page-level OCR fragmentation without requiring a language dictionary."""
+    lines = [line.strip() for line in str(text or "").splitlines() if line.strip()]
+    if not lines:
+        return 1.0
+
+    valid_short_words = {"a", "i", "ai", "us", "uk", "eu", "v", "ma"}
+    fragmented = 0
+    for line in lines:
+        tokens = re.findall(r"\S+", line)
+        alpha_tokens: list[str] = []
+        suspicious_short = 0
+        for token in tokens:
+            letters = re.sub(r"[^A-Za-zÅÄÖåäö]", "", token)
+            if not letters:
+                continue
+            alpha_tokens.append(letters)
+            if len(letters) <= 2 and letters.casefold() not in valid_short_words:
+                suspicious_short += 1
+
+        short_ratio = suspicious_short / max(1, len(alpha_tokens))
+        unusual_symbols = sum(
+            1
+            for char in line
+            if not (
+                char.isalnum()
+                or char.isspace()
+                or char in ".,:%+-/@()'’"
+            )
+        )
+        symbol_ratio = unusual_symbols / max(1, len(line))
+        if (
+            (len(alpha_tokens) >= 2 and short_ratio >= 0.40)
+            or symbol_ratio > 0.15
+        ):
+            fragmented += 1
+
+    return fragmented / len(lines)
+
+
 def _story_ocr_text_sufficient(text: str) -> bool:
     """Require enough OCR text and reject symbol-heavy / fragmented output."""
     text = str(text or "").strip()
@@ -845,9 +886,11 @@ def _story_ocr_text_sufficient(text: str) -> bool:
     ]
     meaningful_ratio = len(meaningful) / len(tokens)
     noise_ratio = len(noise) / len(tokens)
+    fragmented_line_ratio = _story_ocr_fragmented_line_ratio(text)
     return (
         meaningful_ratio >= STORY_OCR_MIN_MEANINGFUL_RATIO
         and noise_ratio <= STORY_OCR_MAX_NOISE_RATIO
+        and fragmented_line_ratio <= STORY_OCR_MAX_FRAGMENTED_LINE_RATIO
     )
 
 
