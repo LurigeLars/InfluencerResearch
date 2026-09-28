@@ -332,6 +332,16 @@ def extract_image_evidence_ollama(
             if not line or lower in {"visible text", "textual evidence", "visual evidence"}:
                 continue
             if (
+                lower.startswith("watch full reel")
+                or lower.startswith("reply to ")
+                or lower == "see translation"
+                or re.fullmatch(
+                    r"[a-z0-9._]{2,64}\s*(?:[◉•]\s*)?\d{1,3}[smhdw]",
+                    lower,
+                )
+            ):
+                continue
+            if (
                 lower.startswith("the image shows")
                 or lower.startswith("the screenshot shows")
                 or lower.startswith("the image displays")
