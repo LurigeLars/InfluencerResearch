@@ -218,6 +218,68 @@ class StoryLocalOcrTests(unittest.TestCase):
             self.assertEqual(result["ollama_completed"], 1)
             gemini.assert_not_called()
 
+    def test_existing_ollama_without_current_contract_is_reprocessed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self._manifest(root)
+            item = manifest["items"]["story-1"]
+            item.update({
+                "visual_description": "Old local model evidence that looks plausible but predates grounding",
+                "visual_description_status": "DONE",
+                "visual_description_source": "OLLAMA_STORY_SCREENSHOT_EVIDENCE",
+                "visual_description_provider": "ollama",
+            })
+            with patch("ephemeral_ingest.extract_story_text_local_ocr", return_value={
+                "text": "tiny",
+                "source": "LOCAL_OCR",
+                "provider": "tesseract",
+                "model": "eng+swe",
+            }), patch("ephemeral_ingest.extract_image_evidence_ollama", return_value={
+                "text": "Corrected visible Story text with enough grounded words for analysis",
+                "source": "OLLAMA_STORY_SCREENSHOT_EVIDENCE",
+                "provider": "ollama",
+                "model": "gemma3-12b-16k",
+                "contract": ei.OLLAMA_VISUAL_CONTRACT,
+            }), patch("ephemeral_ingest.extract_image_evidence_gemini") as gemini:
+                result = ei.enrich_story_visual_evidence(root, manifest, ["story-1"])
+
+            self.assertEqual(result["ollama_completed"], 1)
+            self.assertEqual(item["visual_description_contract"], ei.OLLAMA_VISUAL_CONTRACT)
+            gemini.assert_not_called()
+
+    def test_gemini_rate_limit_is_deferred_not_fatal(self):
+        class RateLimitError(Exception):
+            code = 429
+            status = "RESOURCE_EXHAUSTED"
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self._manifest(root)
+            with patch("ephemeral_ingest.extract_story_text_local_ocr", return_value={
+                "text": "tiny",
+                "source": "LOCAL_OCR",
+                "provider": "tesseract",
+                "model": "eng+swe",
+            }), patch("ephemeral_ingest.extract_image_evidence_ollama", return_value={
+                "text": "",
+                "source": "OLLAMA_STORY_SCREENSHOT_EVIDENCE",
+                "provider": "ollama",
+                "model": "gemma3-12b-16k",
+                "contract": ei.OLLAMA_VISUAL_CONTRACT,
+            }), patch(
+                "ephemeral_ingest.extract_image_evidence_gemini",
+                side_effect=RateLimitError(),
+            ):
+                result = ei.enrich_story_visual_evidence(root, manifest, ["story-1"])
+
+            item = manifest["items"]["story-1"]
+            self.assertEqual(item["visual_description_status"], "DEFERRED")
+            self.assertEqual(item["visual_description_deferred_reason"], "PROVIDER_RATE_LIMIT")
+            self.assertEqual(result["errors"], [])
+            self.assertEqual(len(result["provider_events"]), 1)
+            self.assertIn("ollama_total_ms", result["timings"])
+            self.assertIn("gemini_total_ms", result["timings"])
+
 
 if __name__ == "__main__":
     unittest.main()
