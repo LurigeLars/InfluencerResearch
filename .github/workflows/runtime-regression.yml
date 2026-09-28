@@ -47,6 +47,7 @@ jobs:
           creator_monitor.py
           creator_registry.py
           creator_recent_check.py
+          influencerresearch_mcp.py
       - name: Run runtime secret regression tests
         run: >-
           python -m unittest -v
