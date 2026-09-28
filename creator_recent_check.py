@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -18,10 +19,11 @@ import tiktok_camofox_sync as tts
 import instagram_camofox_public_smoke as instagram_smoke
 import ephemeral_ingest as ephemeral
 
-RECENT_CHECK_VERSION = "0.2.7"
+RECENT_CHECK_VERSION = "0.2.8"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
+YOUTUBE_METADATA_PROBE_WORKERS = 4
 MAX_ANALYSIS_EVIDENCE_CHARS = 6000
 STOCKHOLM_TZ = ZoneInfo("Europe/Stockholm")
 
@@ -160,11 +162,9 @@ def select_profiles_and_sources(root: Path, scope: str, creator_keys: list[str])
     return out
 
 
-def _youtube_probe_missing(entries: list[dict]) -> tuple[dict[str, str], dict]:
-    missing = [e for e in entries if not e.get("published_at")]
-    if not missing:
+def _probe_youtube_metadata_batch(urls: list[str]) -> tuple[dict[str, str], dict]:
+    if not urls:
         return {}, {"attempted": 0, "resolved": 0, "returncode": 0, "diagnostic_tail": ""}
-    urls = [str(e["url"]) for e in missing]
     cmd = [
         sys.executable, "-m", "yt_dlp",
         "--ignore-config", "--skip-download", "--no-playlist", "--dump-json",
@@ -173,7 +173,13 @@ def _youtube_probe_missing(entries: list[dict]) -> tuple[dict[str, str], dict]:
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=240)
     except subprocess.TimeoutExpired as exc:
-        return {}, {"attempted": len(urls), "resolved": 0, "returncode": 124, "diagnostic_tail": str(exc)[-2000:]}
+        return {}, {
+            "attempted": len(urls),
+            "resolved": 0,
+            "returncode": 124,
+            "diagnostic_tail": str(exc)[-2000:],
+        }
+
     resolved: dict[str, str] = {}
     for line in (p.stdout or "").splitlines():
         try:
@@ -191,6 +197,60 @@ def _youtube_probe_missing(entries: list[dict]) -> tuple[dict[str, str], dict]:
         "diagnostic_tail": (p.stderr or "")[-2000:],
     }
 
+
+def _youtube_probe_missing(entries: list[dict]) -> tuple[dict[str, str], dict]:
+    missing = [e for e in entries if not e.get("published_at")]
+    if not missing:
+        return {}, {
+            "attempted": 0,
+            "resolved": 0,
+            "returncode": 0,
+            "diagnostic_tail": "",
+            "worker_count": 0,
+            "batch_count": 0,
+        }
+
+    urls = [str(e["url"]) for e in missing]
+    worker_count = min(YOUTUBE_METADATA_PROBE_WORKERS, len(urls))
+    batches = [urls[index::worker_count] for index in range(worker_count)]
+
+    if worker_count == 1:
+        batch_results = [_probe_youtube_metadata_batch(batches[0])]
+    else:
+        # yt-dlp resolves multiple explicit video URLs serially. Split the complete
+        # coverage set across a small fixed worker pool so recent-check keeps the
+        # same Videos/Shorts/Streams coverage without paying fully serial latency.
+        with ThreadPoolExecutor(
+            max_workers=worker_count,
+            thread_name_prefix="youtube-metadata",
+        ) as executor:
+            batch_results = list(executor.map(_probe_youtube_metadata_batch, batches))
+
+    resolved: dict[str, str] = {}
+    returncodes: list[int] = []
+    diagnostics: list[str] = []
+    for batch_resolved, batch_diag in batch_results:
+        resolved.update(batch_resolved)
+        code = int(batch_diag.get("returncode") or 0)
+        returncodes.append(code)
+        diagnostic = str(batch_diag.get("diagnostic_tail") or "").strip()
+        if diagnostic:
+            diagnostics.append(diagnostic)
+
+    if 124 in returncodes:
+        returncode = 124
+    else:
+        returncode = next((code for code in returncodes if code != 0), 0)
+
+    return resolved, {
+        "attempted": len(urls),
+        "resolved": len(resolved),
+        "returncode": returncode,
+        "diagnostic_tail": "\n--- batch ---\n".join(diagnostics)[-2000:],
+        "worker_count": worker_count,
+        "batch_count": len(batches),
+        "batch_returncodes": returncodes,
+    }
 
 def discover_youtube(profile: dict, source: dict, cutoff: datetime, end: datetime, discovery_limit: int) -> dict:
     target = max(1, int(discovery_limit))

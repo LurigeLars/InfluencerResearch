@@ -65,3 +65,4 @@ jobs:
           test_creator_recent_instagram
           test_creator_registry_runtime_metadata
           test_creator_recent_monitored_instagram
+          test_creator_recent_youtube
