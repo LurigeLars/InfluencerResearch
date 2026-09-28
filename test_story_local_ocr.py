@@ -100,6 +100,34 @@ class StoryLocalOcrTests(unittest.TestCase):
             ollama.assert_called_once()
             gemini.assert_not_called()
 
+    def test_existing_low_quality_local_ocr_is_reprocessed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self._manifest(root)
+            item = manifest["items"]["story-1"]
+            item.update({
+                "visual_description": "Ins agzam x > ~ e f CT a 7 ; | STOP TRADING £3 ; EDGE",
+                "visual_description_status": "DONE",
+                "visual_description_source": "LOCAL_OCR",
+                "visual_description_provider": "tesseract",
+            })
+            with patch("ephemeral_ingest.extract_story_text_local_ocr", return_value={
+                "text": "Ins agzam x > ~ e f CT a 7 ; | STOP TRADING £3 ; EDGE",
+                "source": "LOCAL_OCR",
+                "provider": "tesseract",
+                "model": "eng+swe",
+            }), patch("ephemeral_ingest.extract_image_evidence_ollama", return_value={
+                "text": "WHEN I STOP TRADING PROP TRADER EDGE with a visible chart and labels",
+                "source": "OLLAMA_STORY_SCREENSHOT_EVIDENCE",
+                "provider": "ollama",
+                "model": "gemma3-12b-16k",
+            }), patch("ephemeral_ingest.extract_image_evidence_gemini") as gemini:
+                result = ei.enrich_story_visual_evidence(root, manifest, ["story-1"])
+
+            self.assertEqual(result["ollama_completed"], 1)
+            self.assertEqual(item["visual_description_provider"], "ollama")
+            gemini.assert_not_called()
+
     def test_insufficient_ollama_falls_back_to_gemini(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
