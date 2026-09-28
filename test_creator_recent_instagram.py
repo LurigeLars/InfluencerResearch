@@ -157,8 +157,11 @@ class RecentInstagramTests(unittest.TestCase):
                 5,
             )
 
-            self.assertEqual(len(first), 1)
-            self.assertEqual(second, [])
+            self.assertEqual(len(first["promoted"]), 1)
+            self.assertEqual(len(first["available"]), 1)
+            self.assertEqual(second["promoted"], [])
+            self.assertEqual(len(second["available"]), 1)
+            self.assertEqual(second["reused_existing_count"], 1)
             manifest = json.loads((root / "state" / "manifest.json").read_text(encoding="utf-8"))
             item = manifest["items"]["ig_story_123"]
             self.assertEqual(item["creator"], "registered-key")
@@ -167,6 +170,91 @@ class RecentInstagramTests(unittest.TestCase):
             self.assertEqual(item["source_id"], "story:123")
             self.assertEqual(item["published_at_basis"], "ACTIVE_STORY_OBSERVED_AT")
             self.assertEqual(item["visual_evidence_status"], "DONE")
+
+
+    def test_existing_story_from_superseded_creator_is_reused_and_reattributed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            shot = root / "output" / "example" / "stories" / "screenshots" / "123.png"
+            shot.parent.mkdir(parents=True)
+            shot.write_bytes(b"png")
+
+            ep_path = root / "state" / "ephemeral" / "manifest.json"
+            ep_path.parent.mkdir(parents=True)
+            ep_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "items": {
+                            "STORY:example:123": {
+                                "source_type": "STORY",
+                                "creator": "example",
+                                "evidence_id": "123",
+                                "story_id": "123",
+                                "source_url": "https://www.instagram.com/stories/example/123/",
+                                "observed_at": "2026-09-27T10:00:00+00:00",
+                                "screenshot_file": str(shot.relative_to(root)),
+                                "browser_text": "Story evidence",
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            manifest_path = root / "state" / "manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "items": {
+                            "ig_story_123": {
+                                "creator": "legacy-key",
+                                "source_platform": "INSTAGRAM",
+                                "source_subtype": "STORY",
+                                "source_id": "story:123",
+                                "url": "https://www.instagram.com/stories/example/123/",
+                                "published_at": "2026-09-27T10:00:00+00:00",
+                                "download_status": "DONE",
+                                "transcription_status": "NOT_APPLICABLE",
+                                "screenshot_file": str(shot.relative_to(root)),
+                                "visual_evidence_status": "DONE",
+                                "visual_frame_count": 1,
+                                "research_status": "PENDING",
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            registry = {
+                "schema_version": 1,
+                "creators": {
+                    "canonical-key": {"status": "ACTIVE"},
+                    "legacy-key": {
+                        "status": "DISABLED",
+                        "superseded_by": "canonical-key",
+                    },
+                },
+            }
+            with mock.patch.object(crc, "load_registry", return_value=registry):
+                result = crc._promote_story_items(
+                    root,
+                    {"creator_key": "canonical-key"},
+                    "example",
+                    datetime(2026, 9, 20, tzinfo=timezone.utc),
+                    5,
+                )
+
+            self.assertEqual(result["promoted"], [])
+            self.assertEqual(len(result["available"]), 1)
+            self.assertEqual(result["reused_existing_count"], 1)
+            self.assertEqual(result["reattributed_count"], 1)
+            updated = json.loads(manifest_path.read_text(encoding="utf-8"))
+            item = updated["items"]["ig_story_123"]
+            self.assertEqual(item["creator"], "canonical-key")
+            self.assertEqual(item["creator_key_history"], ["legacy-key"])
 
 
 if __name__ == "__main__":
