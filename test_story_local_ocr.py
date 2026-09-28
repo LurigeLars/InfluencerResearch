@@ -22,6 +22,18 @@ class StoryLocalOcrTests(unittest.TestCase):
         self.assertIn("tesseract", args[0])
         self.assertEqual(kwargs["timeout"], ei.STORY_OCR_TIMEOUT_SECONDS)
 
+    def test_ocr_quality_gate_rejects_symbol_heavy_garbage(self):
+        noisy = (
+            "Ins agzam sa x > ~ e f CT a 7 dä AA — 7 ; | +. 4 __WHENI "
+            "=) STOP TRADING | £3, pROPTRADER ; [fins EDGE ‘ (— vv"
+        )
+        self.assertFalse(ei._story_ocr_text_sufficient(noisy))
+        self.assertTrue(
+            ei._story_ocr_text_sufficient(
+                "Marknaden har pratat om säkerheten kring AI-agenter i flera veckor och i dag kom Nvidias svar."
+            )
+        )
+
     def _manifest(self, root: Path, *, deferred=False):
         shot = root / "shot.png"
         shot.write_bytes(b"not-a-real-png")
@@ -38,7 +50,7 @@ class StoryLocalOcrTests(unittest.TestCase):
             })
         return {"items": {"story-1": item}}
 
-    def test_sufficient_local_ocr_skips_gemini(self):
+    def test_sufficient_local_ocr_skips_ollama_and_gemini(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manifest = self._manifest(root)
@@ -47,7 +59,9 @@ class StoryLocalOcrTests(unittest.TestCase):
                 "source": "LOCAL_OCR",
                 "provider": "tesseract",
                 "model": "eng+swe",
-            }), patch("ephemeral_ingest.extract_image_evidence_gemini") as gemini:
+            }), patch("ephemeral_ingest.extract_image_evidence_ollama") as ollama, patch(
+                "ephemeral_ingest.extract_image_evidence_gemini"
+            ) as gemini:
                 result = ei.enrich_story_visual_evidence(root, manifest, ["story-1"])
 
             item = manifest["items"]["story-1"]
@@ -55,10 +69,38 @@ class StoryLocalOcrTests(unittest.TestCase):
             self.assertEqual(item["visual_description_source"], "LOCAL_OCR")
             self.assertEqual(item["visual_description_provider"], "tesseract")
             self.assertEqual(result["ocr_completed"], 1)
+            self.assertEqual(result["ollama_attempted"], 0)
             self.assertEqual(result["attempted"], 0)
+            ollama.assert_not_called()
             gemini.assert_not_called()
 
-    def test_insufficient_local_ocr_falls_back_to_gemini(self):
+    def test_poor_ocr_is_recovered_by_ollama_before_gemini(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self._manifest(root)
+            with patch("ephemeral_ingest.extract_story_text_local_ocr", return_value={
+                "text": "Ins agzam x > ~ e f CT a 7 ; | STOP TRADING £3 ; EDGE",
+                "source": "LOCAL_OCR",
+                "provider": "tesseract",
+                "model": "eng+swe",
+            }), patch("ephemeral_ingest.extract_image_evidence_ollama", return_value={
+                "text": "WHEN I STOP TRADING PROP TRADER EDGE with a visible chart and labels",
+                "source": "OLLAMA_STORY_SCREENSHOT_EVIDENCE",
+                "provider": "ollama",
+                "model": "gemma3-12b-16k",
+            }) as ollama, patch("ephemeral_ingest.extract_image_evidence_gemini") as gemini:
+                result = ei.enrich_story_visual_evidence(root, manifest, ["story-1"])
+
+            item = manifest["items"]["story-1"]
+            self.assertEqual(item["visual_description_provider"], "ollama")
+            self.assertEqual(result["ocr_insufficient"], 1)
+            self.assertEqual(result["ollama_attempted"], 1)
+            self.assertEqual(result["ollama_completed"], 1)
+            self.assertEqual(result["attempted"], 0)
+            ollama.assert_called_once()
+            gemini.assert_not_called()
+
+    def test_insufficient_ollama_falls_back_to_gemini(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manifest = self._manifest(root)
@@ -67,8 +109,13 @@ class StoryLocalOcrTests(unittest.TestCase):
                 "source": "LOCAL_OCR",
                 "provider": "tesseract",
                 "model": "eng+swe",
+            }), patch("ephemeral_ingest.extract_image_evidence_ollama", return_value={
+                "text": "tiny",
+                "source": "OLLAMA_STORY_SCREENSHOT_EVIDENCE",
+                "provider": "ollama",
+                "model": "gemma3-12b-16k",
             }), patch("ephemeral_ingest.extract_image_evidence_gemini", return_value={
-                "text": "rich visual evidence with enough information",
+                "text": "rich visual evidence with enough information for downstream analysis",
                 "source": "GEMINI_STORY_SCREENSHOT_EVIDENCE",
                 "provider": "gemini",
                 "model": "test-model",
@@ -76,31 +123,43 @@ class StoryLocalOcrTests(unittest.TestCase):
                 result = ei.enrich_story_visual_evidence(root, manifest, ["story-1"])
 
             self.assertEqual(result["ocr_insufficient"], 1)
+            self.assertEqual(result["ollama_insufficient"], 1)
             self.assertEqual(result["attempted"], 1)
             self.assertEqual(manifest["items"]["story-1"]["visual_description_provider"], "gemini")
             gemini.assert_called_once()
 
-    def test_local_ocr_can_recover_during_gemini_cooldown(self):
+    def test_ollama_can_recover_during_gemini_cooldown(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             manifest = self._manifest(root, deferred=True)
             with patch("ephemeral_ingest.extract_story_text_local_ocr", return_value={
-                "text": "one two three four five six seven eight",
+                "text": "tiny",
                 "source": "LOCAL_OCR",
                 "provider": "tesseract",
                 "model": "eng+swe",
+            }), patch("ephemeral_ingest.extract_image_evidence_ollama", return_value={
+                "text": "local multimodal evidence is sufficiently detailed for analysis now",
+                "source": "OLLAMA_STORY_SCREENSHOT_EVIDENCE",
+                "provider": "ollama",
+                "model": "gemma3-12b-16k",
             }), patch("ephemeral_ingest.extract_image_evidence_gemini") as gemini:
-                result = ei.enrich_story_visual_evidence(root, manifest, ["story-1"], circuit_state={
-                    "open": True,
-                    "reason": "PROVIDER_RATE_LIMIT",
-                    "retry_after": "2099-01-01T00:00:00+00:00",
-                    "retry_after_source": "FALLBACK",
-                })
+                result = ei.enrich_story_visual_evidence(
+                    root,
+                    manifest,
+                    ["story-1"],
+                    circuit_state={
+                        "open": True,
+                        "reason": "PROVIDER_RATE_LIMIT",
+                        "retry_after": "2099-01-01T00:00:00+00:00",
+                        "retry_after_source": "FALLBACK",
+                    },
+                )
 
             item = manifest["items"]["story-1"]
             self.assertEqual(item["visual_description_status"], "DONE")
+            self.assertEqual(item["visual_description_provider"], "ollama")
             self.assertNotIn("visual_description_retry_after", item)
-            self.assertEqual(result["ocr_completed"], 1)
+            self.assertEqual(result["ollama_completed"], 1)
             gemini.assert_not_called()
 
 
