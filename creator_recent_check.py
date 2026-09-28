@@ -18,7 +18,7 @@ import tiktok_camofox_sync as tts
 import instagram_camofox_public_smoke as instagram_smoke
 import ephemeral_ingest as ephemeral
 
-RECENT_CHECK_VERSION = "0.2.3"
+RECENT_CHECK_VERSION = "0.2.4"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
@@ -1105,13 +1105,26 @@ def _main_impl() -> int:
             })
         queue_snapshot = load_json(
             root / "state" / "research_queue.json",
-            {"items": [], "insufficient_content_items": []},
+            {
+                "items": [],
+                "insufficient_content_items": [],
+                "deferred_extraction_items": [],
+                "extraction_error_items": [],
+                "pending_extraction_items": [],
+            },
         )
-        insufficient_by_key = {
-            str(item.get("queue_id") or ""): item
-            for item in (queue_snapshot.get("insufficient_content_items") or [])
-            if isinstance(item, dict) and item.get("queue_id")
-        }
+
+        def by_queue_id(field: str) -> dict[str, dict]:
+            return {
+                str(item.get("queue_id") or ""): item
+                for item in (queue_snapshot.get(field) or [])
+                if isinstance(item, dict) and item.get("queue_id")
+            }
+
+        insufficient_by_key = by_queue_id("insufficient_content_items")
+        deferred_extraction_by_key = by_queue_id("deferred_extraction_items")
+        extraction_error_by_key = by_queue_id("extraction_error_items")
+        pending_extraction_by_key = by_queue_id("pending_extraction_items")
 
         # Pending analysis can include a recent item ingested by an earlier run.
         # Return those targets too; do not require a fresh download in this run.
@@ -1128,19 +1141,33 @@ def _main_impl() -> int:
         analysis_targets = _queue_targets(root, analysis_candidate_keys)
         completed_keys = {x["queue_id"] for x in analysis_targets}
 
-        for item in all_recent:
+        def annotate_content_state(item: dict) -> None:
             item["queued_for_analysis"] = item["item_key"] in completed_keys
-            insufficient = insufficient_by_key.get(item["item_key"])
-            if insufficient:
-                item["analysis_content_status"] = "INSUFFICIENT_CONTENT"
-                item["analysis_content_reason"] = insufficient.get("reason")
-        for item in story_available:
-            item["queued_for_analysis"] = item["item_key"] in completed_keys
-            insufficient = insufficient_by_key.get(item["item_key"])
-            if insufficient:
-                item["analysis_content_status"] = "INSUFFICIENT_CONTENT"
-                item["analysis_content_reason"] = insufficient.get("reason")
+            qid = item["item_key"]
+            candidates = (
+                ("INSUFFICIENT_CONTENT", insufficient_by_key.get(qid)),
+                ("DEFERRED_EXTRACTION", deferred_extraction_by_key.get(qid)),
+                ("EXTRACTION_ERROR", extraction_error_by_key.get(qid)),
+                ("PENDING_EXTRACTION", pending_extraction_by_key.get(qid)),
+            )
+            for status_name, state_item in candidates:
+                if state_item:
+                    item["analysis_content_status"] = status_name
+                    item["analysis_content_reason"] = state_item.get("reason")
+                    item["analysis_content_retry_after"] = state_item.get(
+                        "visual_description_retry_after"
+                    )
+                    item["analysis_content_error"] = state_item.get(
+                        "visual_description_error"
+                    )
+                    break
 
+        for item in all_recent:
+            annotate_content_state(item)
+        for item in story_available:
+            annotate_content_state(item)
+
+        recent_content_items = all_recent + story_available
         insufficient_recent = [
             {
                 "item_key": item["item_key"],
@@ -1150,14 +1177,40 @@ def _main_impl() -> int:
                 "published_at": item.get("published_at"),
                 "reason": item.get("analysis_content_reason"),
             }
-            for item in (all_recent + story_available)
+            for item in recent_content_items
             if item.get("analysis_content_status") == "INSUFFICIENT_CONTENT"
         ]
+
+        def compact_nonready(status_name: str) -> list[dict]:
+            return [
+                {
+                    "item_key": item["item_key"],
+                    "creator_key": item.get("creator_key"),
+                    "platform": item.get("platform"),
+                    "source_id": item.get("source_id"),
+                    "published_at": item.get("published_at"),
+                    "reason": item.get("analysis_content_reason"),
+                    "retry_after": item.get("analysis_content_retry_after"),
+                    "error": item.get("analysis_content_error"),
+                }
+                for item in recent_content_items
+                if item.get("analysis_content_status") == status_name
+            ]
+
+        deferred_extraction_recent = compact_nonready("DEFERRED_EXTRACTION")
+        extraction_error_recent = compact_nonready("EXTRACTION_ERROR")
+        pending_extraction_recent = compact_nonready("PENDING_EXTRACTION")
         if insufficient_recent:
             errors.append({
                 "stage": "CONTENT_EXTRACTION",
                 "error": f"INSUFFICIENT_CONTENT:{len(insufficient_recent)}",
                 "items": insufficient_recent[:100],
+            })
+        if extraction_error_recent:
+            errors.append({
+                "stage": "CONTENT_EXTRACTION",
+                "error": f"EXTRACTION_ERROR:{len(extraction_error_recent)}",
+                "items": extraction_error_recent[:100],
             })
 
         incomplete_windows = [
@@ -1167,7 +1220,16 @@ def _main_impl() -> int:
         if incomplete_windows:
             errors.append({"stage": "COVERAGE", "error": "WINDOW_MAY_BE_TRUNCATED", "sources": incomplete_windows})
 
-        final_state = "COMPLETE" if not errors else ("PARTIAL" if discoveries else "FAILED")
+        extraction_pending = bool(
+            deferred_extraction_recent
+            or extraction_error_recent
+            or pending_extraction_recent
+        )
+        final_state = (
+            "COMPLETE"
+            if not errors and not extraction_pending
+            else ("PARTIAL" if discoveries else "FAILED")
+        )
         status = {
             "schema_version": 1,
             "recent_check_version": RECENT_CHECK_VERSION,
@@ -1200,6 +1262,12 @@ def _main_impl() -> int:
             "queued_for_analysis_count": len(analysis_targets),
             "insufficient_content_count": len(insufficient_recent),
             "insufficient_content_items": insufficient_recent[:100],
+            "deferred_extraction_count": len(deferred_extraction_recent),
+            "deferred_extraction_items": deferred_extraction_recent[:100],
+            "extraction_error_count": len(extraction_error_recent),
+            "extraction_error_items": extraction_error_recent[:100],
+            "pending_extraction_count": len(pending_extraction_recent),
+            "pending_extraction_items": pending_extraction_recent[:100],
             "auto_ingest": True,
             "auto_analysis_contract": {
                 "enabled": True,
