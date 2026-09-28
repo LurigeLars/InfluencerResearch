@@ -8,9 +8,30 @@ from pathlib import Path
 from types import ModuleType
 
 # This unit only exercises the queue-target projection. Stub browser-only modules
-# so CI does not need Playwright just to import creator_recent_check.
-sys.modules.setdefault("instagram_camofox_public_smoke", ModuleType("instagram_camofox_public_smoke"))
-sys.modules.setdefault("ephemeral_ingest", ModuleType("ephemeral_ingest"))
+# so CI does not need Playwright just to import creator_recent_check. Keep the stub
+# contract complete enough that later tests in the same unittest process are not
+# poisoned by a half-empty module in sys.modules.
+instagram_stub = sys.modules.setdefault(
+    "instagram_camofox_public_smoke",
+    ModuleType("instagram_camofox_public_smoke"),
+)
+if not hasattr(instagram_stub, "extract_reel_urls"):
+    instagram_stub.extract_reel_urls = (
+        lambda url: [url] if "/reel/" in str(url) else []
+    )
+if not hasattr(instagram_stub, "probe_public_session"):
+    instagram_stub.probe_public_session = lambda *args, **kwargs: {}
+
+ephemeral_stub = sys.modules.setdefault(
+    "ephemeral_ingest",
+    ModuleType("ephemeral_ingest"),
+)
+if not hasattr(ephemeral_stub, "run_one"):
+    ephemeral_stub.run_one = lambda *args, **kwargs: {
+        "state": "DONE",
+        "capture": {"reason": "NO_ACTIVE_STORY_OR_STORY_VIEW_REDIRECTED"},
+        "errors": [],
+    }
 
 import creator_recent_check as crc
 
