@@ -836,6 +836,7 @@ def _queue_targets(root: Path, item_keys: set[str]) -> list[dict]:
         evidence = str(
             item.get("analysis_evidence_text")
             or item.get("transcript_text")
+            or item.get("visual_description")
             or item.get("visible_text")
             or item.get("caption")
             or ""
