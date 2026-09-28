@@ -19,7 +19,7 @@ from playwright.sync_api import sync_playwright
 from transcription_backend import DEFAULT_GEMINI_VISUAL_MODEL, extract_image_evidence_gemini, transcribe_video
 
 
-APP_VERSION = "0.4.8"
+APP_VERSION = "0.4.9"
 STORY_URL_RE = re.compile(r"/stories/(?P<user>[^/]+)/(?P<id>\d+)/?")
 HIGHLIGHT_URL_RE = re.compile(r"/stories/highlights/(?P<id>\d+)/?")
 STRICT_STORY_ROOT_PATH_RE = re.compile(r"^/stories/[A-Za-z0-9._-]{1,64}/?$")
@@ -311,6 +311,39 @@ def invalidate_legacy_unstable_story_evidence(manifest: dict) -> int:
     return invalidated
 
 
+def backfill_story_identity_metadata(
+    item: dict,
+    *,
+    story_id: str | None,
+    identity_basis: str,
+    media_identity_path: str | None,
+    source_url: str,
+) -> bool:
+    """Add newly observable identity metadata without rewriting captured evidence."""
+    changed = False
+    updates = {
+        "story_id": story_id,
+        "story_identity_basis": identity_basis,
+        "media_identity_path": media_identity_path,
+    }
+    for field, value in updates.items():
+        if value is None:
+            continue
+        if item.get(field) in {None, ""}:
+            item[field] = value
+            changed = True
+
+    # Prefer a concrete numeric Story URL over an older root URL, but preserve
+    # first-observed timestamps/screenshots and all analysis evidence.
+    if story_id and str(item.get("source_url") or "") != source_url:
+        item["source_url"] = source_url
+        changed = True
+
+    if changed:
+        item["identity_metadata_updated_at"] = utc_now()
+    return changed
+
+
 def retire_root_media_aliases_for_numeric_story(
     manifest: dict,
     *,
@@ -576,6 +609,15 @@ def capture_story_frames(
             if key not in visited_item_keys:
                 visited_item_keys.append(key)
             if key in manifest["items"]:
+                existing_item = manifest["items"][key]
+                if isinstance(existing_item, dict):
+                    backfill_story_identity_metadata(
+                        existing_item,
+                        story_id=story_id,
+                        identity_basis=identity_basis,
+                        media_identity_path=media_identity_path,
+                        source_url=page.url,
+                    )
                 seen_existing += 1
             else:
                 ext = ".png"
