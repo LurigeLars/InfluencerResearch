@@ -1689,19 +1689,49 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
             })
             continue
 
+        visual_text = None
+        transcript_text = str(transcription.get("text") or "").strip()
+        if not _text_is_analysis_ready(transcript_text):
+            try:
+                visual_text = extract_visible_text(
+                    root,
+                    creator_key,
+                    Path(download["media_file"]),
+                )
+            except Exception as exc:
+                visual_text = {
+                    "ok": False,
+                    "source": "GEMINI_VIDEO_VISIBLE_TEXT",
+                    "text": "",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+
         record = update_main_manifest(
             root,
             creator_key=creator_key,
             url=url,
             download=download,
             transcription=transcription,
+            visual_text=visual_text,
         )
+
+        if visual_text is not None and not visual_text.get("ok"):
+            failures.append({
+                "video_id": vid,
+                "url": url,
+                "stage": "visual_text",
+                "detail": visual_text.get("error"),
+            })
+            continue
+
         completed.append({
             "video_id": vid,
             "url": url,
             "download_source": download.get("source"),
             "media_file": record["media_file"],
             "transcript_txt": record["transcript_txt"],
+            "visual_text_status": record.get("visual_text_status"),
+            "visual_text_txt": record.get("visual_text_txt"),
         })
 
     return {
