@@ -1241,7 +1241,7 @@ def transcribe(
 
     # Keep a useful existing transcript, but retry historical empty/thin transcripts
     # through the shared Gemini -> Faster-Whisper backend.
-    if txt_path.exists() && json_path.exists():
+    if txt_path.exists() and json_path.exists():
         existing_text = txt_path.read_text(encoding="utf-8", errors="replace").strip()
         if _text_is_analysis_ready(existing_text):
             return {
