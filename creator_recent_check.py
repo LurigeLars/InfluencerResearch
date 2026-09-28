@@ -1446,6 +1446,7 @@ def _main_impl() -> int:
             "ocr_completed": 0,
             "ollama_attempted": 0,
             "ollama_completed": 0,
+            "ollama_cached_insufficient": 0,
             "gemini_attempted": 0,
             "completed": 0,
             "deferred": 0,
@@ -1464,6 +1465,9 @@ def _main_impl() -> int:
                 "ocr_completed": int(visual.get("ocr_completed") or 0),
                 "ollama_attempted": int(visual.get("ollama_attempted") or 0),
                 "ollama_completed": int(visual.get("ollama_completed") or 0),
+                "ollama_cached_insufficient": int(
+                    visual.get("ollama_cached_insufficient") or 0
+                ),
                 "gemini_attempted": int(visual.get("attempted") or 0),
                 "completed": int(visual.get("completed") or 0),
                 "deferred": int(visual.get("deferred") or 0),
@@ -1478,7 +1482,7 @@ def _main_impl() -> int:
             visual_by_creator.append(row)
             for key in (
                 "ocr_attempted", "ocr_completed", "ollama_attempted", "ollama_completed",
-                "gemini_attempted", "completed", "deferred",
+                "ollama_cached_insufficient", "gemini_attempted", "completed", "deferred",
                 "provider_event_count", "error_count",
             ):
                 visual_totals[key] += int(row[key])
