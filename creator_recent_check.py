@@ -18,7 +18,7 @@ import tiktok_camofox_sync as tts
 import instagram_camofox_public_smoke as instagram_smoke
 import ephemeral_ingest as ephemeral
 
-RECENT_CHECK_VERSION = "0.2.6"
+RECENT_CHECK_VERSION = "0.2.7"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
@@ -206,9 +206,22 @@ def discover_youtube(profile: dict, source: dict, cutoff: datetime, end: datetim
     probe_diag: dict = {}
     attempts: list[dict] = []
 
+    discovery_timings: list[dict] = []
     while True:
+        enumeration_clock = time.perf_counter()
         entries, diag = yte.enumerate_channel(source["profile_url"], limit=target)
+        enumeration_ms = round((time.perf_counter() - enumeration_clock) * 1000, 1)
+
+        probe_clock = time.perf_counter()
         probed, probe_diag = _youtube_probe_missing(entries)
+        metadata_probe_ms = round((time.perf_counter() - probe_clock) * 1000, 1)
+        discovery_timings.append({
+            "requested_limit": target,
+            "enumeration_ms": enumeration_ms,
+            "metadata_probe_ms": metadata_probe_ms,
+            "metadata_probe_attempted": int(probe_diag.get("attempted") or 0),
+            "metadata_probe_resolved": int(probe_diag.get("resolved") or 0),
+        })
 
         known_times: list[datetime] = []
         for entry in entries:
@@ -283,6 +296,7 @@ def discover_youtube(profile: dict, source: dict, cutoff: datetime, end: datetim
         "attribution_excluded_ids": attribution_excluded_ids[:100],
         "discovery": diag,
         "metadata_probe": probe_diag,
+        "timings": discovery_timings,
     }
 
 
@@ -998,6 +1012,26 @@ def _main_impl() -> int:
                     else:
                         continue
                     discoveries.append(d)
+                    if platform == "YOUTUBE":
+                        for pass_index, yt_timing in enumerate(d.get("timings") or [], start=1):
+                            stage_timings.append({
+                                "stage": "YOUTUBE_ENUMERATION",
+                                "creator_key": profile["creator_key"],
+                                "platform": platform,
+                                "pass_index": pass_index,
+                                "requested_limit": yt_timing.get("requested_limit"),
+                                "duration_ms": float(yt_timing.get("enumeration_ms") or 0.0),
+                            })
+                            stage_timings.append({
+                                "stage": "YOUTUBE_METADATA_PROBE",
+                                "creator_key": profile["creator_key"],
+                                "platform": platform,
+                                "pass_index": pass_index,
+                                "requested_limit": yt_timing.get("requested_limit"),
+                                "item_count": yt_timing.get("metadata_probe_attempted"),
+                                "resolved_count": yt_timing.get("metadata_probe_resolved"),
+                                "duration_ms": float(yt_timing.get("metadata_probe_ms") or 0.0),
+                            })
                     if d.get("missing_publish_time_ids"):
                         errors.append({
                             "creator_key": profile["creator_key"], "platform": platform,
