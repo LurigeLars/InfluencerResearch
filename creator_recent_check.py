@@ -589,6 +589,8 @@ def _promote_story_items(
             continue
         if str(item.get("source_type") or "").upper() != "STORY":
             continue
+        if str(item.get("research_status") or "").upper() == "INVALID":
+            continue
         if str(item.get("creator") or "").casefold() != handle.casefold():
             continue
         try:
@@ -675,6 +677,8 @@ def _promote_story_items(
             "published_at": observed.isoformat(),
             "published_at_basis": "ACTIVE_STORY_OBSERVED_AT",
             "observed_at": observed.isoformat(),
+            "story_identity_basis": item.get("story_identity_basis"),
+            "media_identity_path": item.get("media_identity_path"),
             "download_status": "DONE",
             "downloaded_at": observed.isoformat(),
             "transcription_status": "DONE" if has_transcript else "NOT_APPLICABLE",
