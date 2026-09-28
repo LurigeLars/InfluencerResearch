@@ -15,7 +15,7 @@ if not hasattr(playwright_sync, "sync_playwright"):
     playwright_sync.sync_playwright = lambda: None
 playwright_pkg.sync_api = playwright_sync
 
-from ephemeral_ingest import extract_story_identity, invalidate_legacy_unstable_story_evidence, normalize_creator_handle
+from ephemeral_ingest import extract_story_identity, invalidate_legacy_unstable_story_evidence, normalize_creator_handle, retire_root_media_aliases_for_numeric_story
 from instagram_ingest import safe_creator
 
 
@@ -95,6 +95,48 @@ class InstagramPathSegmentTests(unittest.TestCase):
         self.assertEqual(
             item["invalid_reason"],
             "LEGACY_UNSTABLE_ROOT_STORY_IDENTITY",
+        )
+
+
+    def test_numeric_story_retires_matching_root_media_alias(self) -> None:
+        manifest = {
+            "items": {
+                "STORY:example:media-old": {
+                    "source_type": "STORY",
+                    "creator": "example",
+                    "evidence_id": "media-old",
+                    "story_id": None,
+                    "media_identity_path": "/v/t51.2885-15/shared.jpg",
+                    "research_status": "PENDING",
+                },
+                "STORY:example:other": {
+                    "source_type": "STORY",
+                    "creator": "example",
+                    "evidence_id": "other",
+                    "story_id": None,
+                    "media_identity_path": "/v/t51.2885-15/other.jpg",
+                    "research_status": "PENDING",
+                },
+            }
+        }
+        retired = retire_root_media_aliases_for_numeric_story(
+            manifest,
+            creator="example",
+            source_type="STORY",
+            story_id="3996180606061318570",
+            media_identity_path="/v/t51.2885-15/shared.jpg",
+        )
+        self.assertEqual(retired, ["STORY:example:media-old"])
+        old = manifest["items"]["STORY:example:media-old"]
+        self.assertEqual(old["research_status"], "INVALID")
+        self.assertEqual(old["invalid_reason"], "SUPERSEDED_BY_NUMERIC_STORY_ID")
+        self.assertEqual(
+            old["superseded_by_evidence_id"],
+            "3996180606061318570",
+        )
+        self.assertEqual(
+            manifest["items"]["STORY:example:other"]["research_status"],
+            "PENDING",
         )
 
 

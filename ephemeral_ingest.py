@@ -19,7 +19,7 @@ from playwright.sync_api import sync_playwright
 from transcription_backend import DEFAULT_GEMINI_VISUAL_MODEL, extract_image_evidence_gemini, transcribe_video
 
 
-APP_VERSION = "0.4.6"
+APP_VERSION = "0.4.7"
 STORY_URL_RE = re.compile(r"/stories/(?P<user>[^/]+)/(?P<id>\d+)/?")
 HIGHLIGHT_URL_RE = re.compile(r"/stories/highlights/(?P<id>\d+)/?")
 STRICT_STORY_ROOT_PATH_RE = re.compile(r"^/stories/[A-Za-z0-9._-]{1,64}/?$")
@@ -310,6 +310,42 @@ def invalidate_legacy_unstable_story_evidence(manifest: dict) -> int:
     return invalidated
 
 
+def retire_root_media_aliases_for_numeric_story(
+    manifest: dict,
+    *,
+    creator: str,
+    source_type: str,
+    story_id: str | None,
+    media_identity_path: str | None,
+) -> list[str]:
+    """Retire root-URL media aliases once Instagram exposes the numeric Story id."""
+    if not story_id or not media_identity_path or source_type != "STORY":
+        return []
+
+    retired: list[str] = []
+    canonical_key = f"{source_type}:{creator}:{story_id}"
+    for key, item in (manifest.get("items") or {}).items():
+        if key == canonical_key or not isinstance(item, dict):
+            continue
+        if str(item.get("source_type") or "").upper() != "STORY":
+            continue
+        if str(item.get("creator") or "").casefold() != creator.casefold():
+            continue
+        if item.get("story_id"):
+            continue
+        if str(item.get("media_identity_path") or "") != media_identity_path:
+            continue
+        if str(item.get("research_status") or "").upper() == "INVALID":
+            continue
+
+        item["research_status"] = "INVALID"
+        item["invalid_reason"] = "SUPERSEDED_BY_NUMERIC_STORY_ID"
+        item["superseded_by_evidence_id"] = story_id
+        item["superseded_at"] = utc_now()
+        retired.append(key)
+    return retired
+
+
 def safe_body_text(page, max_chars: int = 6000) -> str:
     try:
         text = page.locator("body").inner_text(timeout=5000)
@@ -493,6 +529,7 @@ def capture_story_frames(
     captured_new = 0
     seen_existing = 0
     unstable_identity_skipped = 0
+    identity_aliases_retired = 0
     visited_item_keys: list[str] = []
     visited = 0
     consecutive_unchanged = 0
@@ -517,6 +554,16 @@ def capture_story_frames(
             screenshot,
             media_url,
         )
+        media_identity_path = _normalized_media_identity_path(media_url)
+        identity_aliases_retired += len(
+            retire_root_media_aliases_for_numeric_story(
+                manifest,
+                creator=creator,
+                source_type=source_type,
+                story_id=story_id,
+                media_identity_path=media_identity_path,
+            )
+        )
         content_hash = hashlib.sha256(screenshot).hexdigest()
         marker = f"{page.url}|{content_hash}"
         visited += 1
@@ -533,7 +580,6 @@ def capture_story_frames(
                 ext = ".png"
                 shot_path = shot_dir / f"{evidence_id}{ext}"
                 shot_path.write_bytes(screenshot)
-                media_identity_path = _normalized_media_identity_path(media_url)
                 manifest["items"][key] = {
                     "schema_version": 1,
                     "source_type": source_type,
@@ -571,6 +617,7 @@ def capture_story_frames(
         "captured_new": captured_new,
         "seen_existing": seen_existing,
         "unstable_identity_skipped": unstable_identity_skipped,
+        "identity_aliases_retired": identity_aliases_retired,
         "visited_item_keys": visited_item_keys,
         "visited_frames": visited,
         "view_confirmation_was_present": confirmation_was_present,
