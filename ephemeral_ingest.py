@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 
 from playwright.sync_api import sync_playwright
 
-from transcription_backend import DEFAULT_GEMINI_VISUAL_MODEL, extract_image_evidence_gemini, transcribe_video
+from transcription_backend import DEFAULT_GEMINI_VISUAL_MODEL, extract_image_evidence_gemini, safe_gemini_error, transcribe_video
 
 
 APP_VERSION = "0.4.9"
@@ -737,11 +737,12 @@ def enrich_story_visual_evidence(
             else:
                 errors.append(f"{key}: NO_MEANINGFUL_VISUAL_EVIDENCE")
         except Exception as exc:
+            safe_error = safe_gemini_error(exc, operation="visual evidence extraction")
             item["visual_description_status"] = "ERROR"
-            item["visual_description_error"] = f"{type(exc).__name__}: visual evidence extraction failed"
+            item["visual_description_error"] = safe_error
             item["visual_description_generated_at"] = utc_now()
             changed = True
-            errors.append(f"{key}: {type(exc).__name__}: visual evidence extraction failed")
+            errors.append(f"{key}: {safe_error}")
 
     return {
         "attempted": attempted,
