@@ -61,5 +61,12 @@ class TranscriptionBackendTests(unittest.TestCase):
                 tb.transcribe_gemini(Path("video.mp4"))
 
 
+    def test_visual_extraction_requires_runtime_secret(self) -> None:
+        with patch.object(tb, "read_gemini_api_key", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "runtime secret"):
+                tb.extract_visible_text_gemini(Path("video.mp4"))
+
+
+
 if __name__ == "__main__":
     unittest.main()
