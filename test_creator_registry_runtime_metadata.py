@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from creator_registry import get_creator, register_creator
+from creator_registry import get_creator, load_registry, register_creator
 
 
 def base_request() -> dict:
