@@ -4,11 +4,13 @@ import contextlib
 import os
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
 GEMINI_SECRET_PATH = Path("/run/influencerresearch-secrets/gemini_api_key")
 DEFAULT_GEMINI_MODEL = "gemini-3.5-transcribe"
+DEFAULT_GEMINI_VISUAL_MODEL = "gemini-3.8-flash"
 ALLOWED_PROVIDERS = {"auto", "gemini", "faster-whisper"}
 _WHISPER_MODEL_CACHE: dict[tuple[str, str, str], Any] = {}
 
@@ -115,6 +117,82 @@ def transcribe_gemini(
                 client.files.delete(name=uploaded.name)
         with contextlib.suppress(OSError):
             audio_path.unlink(missing_ok=True)
+
+
+
+def extract_visible_text_gemini(
+    video_path: Path,
+    *,
+    model: str = DEFAULT_GEMINI_VISUAL_MODEL,
+    secret_path: Path | None = None,
+    processing: str = "static",
+    processing_timeout_seconds: int = 180,
+) -> dict[str, Any]:
+    """Extract only text that is visibly present in a video.
+
+    This is a fallback for burned-in subtitles, charts, slide text, tickers and other
+    visual text that audio transcription cannot recover. The uploaded file is deleted
+    from Gemini storage after the request.
+    """
+    api_key = read_gemini_api_key(secret_path)
+    if not api_key:
+        raise RuntimeError("Gemini runtime secret is not available.")
+    if processing not in {"static", "agentic"}:
+        raise ValueError("processing must be static or agentic")
+
+    from google import genai
+
+    client = genai.Client(api_key=api_key)
+    uploaded = None
+    try:
+        uploaded = client.files.upload(file=str(video_path))
+        deadline = time.monotonic() + max(10, int(processing_timeout_seconds))
+        while True:
+            state = str(getattr(getattr(uploaded, "state", None), "name", "") or "").upper()
+            if state == "ACTIVE":
+                break
+            if state == "FAILED":
+                raise RuntimeError("Gemini video processing failed.")
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Gemini video processing timed out.")
+            time.sleep(2)
+            uploaded = client.files.get(name=uploaded.name)
+
+        prompt = (
+            "Transcribe only text that is actually visible in this video, including "
+            "burned-in subtitles, captions, labels, chart annotations, prices, tickers, "
+            "percentages and slide text. Preserve important numbers and symbols. "
+            "Deduplicate text that remains unchanged across adjacent frames and keep "
+            "the result in chronological reading order. Do not infer spoken words that "
+            "are not visibly written and do not summarize. If there is no meaningful "
+            "visible text, output exactly NO_VISIBLE_TEXT."
+        )
+        interaction = client.interactions.create(
+            model=model,
+            input=[
+                {
+                    "type": "video",
+                    "uri": uploaded.uri,
+                    "mime_type": uploaded.mime_type,
+                    "processing": processing,
+                },
+                {"type": "text", "text": prompt},
+            ],
+        )
+        text = (interaction.output_text or "").strip()
+        if not text or text == "NO_VISIBLE_TEXT":
+            text = ""
+        return {
+            "provider": "gemini",
+            "model": model,
+            "source": "GEMINI_VIDEO_VISIBLE_TEXT",
+            "processing": processing,
+            "text": text,
+        }
+    finally:
+        if uploaded is not None:
+            with contextlib.suppress(Exception):
+                client.files.delete(name=uploaded.name)
 
 
 def transcribe_faster_whisper(video_path: Path, settings: dict[str, Any]) -> dict[str, Any]:
