@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import contextlib
+import math
 import os
 import subprocess
 import tempfile
 import time
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
@@ -82,6 +85,49 @@ def gemini_error_metadata(exc: Exception) -> dict[str, Any]:
         "code": code,
         "status": status,
     }
+
+
+def gemini_retry_after_seconds(
+    exc: Exception,
+    *,
+    now: datetime | None = None,
+    max_seconds: int = 3600,
+) -> int | None:
+    """Read a standard Retry-After response header without touching response bodies."""
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return None
+
+    try:
+        raw = headers.get("retry-after")
+    except Exception:
+        return None
+    if raw is None:
+        return None
+
+    value = str(raw).strip()
+    if not value:
+        return None
+
+    seconds: float | None = None
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            target = parsedate_to_datetime(value)
+            if target.tzinfo is None:
+                target = target.replace(tzinfo=timezone.utc)
+            current = now or datetime.now(timezone.utc)
+            if current.tzinfo is None:
+                current = current.replace(tzinfo=timezone.utc)
+            seconds = (target.astimezone(timezone.utc) - current.astimezone(timezone.utc)).total_seconds()
+        except Exception:
+            return None
+
+    if seconds is None or seconds <= 0:
+        return None
+    return min(max(1, int(math.ceil(seconds))), max(1, int(max_seconds)))
 
 
 def safe_gemini_error(exc: Exception, *, operation: str) -> str:

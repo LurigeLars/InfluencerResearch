@@ -18,7 +18,7 @@ import tiktok_camofox_sync as tts
 import instagram_camofox_public_smoke as instagram_smoke
 import ephemeral_ingest as ephemeral
 
-RECENT_CHECK_VERSION = "0.2.4"
+RECENT_CHECK_VERSION = "0.2.5"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
@@ -806,6 +806,7 @@ def _ingest_instagram_stories(
     source: dict,
     cutoff: datetime,
     max_new: int,
+    gemini_circuit: dict | None = None,
 ) -> dict:
     handle = _instagram_handle(source)
     if max_new <= 0:
@@ -818,6 +819,7 @@ def _ingest_instagram_stories(
         highlight_label=None,
         force=False,
         max_items=min(6, max(1, max_new + 2)),
+        gemini_circuit=gemini_circuit,
     )
     bridge = _promote_story_items(root, profile, handle, cutoff, max_new)
     promoted = list(bridge.get("promoted") or [])
@@ -1039,6 +1041,7 @@ def _main_impl() -> int:
                 errors.append({"creator_key": creator_key, "platform": platform, "stage": "INGESTION", "error": f"{type(exc).__name__}: {exc}"})
 
         story_results = []
+        story_gemini_circuit = ephemeral.initial_story_gemini_circuit(root)
         story_selected: list[dict] = []
         story_available: list[dict] = []
         story_reused_existing_count = 0
@@ -1067,6 +1070,7 @@ def _main_impl() -> int:
                         instagram_sources[0],
                         cutoff,
                         remaining_story_slots,
+                        gemini_circuit=story_gemini_circuit,
                     )
                     promoted = list(story_result.get("promoted") or [])
                     available = list(story_result.get("available") or [])
@@ -1272,6 +1276,12 @@ def _main_impl() -> int:
             "extraction_error_items": extraction_error_recent[:100],
             "pending_extraction_count": len(pending_extraction_recent),
             "pending_extraction_items": pending_extraction_recent[:100],
+            "provider_circuit_breaker": {
+                "gemini_story_visual": dict(story_gemini_circuit),
+            },
+            "provider_health": {
+                "gemini": ephemeral.get_gemini_provider_health(root),
+            },
             "auto_ingest": True,
             "auto_analysis_contract": {
                 "enabled": True,

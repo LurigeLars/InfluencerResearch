@@ -16,10 +16,10 @@ from urllib.parse import urlsplit
 
 from playwright.sync_api import sync_playwright
 
-from transcription_backend import DEFAULT_GEMINI_VISUAL_MODEL, extract_image_evidence_gemini, gemini_error_metadata, safe_gemini_error, transcribe_video
+from transcription_backend import DEFAULT_GEMINI_VISUAL_MODEL, extract_image_evidence_gemini, gemini_error_metadata, gemini_retry_after_seconds, safe_gemini_error, transcribe_video
 
 
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.5.1"
 STORY_URL_RE = re.compile(r"/stories/(?P<user>[^/]+)/(?P<id>\d+)/?")
 HIGHLIGHT_URL_RE = re.compile(r"/stories/highlights/(?P<id>\d+)/?")
 STRICT_STORY_ROOT_PATH_RE = re.compile(r"^/stories/[A-Za-z0-9._-]{1,64}/?$")
@@ -61,6 +61,101 @@ def atomic_write_json(path: Path, data: dict) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, path)
+
+
+def _gemini_health_path(root: Path) -> Path:
+    return root / "state" / "provider_health.json"
+
+
+def get_gemini_provider_health(root: Path) -> dict:
+    state = load_json(_gemini_health_path(root), {"schema_version": 1, "gemini": {}})
+    gemini = state.get("gemini") if isinstance(state, dict) else {}
+    if not isinstance(gemini, dict):
+        gemini = {}
+    keys = (
+        "signal_scope",
+        "last_success_at",
+        "last_error_at",
+        "last_429_at",
+        "cooldown_until",
+        "last_code",
+        "last_status",
+        "retry_after_source",
+        "story_visual_calls",
+        "story_visual_successes",
+        "story_visual_deferred",
+    )
+    return {key: gemini.get(key) for key in keys if key in gemini}
+
+
+def update_gemini_provider_health(
+    root: Path,
+    *,
+    calls: int = 0,
+    successes: int = 0,
+    deferred: int = 0,
+    error_meta: dict | None = None,
+    cooldown_until: datetime | None = None,
+    retry_after_source: str | None = None,
+) -> dict:
+    path = _gemini_health_path(root)
+    state = load_json(path, {"schema_version": 1, "gemini": {}})
+    if not isinstance(state, dict):
+        state = {"schema_version": 1, "gemini": {}}
+    gemini = state.get("gemini")
+    if not isinstance(gemini, dict):
+        gemini = {}
+
+    gemini["signal_scope"] = "STORY_VISUAL"
+    gemini["story_visual_calls"] = int(gemini.get("story_visual_calls") or 0) + max(0, int(calls))
+    gemini["story_visual_successes"] = int(gemini.get("story_visual_successes") or 0) + max(0, int(successes))
+    gemini["story_visual_deferred"] = int(gemini.get("story_visual_deferred") or 0) + max(0, int(deferred))
+
+    if successes:
+        gemini["last_success_at"] = utc_now()
+        existing_cooldown = _parse_retry_after(gemini.get("cooldown_until"))
+        if existing_cooldown is None or existing_cooldown <= datetime.now(timezone.utc):
+            gemini["cooldown_until"] = None
+            gemini["retry_after_source"] = None
+
+    if error_meta:
+        now_text = utc_now()
+        gemini["last_error_at"] = now_text
+        gemini["last_code"] = error_meta.get("code")
+        gemini["last_status"] = error_meta.get("status")
+        if error_meta.get("code") == 429:
+            gemini["last_429_at"] = now_text
+        if cooldown_until is not None:
+            gemini["cooldown_until"] = cooldown_until.isoformat()
+            gemini["retry_after_source"] = retry_after_source
+
+    state["schema_version"] = 1
+    state["gemini"] = gemini
+    atomic_write_json(path, state)
+    return get_gemini_provider_health(root)
+
+
+def initial_story_gemini_circuit(root: Path) -> dict:
+    health = get_gemini_provider_health(root)
+    retry_at = _parse_retry_after(health.get("cooldown_until"))
+    now = datetime.now(timezone.utc)
+    if retry_at is not None and retry_at > now:
+        return {
+            "open": True,
+            "reason": (
+                "PROVIDER_RATE_LIMIT"
+                if health.get("last_code") == 429
+                else "PROVIDER_UNAVAILABLE"
+            ),
+            "retry_after": retry_at.isoformat(),
+            "retry_after_source": health.get("retry_after_source") or "PERSISTED_COOLDOWN",
+        }
+    return {
+        "open": False,
+        "reason": None,
+        "retry_after": None,
+        "retry_after_source": None,
+    }
 
 
 def runtime_dir() -> Path:
@@ -710,6 +805,7 @@ def enrich_story_visual_evidence(
     item_keys: list[str],
     *,
     max_attempts: int = MAX_STORY_VISUAL_ENRICHMENTS_PER_RUN,
+    circuit_state: dict | None = None,
 ) -> dict:
     """Backfill readable multimodal evidence for visited Story screenshots.
 
@@ -731,10 +827,15 @@ def enrich_story_visual_evidence(
     skipped = 0
     deferred = 0
     provider_deferred = 0
+    health_deferred_recorded = 0
     errors: list[str] = []
     changed = False
-    circuit_reason: str | None = None
-    circuit_retry_after: datetime | None = None
+    if circuit_state is None:
+        circuit_state = initial_story_gemini_circuit(root)
+
+    circuit_reason = str(circuit_state.get("reason") or "") or None
+    circuit_retry_after = _parse_retry_after(circuit_state.get("retry_after"))
+    circuit_retry_after_source = str(circuit_state.get("retry_after_source") or "") or None
     now = datetime.now(timezone.utc)
 
     for key in item_keys:
@@ -809,6 +910,11 @@ def enrich_story_visual_evidence(
                 completed += 1
             else:
                 errors.append(f"{key}: NO_MEANINGFUL_VISUAL_EVIDENCE")
+            update_gemini_provider_health(
+                root,
+                calls=1,
+                successes=1,
+            )
         except Exception as exc:
             safe_error = safe_gemini_error(exc, operation="visual evidence extraction")
             meta = gemini_error_metadata(exc)
@@ -816,13 +922,23 @@ def enrich_story_visual_evidence(
             transient = code is None or code == 429 or (isinstance(code, int) and code >= 500)
 
             if transient:
+                provider_retry_seconds = gemini_retry_after_seconds(
+                    exc,
+                    now=datetime.now(timezone.utc),
+                )
                 if code == 429:
                     reason = "PROVIDER_RATE_LIMIT"
-                    cooldown = STORY_GEMINI_RATE_LIMIT_COOLDOWN_SECONDS
+                    fallback_cooldown = STORY_GEMINI_RATE_LIMIT_COOLDOWN_SECONDS
                 else:
                     reason = "PROVIDER_UNAVAILABLE"
-                    cooldown = STORY_GEMINI_PROVIDER_ERROR_COOLDOWN_SECONDS
-                retry_after = now + timedelta(seconds=cooldown)
+                    fallback_cooldown = STORY_GEMINI_PROVIDER_ERROR_COOLDOWN_SECONDS
+                cooldown = provider_retry_seconds or fallback_cooldown
+                retry_source = (
+                    "PROVIDER_RETRY_AFTER"
+                    if provider_retry_seconds is not None
+                    else "FALLBACK"
+                )
+                retry_after = datetime.now(timezone.utc) + timedelta(seconds=cooldown)
                 _defer_story_visual(
                     item,
                     reason=reason,
@@ -831,17 +947,44 @@ def enrich_story_visual_evidence(
                 )
                 circuit_reason = reason
                 circuit_retry_after = retry_after
+                circuit_retry_after_source = retry_source
+                circuit_state.update({
+                    "open": True,
+                    "reason": reason,
+                    "retry_after": retry_after.isoformat(),
+                    "retry_after_source": retry_source,
+                })
                 provider_deferred += 1
                 deferred += 1
+                update_gemini_provider_health(
+                    root,
+                    calls=1,
+                    deferred=1,
+                    error_meta=meta,
+                    cooldown_until=retry_after,
+                    retry_after_source=retry_source,
+                )
+                health_deferred_recorded += 1
             else:
                 item["visual_description_status"] = "ERROR"
                 item["visual_description_error"] = safe_error
                 item["visual_description_generated_at"] = utc_now()
                 item.pop("visual_description_deferred_reason", None)
                 item.pop("visual_description_retry_after", None)
+                update_gemini_provider_health(
+                    root,
+                    calls=1,
+                    error_meta=meta,
+                )
 
             changed = True
             errors.append(f"{key}: {safe_error}")
+
+    if provider_deferred > health_deferred_recorded:
+        update_gemini_provider_health(
+            root,
+            deferred=provider_deferred - health_deferred_recorded,
+        )
 
     return {
         "attempted": attempted,
@@ -859,7 +1002,9 @@ def enrich_story_visual_evidence(
             "retry_after": (
                 circuit_retry_after.isoformat() if circuit_retry_after is not None else None
             ),
+            "retry_after_source": circuit_retry_after_source,
         },
+        "provider_health": get_gemini_provider_health(root),
     }
 
 
@@ -1025,6 +1170,7 @@ def run_one(
     highlight_label: str | None,
     force: bool,
     max_items: int,
+    gemini_circuit: dict | None = None,
 ) -> dict:
     manifest_path = root / "state" / "ephemeral" / "manifest.json"
     manifest = load_json(
@@ -1119,6 +1265,7 @@ def run_one(
             manifest,
             story_visual_keys,
             max_attempts=MAX_STORY_VISUAL_ENRICHMENTS_PER_RUN,
+            circuit_state=gemini_circuit,
         )
         if source_type == "STORY"
         else {

@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -73,6 +74,31 @@ class TranscriptionBackendTests(unittest.TestCase):
             "FakeGeminiError: Gemini visual evidence extraction failed code=400",
         )
         self.assertNotIn("sensitive", result)
+
+    def test_retry_after_numeric_header_is_honored(self) -> None:
+        class FakeResponse:
+            headers = {"retry-after": "17"}
+
+        class FakeGeminiError(Exception):
+            response = FakeResponse()
+
+        self.assertEqual(
+            tb.gemini_retry_after_seconds(FakeGeminiError("hidden")),
+            17,
+        )
+
+    def test_retry_after_http_date_is_honored(self) -> None:
+        class FakeResponse:
+            headers = {"retry-after": "Sun, 28 Sep 2026 15:25:30 GMT"}
+
+        class FakeGeminiError(Exception):
+            response = FakeResponse()
+
+        now = datetime(2026, 9, 28, 15, 25, 0, tzinfo=timezone.utc)
+        self.assertEqual(
+            tb.gemini_retry_after_seconds(FakeGeminiError("hidden"), now=now),
+            30,
+        )
 
     def test_runtime_secret_path_is_tmpfs_location(self) -> None:
         self.assertEqual(
