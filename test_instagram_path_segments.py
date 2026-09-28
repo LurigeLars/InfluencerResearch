@@ -250,7 +250,8 @@ class InstagramPathSegmentTests(unittest.TestCase):
                 result["provider_circuit_breaker"]["reason"],
                 "PROVIDER_RATE_LIMIT",
             )
-            self.assertEqual(result["errors"], [f"{key}: {expected}"])
+            self.assertEqual(result["errors"], [])
+            self.assertEqual(result["provider_events"], [f"{key}: {expected}"])
             self.assertNotIn("secret provider body", str(result))
 
 
@@ -295,7 +296,8 @@ class InstagramPathSegmentTests(unittest.TestCase):
             self.assertEqual(result["attempted"], 1)
             self.assertEqual(result["deferred"], 3)
             self.assertEqual(result["provider_deferred"], 3)
-            self.assertEqual(len(result["errors"]), 1)
+            self.assertEqual(result["errors"], [])
+            self.assertEqual(len(result["provider_events"]), 1)
             for key in keys:
                 self.assertEqual(
                     manifest["items"][key]["visual_description_status"],
