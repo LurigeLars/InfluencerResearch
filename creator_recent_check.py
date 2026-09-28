@@ -5,7 +5,6 @@ import json
 import os
 import subprocess
 import sys
-import threading
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -19,7 +18,6 @@ import youtube_creator_evaluation as yte
 import tiktok_camofox_sync as tts
 import instagram_camofox_public_smoke as instagram_smoke
 import ephemeral_ingest as ephemeral
-import transcription_backend as tb
 
 RECENT_CHECK_VERSION = "0.2.8"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
@@ -1068,52 +1066,6 @@ def _queue_targets(root: Path, item_keys: set[str]) -> list[dict]:
     return out
 
 
-def _preload_story_ollama(root: Path) -> dict:
-    settings = load_json(root / "control" / "settings.json", {})
-    tcfg = settings.get("transcription") or {}
-    if not bool(tcfg.get("ollama_visual_enabled", True)):
-        return {"status": "DISABLED"}
-
-    model = str(
-        tcfg.get("ollama_visual_model", tb.DEFAULT_OLLAMA_VISUAL_MODEL)
-        or tb.DEFAULT_OLLAMA_VISUAL_MODEL
-    ).strip()
-    base_url = str(
-        tcfg.get("ollama_base_url", tb.DEFAULT_OLLAMA_BASE_URL)
-        or tb.DEFAULT_OLLAMA_BASE_URL
-    ).strip()
-    timeout_seconds = min(
-        60,
-        max(
-            5,
-            int(
-                tcfg.get("ollama_visual_timeout_seconds", tb.OLLAMA_VISUAL_TIMEOUT_SECONDS)
-                or tb.OLLAMA_VISUAL_TIMEOUT_SECONDS
-            ),
-        ),
-    )
-    started = time.perf_counter()
-    try:
-        result = tb.preload_ollama_model(
-            model=model,
-            base_url=base_url,
-            timeout_seconds=timeout_seconds,
-        )
-        return {
-            "status": "READY",
-            "model": result.get("model"),
-            "duration_ms": round((time.perf_counter() - started) * 1000, 1),
-            "load_duration_ms": round(float(result.get("load_duration_ns") or 0) / 1_000_000, 1),
-        }
-    except Exception as exc:
-        return {
-            "status": "FAILED",
-            "model": model,
-            "duration_ms": round((time.perf_counter() - started) * 1000, 1),
-            "error": f"{type(exc).__name__}: {exc}",
-        }
-
-
 def _main_impl() -> int:
     ap = argparse.ArgumentParser(description="InfluencerResearch recent-window discovery + automatic ingestion")
     ap.add_argument("--root", type=Path, required=True)
@@ -1225,26 +1177,6 @@ def _main_impl() -> int:
         for item in selected_pending:
             grouped[(item["creator_key"], item["platform"])].append(item["source_id"])
             selected_metadata[(item["creator_key"], item["platform"], item["source_id"])] = item
-
-        story_preload_state: dict = {"status": "NOT_STARTED"}
-        story_preload_thread: threading.Thread | None = None
-        if len(selected_pending) < max_items and any(
-            str(source.get("platform") or "").upper() == "INSTAGRAM"
-            for _, sources in selected
-            for source in sources
-        ):
-            story_preload_state["status"] = "RUNNING"
-
-            def preload_worker() -> None:
-                story_preload_state.clear()
-                story_preload_state.update(_preload_story_ollama(root))
-
-            story_preload_thread = threading.Thread(
-                target=preload_worker,
-                name="story-ollama-preload",
-                daemon=True,
-            )
-            story_preload_thread.start()
 
         ingestion_results = []
         for (creator_key, platform), ids in grouped.items():
@@ -1514,6 +1446,7 @@ def _main_impl() -> int:
             "ocr_completed": 0,
             "ollama_attempted": 0,
             "ollama_completed": 0,
+            "ollama_cached_insufficient": 0,
             "gemini_attempted": 0,
             "completed": 0,
             "deferred": 0,
@@ -1532,6 +1465,9 @@ def _main_impl() -> int:
                 "ocr_completed": int(visual.get("ocr_completed") or 0),
                 "ollama_attempted": int(visual.get("ollama_attempted") or 0),
                 "ollama_completed": int(visual.get("ollama_completed") or 0),
+                "ollama_cached_insufficient": int(
+                    visual.get("ollama_cached_insufficient") or 0
+                ),
                 "gemini_attempted": int(visual.get("attempted") or 0),
                 "completed": int(visual.get("completed") or 0),
                 "deferred": int(visual.get("deferred") or 0),
@@ -1546,7 +1482,7 @@ def _main_impl() -> int:
             visual_by_creator.append(row)
             for key in (
                 "ocr_attempted", "ocr_completed", "ollama_attempted", "ollama_completed",
-                "gemini_attempted", "completed", "deferred",
+                "ollama_cached_insufficient", "gemini_attempted", "completed", "deferred",
                 "provider_event_count", "error_count",
             ):
                 visual_totals[key] += int(row[key])
@@ -1555,17 +1491,10 @@ def _main_impl() -> int:
                     float(visual_totals[key]) + float(row["timings"][key]),
                     1,
                 )
-        if story_preload_thread is not None and story_preload_thread.is_alive():
-            story_preload_state = {
-                "status": "RUNNING",
-                "model": story_preload_state.get("model"),
-            }
-
         story_visual_enrichment = {
             "by_creator": visual_by_creator,
             "totals": visual_totals,
             "ollama_budget": dict(story_ollama_budget),
-            "ollama_preload": dict(story_preload_state),
         }
 
         status = {

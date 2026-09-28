@@ -248,44 +248,6 @@ def transcribe_gemini(
 
 
 
-def preload_ollama_model(
-    *,
-    model: str = DEFAULT_OLLAMA_VISUAL_MODEL,
-    base_url: str = DEFAULT_OLLAMA_BASE_URL,
-    timeout_seconds: int = 60,
-    keep_alive: str = OLLAMA_VISUAL_KEEP_ALIVE,
-) -> dict[str, Any]:
-    """Warm one Ollama model without generating content."""
-    body = json.dumps({
-        "model": model,
-        "prompt": "",
-        "stream": False,
-        "keep_alive": keep_alive,
-    }).encode("utf-8")
-    req = urllib_request.Request(
-        f"{base_url.rstrip('/')}/api/generate",
-        data=body,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib_request.urlopen(req, timeout=max(1, int(timeout_seconds))) as response:
-            payload = json.load(response)
-    except urllib_error.HTTPError as exc:
-        raise RuntimeError(f"Ollama preload failed HTTP {exc.code}") from exc
-    except urllib_error.URLError as exc:
-        raise RuntimeError("Ollama preload unavailable") from exc
-
-    return {
-        "provider": "ollama",
-        "model": model,
-        "keep_alive": keep_alive,
-        "done": bool(payload.get("done", True)),
-        "load_duration_ns": int(payload.get("load_duration") or 0),
-        "total_duration_ns": int(payload.get("total_duration") or 0),
-    }
-
-
 def extract_image_evidence_ollama(
     image_path: Path,
     *,

@@ -9,29 +9,6 @@ import transcription_backend as tb
 
 
 class StoryOllamaBackendTests(unittest.TestCase):
-    def test_ollama_preload_uses_generate_without_content(self):
-        response = io.BytesIO(json.dumps({
-            "done": True,
-            "load_duration": 2500000000,
-            "total_duration": 2600000000,
-        }).encode("utf-8"))
-
-        with patch("transcription_backend.urllib_request.urlopen", return_value=response) as urlopen:
-            result = tb.preload_ollama_model(
-                model="gemma3-12b-16k",
-                base_url="http://host.docker.internal:11434",
-                timeout_seconds=12,
-            )
-
-        request = urlopen.call_args.args[0]
-        payload = json.loads(request.data.decode("utf-8"))
-        self.assertEqual(request.full_url, "http://host.docker.internal:11434/api/generate")
-        self.assertEqual(urlopen.call_args.kwargs["timeout"], 12)
-        self.assertEqual(payload["prompt"], "")
-        self.assertFalse(payload["stream"])
-        self.assertEqual(payload["keep_alive"], tb.OLLAMA_VISUAL_KEEP_ALIVE)
-        self.assertEqual(result["load_duration_ns"], 2500000000)
-
     def test_ollama_image_request_is_bounded_and_multimodal(self):
         with tempfile.TemporaryDirectory() as tmp:
             image_path = Path(tmp) / "story.png"
