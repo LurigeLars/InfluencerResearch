@@ -11,7 +11,7 @@ import research_queue
 
 
 class ResearchQueueStoryTests(unittest.TestCase):
-    def test_visual_only_story_enters_canonical_queue(self) -> None:
+    def test_story_with_visual_description_enters_canonical_queue(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             state = root / "state"
@@ -37,7 +37,15 @@ class ResearchQueueStoryTests(unittest.TestCase):
                         "observed_at": "2026-09-27T10:00:00+00:00",
                         "download_status": "DONE",
                         "transcription_status": "NOT_APPLICABLE",
-                        "browser_text": "Story text captured from the browser",
+                        "browser_text": "creator\\n2h",
+                        "visual_description": (
+                            "Visible Story text says Brent-WTI spread is 13 dollars. "
+                            "A line chart underneath rises sharply into the latest observation."
+                        ),
+                        "visual_description_status": "DONE",
+                        "visual_description_source": "GEMINI_STORY_SCREENSHOT_EVIDENCE",
+                        "visual_description_provider": "gemini",
+                        "visual_description_model": "gemini-3.8-flash",
                         "screenshot_file": str(shot.relative_to(root)),
                         "visual_evidence_status": "DONE",
                         "visual_evidence_index": str(shot.relative_to(root)),
@@ -68,8 +76,62 @@ class ResearchQueueStoryTests(unittest.TestCase):
             self.assertEqual(packet["source_subtype"], "STORY")
             self.assertEqual(packet["published_at_basis"], "ACTIVE_STORY_OBSERVED_AT")
             self.assertIsNone(packet["transcript_file"])
-            self.assertEqual(packet["transcript_text"], "Story text captured from the browser")
+            self.assertEqual(packet["transcript_text"], "creator\\n2h")
+            self.assertEqual(packet["analysis_content_reason"], "VISUAL_DESCRIPTION")
+            self.assertIn("Brent-WTI", packet["visual_description"])
+            self.assertIn("Brent-WTI", packet["analysis_evidence_text"])
             self.assertEqual(packet["screenshot_file"], str(shot.relative_to(root)))
+
+
+    def test_story_screenshot_without_readable_description_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            state = root / "state"
+            control = root / "control"
+            state.mkdir(parents=True)
+            control.mkdir(parents=True)
+
+            shot = root / "output" / "creator" / "stories" / "screenshots" / "stable.png"
+            shot.parent.mkdir(parents=True)
+            shot.write_bytes(b"png")
+            manifest = {
+                "schema_version": 1,
+                "items": {
+                    "ig_story_stable": {
+                        "creator": "creator",
+                        "source_platform": "INSTAGRAM",
+                        "source_subtype": "STORY",
+                        "source_id": "story:stable",
+                        "url": "https://www.instagram.com/stories/creator/",
+                        "published_at": "2026-09-28T10:00:00+00:00",
+                        "download_status": "DONE",
+                        "transcription_status": "NOT_APPLICABLE",
+                        "browser_text": "creator\\n2h",
+                        "story_identity_basis": "VISIBLE_MEDIA_URL_PATH",
+                        "screenshot_file": str(shot.relative_to(root)),
+                        "visual_evidence_status": "DONE",
+                        "visual_frame_count": 1,
+                        "visual_description_status": "ERROR",
+                        "permanent_source": True,
+                    }
+                },
+            }
+            (state / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (state / "research_decisions.json").write_text(
+                json.dumps({"schema_version": 2, "items": {}}),
+                encoding="utf-8",
+            )
+            (control / "research_screening.json").write_text(
+                json.dumps({"max_queue_items": 100, "creators": []}),
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(sys, "argv", ["research_queue.py", "--root", str(root)]):
+                self.assertEqual(research_queue.main(), 0)
+
+            queue = json.loads((state / "research_queue.json").read_text(encoding="utf-8"))
+            self.assertEqual(queue["count"], 0)
+            self.assertEqual(queue["insufficient_content_count"], 1)
 
 
     def test_legacy_root_frame_is_retired_from_queue(self) -> None:

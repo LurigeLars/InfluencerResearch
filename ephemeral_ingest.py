@@ -16,10 +16,10 @@ from urllib.parse import urlsplit
 
 from playwright.sync_api import sync_playwright
 
-from transcription_backend import transcribe_video
+from transcription_backend import DEFAULT_GEMINI_VISUAL_MODEL, extract_image_evidence_gemini, transcribe_video
 
 
-APP_VERSION = "0.4.5"
+APP_VERSION = "0.4.6"
 STORY_URL_RE = re.compile(r"/stories/(?P<user>[^/]+)/(?P<id>\d+)/?")
 HIGHLIGHT_URL_RE = re.compile(r"/stories/highlights/(?P<id>\d+)/?")
 STRICT_STORY_ROOT_PATH_RE = re.compile(r"^/stories/[A-Za-z0-9._-]{1,64}/?$")
@@ -493,6 +493,7 @@ def capture_story_frames(
     captured_new = 0
     seen_existing = 0
     unstable_identity_skipped = 0
+    visited_item_keys: list[str] = []
     visited = 0
     consecutive_unchanged = 0
     previous_marker = None
@@ -524,6 +525,8 @@ def capture_story_frames(
             unstable_identity_skipped += 1
         else:
             key = f"{source_type}:{creator}:{evidence_id}"
+            if key not in visited_item_keys:
+                visited_item_keys.append(key)
             if key in manifest["items"]:
                 seen_existing += 1
             else:
@@ -568,10 +571,88 @@ def capture_story_frames(
         "captured_new": captured_new,
         "seen_existing": seen_existing,
         "unstable_identity_skipped": unstable_identity_skipped,
+        "visited_item_keys": visited_item_keys,
         "visited_frames": visited,
         "view_confirmation_was_present": confirmation_was_present,
         "view_confirmation_dismissed": confirmation_dismissed,
         "reason": stop_reason,
+    }
+
+
+def enrich_story_visual_evidence(
+    root: Path,
+    manifest: dict,
+    item_keys: list[str],
+) -> dict:
+    """Backfill readable multimodal evidence for visited Story screenshots."""
+    settings = load_json(root / "control" / "settings.json", {})
+    model = str(
+        (settings.get("transcription") or {}).get(
+            "gemini_visual_model",
+            DEFAULT_GEMINI_VISUAL_MODEL,
+        )
+        or DEFAULT_GEMINI_VISUAL_MODEL
+    ).strip()
+    attempted = 0
+    completed = 0
+    skipped = 0
+    errors: list[str] = []
+    changed = False
+
+    for key in item_keys:
+        item = (manifest.get("items") or {}).get(key)
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("source_type") or "").upper() != "STORY":
+            continue
+        if str(item.get("research_status") or "").upper() == "INVALID":
+            continue
+        if (
+            str(item.get("visual_description_status") or "").upper() == "DONE"
+            and str(item.get("visual_description") or "").strip()
+        ):
+            skipped += 1
+            continue
+
+        screenshot_rel = str(item.get("screenshot_file") or "").strip()
+        screenshot_path = root / screenshot_rel if screenshot_rel else None
+        if screenshot_path is None or not screenshot_path.is_file():
+            errors.append(f"{key}: STORY_SCREENSHOT_MISSING")
+            continue
+
+        attempted += 1
+        try:
+            result = extract_image_evidence_gemini(
+                screenshot_path,
+                model=model,
+            )
+            text = str(result.get("text") or "").strip()
+            item["visual_description"] = text
+            item["visual_description_status"] = "DONE" if text else "INSUFFICIENT_CONTENT"
+            item["visual_description_source"] = result.get("source")
+            item["visual_description_provider"] = result.get("provider")
+            item["visual_description_model"] = result.get("model")
+            item["visual_description_generated_at"] = utc_now()
+            item.pop("visual_description_error", None)
+            changed = True
+            if text:
+                completed += 1
+            else:
+                errors.append(f"{key}: NO_MEANINGFUL_VISUAL_EVIDENCE")
+        except Exception as exc:
+            item["visual_description_status"] = "ERROR"
+            item["visual_description_error"] = f"{type(exc).__name__}: visual evidence extraction failed"
+            item["visual_description_generated_at"] = utc_now()
+            changed = True
+            errors.append(f"{key}: {type(exc).__name__}: visual evidence extraction failed")
+
+    return {
+        "attempted": attempted,
+        "completed": completed,
+        "skipped": skipped,
+        "errors": errors,
+        "changed": changed,
+        "model": model,
     }
 
 
@@ -803,12 +884,53 @@ def run_one(
         finally:
             context.close()
 
+    story_visual_keys = list(capture.get("visited_item_keys") or [])
+    if source_type == "STORY":
+        # Also backfill previously captured stable Story screenshots. This matters
+        # after upgrades: an older Story may no longer be active in the viewer but
+        # its retained screenshot is still within the recent-check evidence window.
+        for key, item in (manifest.get("items") or {}).items():
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("source_type") or "").upper() != "STORY":
+                continue
+            if str(item.get("creator") or "").casefold() != creator.casefold():
+                continue
+            if str(item.get("research_status") or "").upper() == "INVALID":
+                continue
+            if (
+                str(item.get("visual_description_status") or "").upper() == "DONE"
+                and str(item.get("visual_description") or "").strip()
+            ):
+                continue
+            if key not in story_visual_keys:
+                story_visual_keys.append(key)
+
+    visual_enrichment = (
+        enrich_story_visual_evidence(
+            root,
+            manifest,
+            story_visual_keys,
+        )
+        if source_type == "STORY"
+        else {
+            "attempted": 0,
+            "completed": 0,
+            "skipped": 0,
+            "errors": [],
+            "changed": False,
+        }
+    )
+    if visual_enrichment.get("changed"):
+        atomic_write_json(manifest_path, manifest)
+
     transcription = transcribe_downloaded_videos(root, creator, source_type)
 
     errors = []
     if not ytdlp.get("ok"):
         # Story can contain image-only frames, so failed yt-dlp is not fatal if screenshots exist.
         errors.append(f"yt-dlp: {ytdlp.get('error')}")
+    errors.extend(visual_enrichment.get("errors", []))
     errors.extend(transcription.get("errors", []))
 
     if (
@@ -826,6 +948,7 @@ def run_one(
         "source_url": source_url,
         "highlight_label": highlight_label,
         "capture": capture,
+        "visual_enrichment": visual_enrichment,
         "video_download": ytdlp,
         "transcription": transcription,
         "state": "DONE" if not errors else "DONE_WITH_ERRORS",

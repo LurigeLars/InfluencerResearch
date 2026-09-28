@@ -62,6 +62,11 @@ class RecentAnalysisTargetTests(unittest.TestCase):
                         "source_subtype": "STORY",
                         "published_at_basis": "ACTIVE_STORY_OBSERVED_AT",
                         "observed_at": "2026-09-28T00:00:00+00:00",
+                        "visual_description": "A chart shows positioning rising into the latest observation.",
+                        "visual_description_status": "DONE",
+                        "visual_description_source": "GEMINI_STORY_SCREENSHOT_EVIDENCE",
+                        "visual_description_provider": "gemini",
+                        "visual_description_model": "gemini-3.8-flash",
                         "visual_evidence_status": "DONE",
                         "visual_evidence_index": "output/creator/stories/screenshots/123.png",
                         "visual_frame_count": 1,
@@ -81,6 +86,8 @@ class RecentAnalysisTargetTests(unittest.TestCase):
             self.assertEqual(target["analysis_content_reason"], "TRANSCRIPT")
             self.assertEqual(target["source_subtype"], "STORY")
             self.assertEqual(target["visual_evidence_status"], "DONE")
+            self.assertEqual(target["visual_description_status"], "DONE")
+            self.assertIn("positioning", target["visual_description"])
             self.assertEqual(
                 target["screenshot_file"],
                 "output/creator/stories/screenshots/123.png",
