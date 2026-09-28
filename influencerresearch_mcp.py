@@ -68,6 +68,7 @@ def summarize_status(path: Path | None) -> dict | None:
         "scope",
         "window",
         "source_count",
+        "error",
         "error_count",
         "errors",
         "completed",
