@@ -19,7 +19,7 @@ from playwright.sync_api import sync_playwright
 from transcription_backend import transcribe_video
 
 
-APP_VERSION = "0.4.4"
+APP_VERSION = "0.4.5"
 STORY_URL_RE = re.compile(r"/stories/(?P<user>[^/]+)/(?P<id>\d+)/?")
 HIGHLIGHT_URL_RE = re.compile(r"/stories/highlights/(?P<id>\d+)/?")
 STRICT_STORY_ROOT_PATH_RE = re.compile(r"^/stories/[A-Za-z0-9._-]{1,64}/?$")
@@ -208,23 +208,106 @@ def discover_highlight_url(page, creator: str, label: str) -> tuple[str, list[di
     )
 
 
-def extract_story_identity(url: str, screenshot_bytes: bytes) -> tuple[str, str | None]:
+def _normalized_media_identity_path(value: str | None) -> str | None:
+    try:
+        parsed = urlsplit(str(value or "").strip())
+    except Exception:
+        return None
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc or not parsed.path:
+        return None
+    return parsed.path
+
+
+def visible_story_media_url(page) -> str | None:
+    """Return the largest visible Story media URL without fetching it."""
+    try:
+        return page.evaluate(
+            """() => {
+                const rows = [];
+                for (const el of document.querySelectorAll('video, img')) {
+                    const rect = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    if (
+                        rect.width < 180 || rect.height < 180 ||
+                        style.display === 'none' || style.visibility === 'hidden' ||
+                        Number(style.opacity || '1') === 0
+                    ) continue;
+                    const values = [];
+                    if (el.currentSrc) values.push(el.currentSrc);
+                    if (el.src) values.push(el.src);
+                    if (el.poster) values.push(el.poster);
+                    for (const child of el.querySelectorAll?.('source[src]') || []) {
+                        values.push(child.src);
+                    }
+                    const url = values.find(v => /^https?:\/\//i.test(String(v || '')));
+                    if (!url) continue;
+                    rows.push({url, area: rect.width * rect.height});
+                }
+                rows.sort((a, b) => b.area - a.area);
+                return rows.length ? rows[0].url : null;
+            }"""
+        )
+    except Exception:
+        return None
+
+
+def extract_story_identity(
+    url: str,
+    screenshot_bytes: bytes,
+    media_url: str | None = None,
+) -> tuple[str | None, str | None, str]:
     # IMPORTANT: check Highlight before Story. A highlight URL also matches the generic
     # /stories/<user>/<id>/ pattern with user="highlights", which previously collapsed
     # every highlight frame to the same key.
     m = HIGHLIGHT_URL_RE.search(url)
     if m:
-        # The stable highlight URL does not expose the child story id, so use the
-        # screenshot content hash as the frame identity.
+        # Highlight child IDs are not exposed in the route. Keep the legacy visual
+        # identity here; the unstable-root bug only concerns ordinary Stories.
         h = hashlib.sha256(screenshot_bytes).hexdigest()[:24]
-        return f"highlightframe-{h}", None
+        return f"highlightframe-{h}", None, "HIGHLIGHT_SCREENSHOT_HASH"
 
     m = STORY_URL_RE.search(url)
     if m:
-        return m.group("id"), m.group("id")
+        return m.group("id"), m.group("id"), "STORY_URL_ID"
 
-    h = hashlib.sha256(screenshot_bytes).hexdigest()[:24]
-    return f"frame-{h}", None
+    # Instagram sometimes keeps the browser on /stories/<creator>/ while a concrete
+    # Story is visible. Hash the media *path* rather than the whole screenshot:
+    # query tokens can rotate, while the CDN path identifies the media asset. Full
+    # screenshot hashes are not stable because Story progress/timer UI changes.
+    media_path = _normalized_media_identity_path(media_url)
+    if media_path:
+        h = hashlib.sha256(media_path.encode("utf-8")).hexdigest()[:24]
+        return f"media-{h}", None, "VISIBLE_MEDIA_URL_PATH"
+
+    # Fail closed instead of inventing a new Story on every scan from volatile UI.
+    return None, None, "UNRESOLVED_STORY_ROOT"
+
+
+def invalidate_legacy_unstable_story_evidence(manifest: dict) -> int:
+    invalidated = 0
+    for item in (manifest.get("items") or {}).values():
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("source_type") or "").upper() != "STORY":
+            continue
+        if item.get("story_id"):
+            continue
+        evidence_id = str(item.get("evidence_id") or "")
+        if not evidence_id.startswith("frame-"):
+            continue
+        try:
+            parsed = urlsplit(str(item.get("source_url") or ""))
+        except Exception:
+            continue
+        if not STRICT_STORY_ROOT_PATH_RE.fullmatch(parsed.path):
+            continue
+        if str(item.get("research_status") or "").upper() == "INVALID":
+            continue
+        item["research_status"] = "INVALID"
+        item["invalid_reason"] = "LEGACY_UNSTABLE_ROOT_STORY_IDENTITY"
+        item["invalidated_at"] = utc_now()
+        invalidated += 1
+    return invalidated
 
 
 def safe_body_text(page, max_chars: int = 6000) -> str:
@@ -409,6 +492,7 @@ def capture_story_frames(
 
     captured_new = 0
     seen_existing = 0
+    unstable_identity_skipped = 0
     visited = 0
     consecutive_unchanged = 0
     previous_marker = None
@@ -426,35 +510,45 @@ def capture_story_frames(
             break
 
         screenshot = page.screenshot(full_page=False)
-        evidence_id, story_id = extract_story_identity(page.url, screenshot)
+        media_url = visible_story_media_url(page) if source_type == "STORY" else None
+        evidence_id, story_id, identity_basis = extract_story_identity(
+            page.url,
+            screenshot,
+            media_url,
+        )
         content_hash = hashlib.sha256(screenshot).hexdigest()
         marker = f"{page.url}|{content_hash}"
-
-        key = f"{source_type}:{creator}:{evidence_id}"
         visited += 1
 
-        if key in manifest["items"]:
-            seen_existing += 1
+        if evidence_id is None:
+            unstable_identity_skipped += 1
         else:
-            ext = ".png"
-            shot_path = shot_dir / f"{evidence_id}{ext}"
-            shot_path.write_bytes(screenshot)
-            manifest["items"][key] = {
-                "schema_version": 1,
-                "source_type": source_type,
-                "creator": creator,
-                "highlight_label": highlight_label,
-                "evidence_id": evidence_id,
-                "story_id": story_id,
-                "source_url": page.url,
-                "observed_at": utc_now(),
-                "screenshot_file": str(shot_path.relative_to(root)),
-                "screenshot_sha256": content_hash,
-                "browser_text": safe_body_text(page),
-                "research_status": "PENDING",
-                "visual_review_required": True,
-            }
-            captured_new += 1
+            key = f"{source_type}:{creator}:{evidence_id}"
+            if key in manifest["items"]:
+                seen_existing += 1
+            else:
+                ext = ".png"
+                shot_path = shot_dir / f"{evidence_id}{ext}"
+                shot_path.write_bytes(screenshot)
+                media_identity_path = _normalized_media_identity_path(media_url)
+                manifest["items"][key] = {
+                    "schema_version": 1,
+                    "source_type": source_type,
+                    "creator": creator,
+                    "highlight_label": highlight_label,
+                    "evidence_id": evidence_id,
+                    "story_id": story_id,
+                    "story_identity_basis": identity_basis,
+                    "media_identity_path": media_identity_path,
+                    "source_url": page.url,
+                    "observed_at": utc_now(),
+                    "screenshot_file": str(shot_path.relative_to(root)),
+                    "screenshot_sha256": content_hash,
+                    "browser_text": safe_body_text(page),
+                    "research_status": "PENDING",
+                    "visual_review_required": True,
+                }
+                captured_new += 1
 
         if marker == previous_marker:
             consecutive_unchanged += 1
@@ -473,6 +567,7 @@ def capture_story_frames(
     return {
         "captured_new": captured_new,
         "seen_existing": seen_existing,
+        "unstable_identity_skipped": unstable_identity_skipped,
         "visited_frames": visited,
         "view_confirmation_was_present": confirmation_was_present,
         "view_confirmation_dismissed": confirmation_dismissed,
@@ -652,6 +747,7 @@ def run_one(
     legacy_invalidated = (
         invalidate_legacy_confirmation_evidence(manifest)
         + invalidate_legacy_error_evidence(manifest)
+        + invalidate_legacy_unstable_story_evidence(manifest)
     )
     if legacy_invalidated:
         atomic_write_json(manifest_path, manifest)
