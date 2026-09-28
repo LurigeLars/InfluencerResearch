@@ -1561,6 +1561,7 @@ def run_one(
     gemini_circuit: dict | None = None,
     ollama_budget_state: dict | None = None,
 ) -> dict:
+    run_clock = time.perf_counter()
     manifest_path = root / "state" / "ephemeral" / "manifest.json"
     manifest = load_json(
         manifest_path,
@@ -1586,6 +1587,10 @@ def run_one(
             "errors": [],
         }
 
+    browser_capture_clock = time.perf_counter()
+    browser_capture_ms = 0.0
+    ytdlp_ms = 0.0
+    context_close_ms = 0.0
     with sync_playwright() as p:
         context = launch_instagram_context(p)
         try:
@@ -1615,7 +1620,9 @@ def run_one(
                 preopened=(mode == "highlight"),
             )
             atomic_write_json(manifest_path, manifest)
+            browser_capture_ms = (time.perf_counter() - browser_capture_clock) * 1000
 
+            ytdlp_clock = time.perf_counter()
             ytdlp = run_ytdlp(
                 context=context,
                 root=root,
@@ -1623,8 +1630,11 @@ def run_one(
                 source_type=source_type,
                 source_url=source_url,
             )
+            ytdlp_ms = (time.perf_counter() - ytdlp_clock) * 1000
         finally:
+            close_clock = time.perf_counter()
             context.close()
+            context_close_ms = (time.perf_counter() - close_clock) * 1000
 
     story_visual_keys = list(capture.get("visited_item_keys") or [])
     if source_type == "STORY":
@@ -1645,6 +1655,7 @@ def run_one(
             if key not in story_visual_keys:
                 story_visual_keys.append(key)
 
+    visual_clock = time.perf_counter()
     visual_enrichment = (
         enrich_story_visual_evidence(
             root,
@@ -1667,8 +1678,11 @@ def run_one(
     )
     if visual_enrichment.get("changed"):
         atomic_write_json(manifest_path, manifest)
+    visual_enrichment_ms = (time.perf_counter() - visual_clock) * 1000
 
+    transcription_clock = time.perf_counter()
     transcription = transcribe_downloaded_videos(root, creator, source_type)
+    transcription_ms = (time.perf_counter() - transcription_clock) * 1000
 
     errors = []
     if not ytdlp.get("ok"):
@@ -1696,6 +1710,14 @@ def run_one(
         "ollama_budget_state": dict(ollama_budget_state or {}),
         "video_download": ytdlp,
         "transcription": transcription,
+        "timings": {
+            "browser_capture_ms": round(browser_capture_ms, 1),
+            "ytdlp_ms": round(ytdlp_ms, 1),
+            "context_close_ms": round(context_close_ms, 1),
+            "visual_enrichment_ms": round(visual_enrichment_ms, 1),
+            "transcription_ms": round(transcription_ms, 1),
+            "total_ms": round((time.perf_counter() - run_clock) * 1000, 1),
+        },
         "state": "DONE" if not errors else "DONE_WITH_ERRORS",
         "errors": errors,
         "discovered_highlights": discovered if mode == "highlight" else None,
