@@ -559,6 +559,7 @@ def _promote_story_items(
         "available": [],
         "reused_existing_count": 0,
         "reattributed_count": 0,
+        "identity_aliases_retired_count": 0,
         "conflicts": [],
         "manifest_changed": False,
     }
@@ -601,12 +602,31 @@ def _promote_story_items(
             continue
         candidates.append((observed, item))
 
+    # A root-URL media identity is only a temporary fallback. If the same
+    # media asset is also observed with Instagram's numeric Story id, prefer the
+    # numeric identity and suppress the fallback candidate in this run.
+    numeric_media_paths = {
+        str(item.get("media_identity_path") or "")
+        for _, item in candidates
+        if item.get("story_id") and item.get("media_identity_path")
+    }
+    candidates = [
+        (observed, item)
+        for observed, item in candidates
+        if not (
+            not item.get("story_id")
+            and str(item.get("evidence_id") or "").startswith("media-")
+            and str(item.get("media_identity_path") or "") in numeric_media_paths
+        )
+    ]
+
     candidates.sort(key=lambda row: row[0], reverse=True)
     promoted: list[dict] = []
     available: list[dict] = []
     conflicts: list[dict] = []
     reused_existing_count = 0
     reattributed_count = 0
+    identity_aliases_retired_count = 0
     changed = False
 
     def descriptor(key: str, identity: str, manifest_item: dict, observed: datetime) -> dict:
@@ -637,6 +657,35 @@ def _promote_story_items(
         has_transcript = transcript_path is not None
         if not has_screenshot and not has_transcript:
             continue
+
+        matching_aliases: list[tuple[str, dict]] = []
+        media_identity_path = str(item.get("media_identity_path") or "")
+        if item.get("story_id") and media_identity_path:
+            for alias_key, alias_item in manifest["items"].items():
+                if alias_key == key or not isinstance(alias_item, dict):
+                    continue
+                if str(alias_item.get("source_platform") or "").upper() != "INSTAGRAM":
+                    continue
+                if str(alias_item.get("source_subtype") or "").upper() != "STORY":
+                    continue
+                alias_creator = str(alias_item.get("creator") or "")
+                if alias_creator != canonical_key and alias_creator not in superseded_keys:
+                    continue
+                if not str(alias_item.get("source_id") or "").startswith("story:media-"):
+                    continue
+                if str(alias_item.get("media_identity_path") or "") != media_identity_path:
+                    continue
+                if str(alias_item.get("research_status") or "").upper() == "INVALID":
+                    continue
+                matching_aliases.append((alias_key, alias_item))
+
+            for alias_key, alias_item in matching_aliases:
+                alias_item["research_status"] = "INVALID"
+                alias_item["invalid_reason"] = "SUPERSEDED_BY_NUMERIC_STORY_ID"
+                alias_item["superseded_by"] = key
+                alias_item["superseded_at"] = now_iso()
+                changed = True
+                identity_aliases_retired_count += 1
 
         existing = manifest["items"].get(key)
         if isinstance(existing, dict):
@@ -684,6 +733,7 @@ def _promote_story_items(
             reused_existing_count += 1
             continue
 
+        alias_source = matching_aliases[0][1] if matching_aliases else {}
         manifest_item = {
             "schema_version": 1,
             "creator": canonical_key,
@@ -691,9 +741,10 @@ def _promote_story_items(
             "source_subtype": "STORY",
             "source_id": f"story:{identity}",
             "url": item.get("source_url"),
-            "published_at": observed.isoformat(),
+            "published_at": str(alias_source.get("published_at") or observed.isoformat()),
             "published_at_basis": "ACTIVE_STORY_OBSERVED_AT",
-            "observed_at": observed.isoformat(),
+            "observed_at": str(alias_source.get("observed_at") or observed.isoformat()),
+            "identity_migrated_from": [alias_key for alias_key, _ in matching_aliases],
             "story_identity_basis": item.get("story_identity_basis"),
             "media_identity_path": item.get("media_identity_path"),
             "download_status": "DONE",
@@ -703,14 +754,14 @@ def _promote_story_items(
                 str(transcript_path.relative_to(root)) if transcript_path is not None else None
             ),
             "transcript_source": "STORY_VIDEO" if has_transcript else None,
-            "browser_text": str(item.get("browser_text") or ""),
-            "visual_description": str(item.get("visual_description") or ""),
-            "visual_description_status": item.get("visual_description_status"),
-            "visual_description_source": item.get("visual_description_source"),
-            "visual_description_provider": item.get("visual_description_provider"),
-            "visual_description_model": item.get("visual_description_model"),
-            "visual_description_generated_at": item.get("visual_description_generated_at"),
-            "visual_description_error": item.get("visual_description_error"),
+            "browser_text": str(item.get("browser_text") or alias_source.get("browser_text") or ""),
+            "visual_description": str(item.get("visual_description") or alias_source.get("visual_description") or ""),
+            "visual_description_status": item.get("visual_description_status") or alias_source.get("visual_description_status"),
+            "visual_description_source": item.get("visual_description_source") or alias_source.get("visual_description_source"),
+            "visual_description_provider": item.get("visual_description_provider") or alias_source.get("visual_description_provider"),
+            "visual_description_model": item.get("visual_description_model") or alias_source.get("visual_description_model"),
+            "visual_description_generated_at": item.get("visual_description_generated_at") or alias_source.get("visual_description_generated_at"),
+            "visual_description_error": item.get("visual_description_error") or alias_source.get("visual_description_error"),
             "screenshot_file": screenshot_rel or None,
             "visual_evidence_status": "DONE" if has_screenshot else "NOT_AVAILABLE",
             "visual_evidence_index": screenshot_rel or None,
@@ -725,7 +776,10 @@ def _promote_story_items(
         manifest["items"][key] = manifest_item
         changed = True
         row = descriptor(key, identity, manifest_item, observed)
-        promoted.append(row)
+        if matching_aliases:
+            reused_existing_count += 1
+        else:
+            promoted.append(row)
         available.append(row)
 
     if changed:
@@ -736,6 +790,7 @@ def _promote_story_items(
         "available": available,
         "reused_existing_count": reused_existing_count,
         "reattributed_count": reattributed_count,
+        "identity_aliases_retired_count": identity_aliases_retired_count,
         "conflicts": conflicts,
         "manifest_changed": changed,
     }
@@ -790,6 +845,9 @@ def _ingest_instagram_stories(
         "available": available,
         "reused_existing_count": int(bridge.get("reused_existing_count") or 0),
         "reattributed_count": int(bridge.get("reattributed_count") or 0),
+        "identity_aliases_retired_count": int(
+            bridge.get("identity_aliases_retired_count") or 0
+        ),
         "conflicts": list(bridge.get("conflicts") or []),
         "capture": capture,
         "queue": queue,
