@@ -294,6 +294,108 @@ ov"""
             self.assertEqual(item["visual_description_contract"], ei.OLLAMA_VISUAL_CONTRACT)
             gemini.assert_not_called()
 
+    def test_insufficient_ollama_result_is_cached_for_identical_story_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self._manifest(root)
+            circuit = {
+                "open": True,
+                "reason": "PROVIDER_RATE_LIMIT",
+                "retry_after": "2099-01-01T00:00:00+00:00",
+                "retry_after_source": "FALLBACK",
+            }
+            ollama_result = {
+                "text": "",
+                "source": "OLLAMA_STORY_SCREENSHOT_EVIDENCE",
+                "provider": "ollama",
+                "model": "gemma3-12b-16k",
+                "contract": ei.OLLAMA_VISUAL_CONTRACT,
+            }
+
+            with patch("ephemeral_ingest.extract_story_text_local_ocr", return_value={
+                "text": "tiny",
+                "source": "LOCAL_OCR",
+                "provider": "tesseract",
+                "model": "eng+swe",
+            }), patch(
+                "ephemeral_ingest.extract_image_evidence_ollama",
+                return_value=ollama_result,
+            ) as ollama, patch("ephemeral_ingest.extract_image_evidence_gemini") as gemini:
+                first = ei.enrich_story_visual_evidence(
+                    root,
+                    manifest,
+                    ["story-1"],
+                    circuit_state=dict(circuit),
+                )
+                second = ei.enrich_story_visual_evidence(
+                    root,
+                    manifest,
+                    ["story-1"],
+                    circuit_state=dict(circuit),
+                )
+
+            item = manifest["items"]["story-1"]
+            self.assertEqual(ollama.call_count, 1)
+            gemini.assert_not_called()
+            self.assertEqual(first["ollama_attempted"], 1)
+            self.assertEqual(first["ollama_insufficient"], 1)
+            self.assertEqual(first["ollama_cached_insufficient"], 0)
+            self.assertEqual(second["ollama_attempted"], 0)
+            self.assertEqual(second["ollama_cached_insufficient"], 1)
+            self.assertEqual(
+                item["ollama_visual_attempt_status"],
+                ei.OLLAMA_INSUFFICIENT_CACHE_STATUS,
+            )
+            self.assertTrue(item["ollama_visual_attempt_fingerprint"])
+
+    def test_changed_story_screenshot_invalidates_insufficient_ollama_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self._manifest(root)
+            circuit = {
+                "open": True,
+                "reason": "PROVIDER_RATE_LIMIT",
+                "retry_after": "2099-01-01T00:00:00+00:00",
+                "retry_after_source": "FALLBACK",
+            }
+            with patch("ephemeral_ingest.extract_story_text_local_ocr", return_value={
+                "text": "tiny",
+                "source": "LOCAL_OCR",
+                "provider": "tesseract",
+                "model": "eng+swe",
+            }), patch("ephemeral_ingest.extract_image_evidence_ollama", return_value={
+                "text": "",
+                "source": "OLLAMA_STORY_SCREENSHOT_EVIDENCE",
+                "provider": "ollama",
+                "model": "gemma3-12b-16k",
+                "contract": ei.OLLAMA_VISUAL_CONTRACT,
+            }) as ollama, patch("ephemeral_ingest.extract_image_evidence_gemini") as gemini:
+                ei.enrich_story_visual_evidence(
+                    root,
+                    manifest,
+                    ["story-1"],
+                    circuit_state=dict(circuit),
+                )
+                first_fingerprint = manifest["items"]["story-1"][
+                    "ollama_visual_attempt_fingerprint"
+                ]
+                (root / "shot.png").write_bytes(b"changed-story-pixels")
+                second = ei.enrich_story_visual_evidence(
+                    root,
+                    manifest,
+                    ["story-1"],
+                    circuit_state=dict(circuit),
+                )
+
+            self.assertEqual(ollama.call_count, 2)
+            gemini.assert_not_called()
+            self.assertEqual(second["ollama_attempted"], 1)
+            self.assertEqual(second["ollama_cached_insufficient"], 0)
+            self.assertNotEqual(
+                first_fingerprint,
+                manifest["items"]["story-1"]["ollama_visual_attempt_fingerprint"],
+            )
+
     def test_shared_ollama_budget_is_global_across_enrichment_calls(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
