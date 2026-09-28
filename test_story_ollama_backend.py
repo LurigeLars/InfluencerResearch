@@ -36,6 +36,7 @@ class StoryOllamaBackendTests(unittest.TestCase):
             self.assertIn("noisy OCR", payload["messages"][0]["content"])
             self.assertEqual(result["provider"], "ollama")
             self.assertEqual(result["source"], "OLLAMA_STORY_SCREENSHOT_EVIDENCE")
+            self.assertEqual(result["contract"], tb.OLLAMA_VISUAL_CONTRACT)
 
     def test_ollama_embedded_no_content_marker_is_removed(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -68,6 +69,41 @@ class StoryOllamaBackendTests(unittest.TestCase):
             }).encode("utf-8"))
             with patch("transcription_backend.urllib_request.urlopen", return_value=response):
                 result = tb.extract_image_evidence_ollama(image_path)
+            self.assertEqual(result["text"], "")
+
+    def test_ollama_drops_model_commentary_and_keeps_visible_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = Path(tmp) / "story.png"
+            image_path.write_bytes(b"png-bytes")
+            response = io.BytesIO(json.dumps({
+                "message": {"content": (
+                    "**Visible Text:**\n"
+                    "* **Headline:** NVIDIA Open Agent Safety Platform\n"
+                    "The image shows a complex architecture diagram.\n"
+                    "Person: a man wearing a suit"
+                )}
+            }).encode("utf-8"))
+            with patch("transcription_backend.urllib_request.urlopen", return_value=response):
+                result = tb.extract_image_evidence_ollama(
+                    image_path,
+                    ocr_hint="NVIDIA Open Agent Safety Platform launched today",
+                )
+            self.assertEqual(result["text"], "NVIDIA Open Agent Safety Platform")
+            self.assertNotIn("image shows", result["text"].lower())
+            self.assertNotIn("person:", result["text"].lower())
+
+    def test_ollama_ungrounded_output_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = Path(tmp) / "story.png"
+            image_path.write_bytes(b"png-bytes")
+            response = io.BytesIO(json.dumps({
+                "message": {"content": "Completely unrelated invented company earnings guidance"}
+            }).encode("utf-8"))
+            with patch("transcription_backend.urllib_request.urlopen", return_value=response):
+                result = tb.extract_image_evidence_ollama(
+                    image_path,
+                    ocr_hint="Micron AMD ARM Intel memory processors payment",
+                )
             self.assertEqual(result["text"], "")
 
 
