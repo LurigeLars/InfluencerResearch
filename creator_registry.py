@@ -486,6 +486,49 @@ def _extend_existing_profile_sources(existing: dict, candidate: dict) -> dict:
     }
 
 
+def _disable_exact_duplicate_profiles(registry: dict, canonical_key: str) -> tuple[dict, list[str]]:
+    """Disable exact active aliases after an existing canonical key is re-asserted."""
+    canonical = registry["creators"].get(canonical_key)
+    if not canonical:
+        return registry, []
+
+    canonical_name = str(canonical.get("display_name") or "").strip().casefold()
+    canonical_sources = {
+        (str(source.get("platform") or "").upper(), str(source.get("profile_url") or "").strip())
+        for source in canonical.get("sources", [])
+        if source.get("enabled", True)
+    }
+    if not canonical_name or not canonical_sources:
+        return registry, []
+
+    creators = dict(registry["creators"])
+    disabled: list[str] = []
+    for key, profile in creators.items():
+        if key == canonical_key or str(profile.get("status", "ACTIVE")).upper() != "ACTIVE":
+            continue
+        if str(profile.get("display_name") or "").strip().casefold() != canonical_name:
+            continue
+        source_ids = {
+            (str(source.get("platform") or "").upper(), str(source.get("profile_url") or "").strip())
+            for source in profile.get("sources", [])
+            if source.get("enabled", True)
+        }
+        if source_ids != canonical_sources:
+            continue
+        creators[key] = {
+            **profile,
+            "status": "DISABLED",
+            "monitoring_enabled": False,
+            "superseded_by": canonical_key,
+            "disabled_at": now_iso(),
+        }
+        disabled.append(key)
+
+    if not disabled:
+        return registry, []
+    return {**registry, "updated_at": now_iso(), "creators": creators}, disabled
+
+
 def register_creator(root: Path, req: dict) -> dict:
     root = root.resolve()
     path = root / "control" / "creator_registry.json"
@@ -496,6 +539,17 @@ def register_creator(root: Path, req: dict) -> dict:
     if existing:
         candidate = {**profile, "verification": {**profile["verification"], "verified_at": (existing.get("verification") or {}).get("verified_at", profile["verification"]["verified_at"])}}
         if _functional_profile(existing) == _functional_profile(candidate):
+            cleaned, disabled = _disable_exact_duplicate_profiles(registry, key)
+            if disabled:
+                cleaned = validate_registry(cleaned)
+                atomic_json(path, cleaned)
+                return {
+                    "result": "DEDUPLICATED",
+                    "creator_key": key,
+                    "registry_changed": True,
+                    "source_count": len(profile["sources"]),
+                    "disabled_duplicate_keys": disabled,
+                }
             return {"result": "ALREADY_REGISTERED", "creator_key": key, "registry_changed": False, "source_count": len(profile["sources"])}
 
         existing_platforms = {str(source.get("platform")) for source in existing.get("sources", [])}
@@ -504,18 +558,45 @@ def register_creator(root: Path, req: dict) -> dict:
             extended = _extend_existing_profile_sources(existing, candidate)
             merged = {**registry, "updated_at": now_iso(), "creators": {**registry["creators"], key: extended}}
             merged = validate_registry(merged)
+            merged, disabled = _disable_exact_duplicate_profiles(merged, key)
+            merged = validate_registry(merged)
             atomic_json(path, merged)
-            return {"result": "EXTENDED", "creator_key": key, "registry_changed": True, "source_count": len(extended["sources"])}
+            return {
+                "result": "EXTENDED",
+                "creator_key": key,
+                "registry_changed": True,
+                "source_count": len(extended["sources"]),
+                "disabled_duplicate_keys": disabled,
+            }
 
         if _functional_profile_without_runtime_metadata(existing) != _functional_profile_without_runtime_metadata(candidate):
             raise ValueError("CREATOR_KEY_CONFLICT")
         enriched = _enrich_runtime_source_metadata(existing, candidate)
         if _functional_profile(existing) == _functional_profile(enriched):
+            cleaned, disabled = _disable_exact_duplicate_profiles(registry, key)
+            if disabled:
+                cleaned = validate_registry(cleaned)
+                atomic_json(path, cleaned)
+                return {
+                    "result": "DEDUPLICATED",
+                    "creator_key": key,
+                    "registry_changed": True,
+                    "source_count": len(profile["sources"]),
+                    "disabled_duplicate_keys": disabled,
+                }
             return {"result": "ALREADY_REGISTERED", "creator_key": key, "registry_changed": False, "source_count": len(profile["sources"])}
         merged = {**registry, "updated_at": now_iso(), "creators": {**registry["creators"], key: enriched}}
         merged = validate_registry(merged)
+        merged, disabled = _disable_exact_duplicate_profiles(merged, key)
+        merged = validate_registry(merged)
         atomic_json(path, merged)
-        return {"result": "ENRICHED", "creator_key": key, "registry_changed": True, "source_count": len(profile["sources"])}
+        return {
+            "result": "ENRICHED",
+            "creator_key": key,
+            "registry_changed": True,
+            "source_count": len(profile["sources"]),
+            "disabled_duplicate_keys": disabled,
+        }
 
     profile["registration"] = {
         "request_id": str(req.get("request_id") or ""),
