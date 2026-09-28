@@ -1002,6 +1002,7 @@ def _queue_targets(root: Path, item_keys: set[str]) -> list[dict]:
             "visual_description_source": item.get("visual_description_source"),
             "visual_description_provider": item.get("visual_description_provider"),
             "visual_description_model": item.get("visual_description_model"),
+            "visual_description_contract": item.get("visual_description_contract"),
             "visual_evidence_status": item.get("visual_evidence_status"),
             "visual_evidence_index": item.get("visual_evidence_index"),
             "visual_frame_count": item.get("visual_frame_count"),
@@ -1362,21 +1363,15 @@ def _main_impl() -> int:
         if incomplete_windows:
             errors.append({"stage": "COVERAGE", "error": "WINDOW_MAY_BE_TRUNCATED", "sources": incomplete_windows})
 
-        analysis_readiness_complete = not bool(
-            deferred_extraction_recent
-            or extraction_error_recent
-            or pending_extraction_recent
-        )
         # Provider throttling/deferred enrichment does not mean the discovery/ingestion
         # run failed. Keep it explicit in readiness fields while reserving PARTIAL for
         # actual errors, incomplete coverage, or unresolved non-provider extraction.
-        blocking_extraction_pending = bool(
-            extraction_error_recent or pending_extraction_recent
-        )
-        final_state = (
-            "COMPLETE"
-            if not errors and not blocking_extraction_pending
-            else ("PARTIAL" if discoveries else "FAILED")
+        final_state, analysis_readiness_complete = _recent_check_final_state(
+            errors=errors,
+            discoveries=discoveries,
+            deferred_extraction=deferred_extraction_recent,
+            extraction_errors=extraction_error_recent,
+            pending_extraction=pending_extraction_recent,
         )
         total_duration_ms = round((time.perf_counter() - run_clock) * 1000, 1)
         stage_totals_ms: dict[str, float] = {}
@@ -1487,6 +1482,29 @@ def _main_impl() -> int:
         atomic_json(status_path, status)
         print(json.dumps(status, ensure_ascii=True, indent=2))
         return 2
+
+
+
+def _recent_check_final_state(
+    *,
+    errors: list,
+    discoveries: list,
+    deferred_extraction: list,
+    extraction_errors: list,
+    pending_extraction: list,
+) -> tuple[str, bool]:
+    """Separate scan completion from downstream evidence readiness."""
+    analysis_readiness_complete = not bool(
+        deferred_extraction or extraction_errors or pending_extraction
+    )
+    blocking_extraction_pending = bool(extraction_errors or pending_extraction)
+    state = (
+        "COMPLETE"
+        if not errors and not blocking_extraction_pending
+        else ("PARTIAL" if discoveries else "FAILED")
+    )
+    return state, analysis_readiness_complete
+
 
 
 def main() -> int:
