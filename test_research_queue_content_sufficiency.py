@@ -109,5 +109,50 @@ class ResearchQueueContentSufficiencyTests(unittest.TestCase):
             self.assertEqual(queue["items"][0]["analysis_content_reason"], "TRANSCRIPT")
 
 
+    def test_visible_text_recovers_empty_audio_transcript(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            transcript = root / "output" / "nicholascrown" / "tiktok" / "transcripts" / "7690360065731202317.txt"
+            transcript.parent.mkdir(parents=True)
+            transcript.write_text("", encoding="utf-8")
+            manifest = {
+                "schema_version": 1,
+                "items": {
+                    "tt_7690360065731202317": {
+                        "creator": "nicholascrown",
+                        "source_platform": "TIKTOK",
+                        "source_type": "VIDEO",
+                        "source_id": "7690360065731202317",
+                        "url": "https://www.tiktok.com/@nicholas_crown/video/7690360065731202317",
+                        "caption": "This is the layer that took me years to learn.",
+                        "visible_text": (
+                            "Layer one is liquidity. Layer two is positioning. "
+                            "Layer three is waiting for confirmation before entering the trade."
+                        ),
+                        "visual_text_status": "DONE",
+                        "visual_text_source": "GEMINI_VIDEO_VISIBLE_TEXT",
+                        "published_at": "2026-09-27T23:25:01+00:00",
+                        "download_status": "DONE",
+                        "transcription_status": "DONE",
+                        "transcript_txt": str(transcript.relative_to(root)),
+                    }
+                },
+            }
+            self._write_common(root, manifest)
+
+            with mock.patch.object(sys, "argv", ["research_queue.py", "--root", str(root)]):
+                self.assertEqual(research_queue.main(), 0)
+
+            queue = json.loads((root / "state" / "research_queue.json").read_text(encoding="utf-8"))
+            self.assertEqual(queue["count"], 1)
+            self.assertEqual(queue["insufficient_content_count"], 0)
+            packet = queue["items"][0]
+            self.assertEqual(packet["analysis_content_status"], "READY")
+            self.assertEqual(packet["analysis_content_reason"], "VISIBLE_TEXT")
+            self.assertIn("liquidity", packet["analysis_evidence_text"].lower())
+            self.assertEqual(packet["visual_text_source"], "GEMINI_VIDEO_VISIBLE_TEXT")
+
+
+
 if __name__ == "__main__":
     unittest.main()
