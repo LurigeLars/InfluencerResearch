@@ -120,6 +120,67 @@ def transcribe_gemini(
 
 
 
+def extract_image_evidence_gemini(
+    image_path: Path,
+    *,
+    model: str = DEFAULT_GEMINI_VISUAL_MODEL,
+    secret_path: Path | None = None,
+) -> dict[str, Any]:
+    """Convert a Story screenshot into compact factual text evidence.
+
+    The downstream MCP consumer cannot read a container-local screenshot path, so
+    this produces a textual representation of the visible Story content. It must
+    stay descriptive: preserve visible text/numbers and describe charts/graphics,
+    but do not infer an investment conclusion that is not directly shown.
+    """
+    api_key = read_gemini_api_key(secret_path)
+    if not api_key:
+        raise RuntimeError("Gemini runtime secret is not available.")
+
+    from google import genai
+
+    client = genai.Client(api_key=api_key)
+    uploaded = None
+    try:
+        uploaded = client.files.upload(file=str(image_path))
+        prompt = (
+            "Convert this Instagram Story screenshot into compact factual evidence "
+            "for downstream financial research. Ignore Instagram viewer chrome such "
+            "as username, age, progress bar, reply/share controls. Preserve all "
+            "meaningful visible text, tickers, prices, percentages, dates, labels, "
+            "chart axes and source names. Then describe any meaningful non-text "
+            "visual evidence such as a chart direction, highlighted region, table, "
+            "headline screenshot, or asset shown. Do not infer the creator's intent, "
+            "do not recommend a trade, and do not add facts that are not visibly "
+            "present. Return plain text only. If the Story contains no meaningful "
+            "content beyond viewer chrome, output exactly NO_MEANINGFUL_VISUAL_EVIDENCE."
+        )
+        interaction = client.interactions.create(
+            model=model,
+            input=[
+                {"type": "text", "text": prompt},
+                {
+                    "type": "image",
+                    "uri": uploaded.uri,
+                    "mime_type": uploaded.mime_type,
+                },
+            ],
+        )
+        text = (interaction.output_text or "").strip()
+        if text == "NO_MEANINGFUL_VISUAL_EVIDENCE":
+            text = ""
+        return {
+            "provider": "gemini",
+            "model": model,
+            "source": "GEMINI_STORY_SCREENSHOT_EVIDENCE",
+            "text": text,
+        }
+    finally:
+        if uploaded is not None:
+            with contextlib.suppress(Exception):
+                client.files.delete(name=uploaded.name)
+
+
 def extract_visible_text_gemini(
     video_path: Path,
     *,
