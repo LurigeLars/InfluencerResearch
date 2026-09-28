@@ -39,6 +39,10 @@ class CommandLineHardeningTests(unittest.TestCase):
             canonical_instagram_ephemeral_url("https://www.instagram.com/stories/example/123/?x=1"),
             "https://www.instagram.com/stories/example/123/",
         )
+        self.assertEqual(
+            canonical_instagram_ephemeral_url("https://www.instagram.com/stories/example/?x=1"),
+            "https://www.instagram.com/stories/example/",
+        )
         with self.assertRaises(ValueError):
             canonical_instagram_ephemeral_url("https://evil.example/stories/example/123/")
 
