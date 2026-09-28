@@ -195,55 +195,111 @@ class CreatorRegistryRuntimeMetadataTests(unittest.TestCase):
 
 
 
-    def test_reregistered_canonical_key_disables_exact_duplicate_alias(self) -> None:
+    def test_explicit_supersession_can_retire_alias_with_different_platform_handles(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
+
             canonical = {
-                "creator_key": "nicholascrown",
-                "display_name": "Nicholas Crown",
+                "creator_key": "creator",
+                "display_name": "Creator",
                 "sources": [
                     {
                         "platform": "TIKTOK",
-                        "profile_url": "https://www.tiktok.com/@nicholas_crown",
+                        "profile_url": "https://www.tiktok.com/@creator_main",
                         "evaluation_enabled": True,
                         "monitoring_enabled": True,
                         "priority": 10,
                     },
                     {
                         "platform": "INSTAGRAM",
-                        "profile_url": "https://www.instagram.com/nicholascrown/",
+                        "profile_url": "https://www.instagram.com/creator.official/",
+                        "evaluation_enabled": False,
+                        "monitoring_enabled": False,
+                        "priority": 50,
+                    },
+                ],
+                "verification_methods": ["MULTI_SOURCE_CORROBORATION"],
+                "verification_refs": ["https://example.com/creator"],
+                "request_id": "canonical",
+                "issued_by": "unit-test",
+            }
+            alias = {
+                "creator_key": "creator_legacy",
+                "display_name": "Legacy Brand Name",
+                "sources": [
+                    {
+                        "platform": "TIKTOK",
+                        "profile_url": "https://www.tiktok.com/@old_creator_handle",
+                        "evaluation_enabled": True,
+                        "monitoring_enabled": False,
+                        "priority": 10,
+                    },
+                    {
+                        "platform": "INSTAGRAM",
+                        "profile_url": "https://www.instagram.com/old.creator.handle/",
                         "evaluation_enabled": False,
                         "monitoring_enabled": False,
                         "priority": 50,
                     },
                 ],
                 "verification_methods": ["HANDLE_BRANDING_BIO_CROSSCHECK"],
-                "verification_refs": [
-                    "https://www.tiktok.com/@nicholas_crown",
-                    "https://www.instagram.com/nicholascrown/",
-                ],
-                "request_id": "canonical",
-                "issued_by": "unit-test",
-            }
-            alias = {
-                **canonical,
-                "creator_key": "nicholascrown_ingest",
+                "verification_refs": ["https://example.com/legacy-creator"],
                 "request_id": "alias",
+                "issued_by": "unit-test",
             }
 
             self.assertEqual(register_creator(root, canonical)["result"], "REGISTERED")
             self.assertEqual(register_creator(root, alias)["result"], "REGISTERED")
 
-            result = register_creator(root, canonical)
-            self.assertEqual(result["result"], "DEDUPLICATED")
-            self.assertEqual(result["disabled_duplicate_keys"], ["nicholascrown_ingest"])
+            reassert = {
+                **canonical,
+                "request_id": "reassert",
+                "supersedes_creator_keys": ["creator_legacy"],
+            }
+            result = register_creator(root, reassert)
+            self.assertEqual(result["result"], "SUPERSEDED")
+            self.assertEqual(result["superseded_creator_keys"], ["creator_legacy"])
 
             registry = load_registry(root)
-            self.assertEqual(registry["creators"]["nicholascrown"]["status"], "ACTIVE")
-            disabled = registry["creators"]["nicholascrown_ingest"]
+            self.assertEqual(registry["creators"]["creator"]["status"], "ACTIVE")
+            disabled = registry["creators"]["creator_legacy"]
             self.assertEqual(disabled["status"], "DISABLED")
             self.assertFalse(disabled["monitoring_enabled"])
-            self.assertEqual(disabled["superseded_by"], "nicholascrown")
+            self.assertEqual(disabled["superseded_by"], "creator")
+
+    def test_alias_is_not_retired_without_explicit_supersession(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            canonical = base_request()
+            canonical["creator_key"] = "canonical"
+            canonical["display_name"] = "Canonical"
+            canonical["sources"][0]["profile_url"] = "https://www.tiktok.com/@canonical"
+            canonical["sources"][1]["profile_url"] = "https://www.youtube.com/@Canonical"
+            canonical["verification_refs"] = ["https://example.com/canonical"]
+
+            alias = base_request()
+            alias["creator_key"] = "alias"
+            alias["display_name"] = "Alias"
+            alias["sources"][0]["profile_url"] = "https://www.tiktok.com/@alias"
+            alias["sources"][1]["profile_url"] = "https://www.youtube.com/@Alias"
+            alias["verification_refs"] = ["https://example.com/alias"]
+
+            register_creator(root, canonical)
+            register_creator(root, alias)
+            again = register_creator(root, canonical)
+            self.assertEqual(again["result"], "ALREADY_REGISTERED")
+            self.assertEqual(load_registry(root)["creators"]["alias"]["status"], "ACTIVE")
+
+    def test_explicit_supersession_requires_registered_alias_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            canonical = base_request()
+            canonical["supersedes_creator_keys"] = ["missing_alias"]
+            with self.assertRaisesRegex(
+                ValueError,
+                "SUPERSEDED_CREATOR_NOT_REGISTERED:missing_alias",
+            ):
+                register_creator(root, canonical)
 
 
 

@@ -81,6 +81,8 @@ The MCP v1 tool surface is deliberately small:
 
 Long-running research operations are fixed allowlisted jobs. Only one research job may run at a time. There is no generic command-execution tool.
 
+`creator_register` also accepts optional `supersedes_creator_keys`. This is an explicit registry operation for retiring known duplicate/legacy creator keys after consolidation. Identity is not inferred from matching handles, display names, or platform URLs; aliases may differ across platforms. Superseded profiles are retained as `DISABLED` with `superseded_by` metadata so historical research remains addressable.
+
 The former Windows request-file/Scheduled-Task research bridge is retired and is not part of the canonical runtime.
 
 ## Connecting a local client

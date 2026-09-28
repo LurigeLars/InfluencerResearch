@@ -342,6 +342,7 @@ def creator_register(
     sources: list[CreatorSource],
     verification_methods: list[str],
     verification_refs: list[str],
+    supersedes_creator_keys: list[str] | None = None,
 ) -> str:
     request = {
         "request_id": "mcp-" + uuid.uuid4().hex,
@@ -351,6 +352,7 @@ def creator_register(
         "sources": [source.model_dump(exclude_none=True) for source in sources],
         "verification_methods": verification_methods,
         "verification_refs": verification_refs,
+        "supersedes_creator_keys": supersedes_creator_keys or [],
     }
     try:
         return as_text(register_creator(ROOT, request))

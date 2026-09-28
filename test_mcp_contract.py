@@ -39,6 +39,11 @@ class MCPContractTests(unittest.TestCase):
         self.assertNotIn("execute_command", source)
         self.assertIn("structured_output=False", source)
 
+    def test_creator_register_exposes_explicit_supersession(self) -> None:
+        source = (BASE / "influencerresearch_mcp.py").read_text(encoding="utf-8")
+        self.assertIn("supersedes_creator_keys: list[str] | None = None", source)
+        self.assertIn('"supersedes_creator_keys": supersedes_creator_keys or []', source)
+
     def test_creator_source_exposes_runtime_metadata(self) -> None:
         source = (BASE / "influencerresearch_mcp.py").read_text(encoding="utf-8")
         for field in (

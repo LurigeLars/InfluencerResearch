@@ -486,43 +486,80 @@ def _extend_existing_profile_sources(existing: dict, candidate: dict) -> dict:
     }
 
 
-def _disable_exact_duplicate_profiles(registry: dict, canonical_key: str) -> tuple[dict, list[str]]:
-    """Disable exact active aliases after an existing canonical key is re-asserted."""
-    canonical = registry["creators"].get(canonical_key)
-    if not canonical:
+def _operational_registration_shape(profile: dict) -> dict:
+    source_keys = {
+        "platform",
+        "profile_url",
+        "enabled",
+        "evaluation_enabled",
+        "monitoring_enabled",
+        "priority",
+        *RUNTIME_SOURCE_METADATA_KEYS,
+    }
+    sources = []
+    for source in profile.get("sources", []):
+        shaped = {key: source.get(key) for key in source_keys if key in source}
+        sources.append(shaped)
+    sources.sort(key=lambda source: (str(source.get("platform") or ""), str(source.get("profile_url") or "")))
+    return {
+        "creator_key": profile.get("creator_key"),
+        "display_name": profile.get("display_name"),
+        "status": profile.get("status"),
+        "monitoring_enabled": bool(profile.get("monitoring_enabled", False)),
+        "sources": sources,
+    }
+
+
+def _normalize_supersedes_creator_keys(req: dict, canonical_key: str) -> list[str]:
+    raw = req.get("supersedes_creator_keys") or []
+    if not isinstance(raw, list) or len(raw) > 20:
+        raise ValueError("BAD_SUPERSEDES_CREATOR_KEYS")
+    out: list[str] = []
+    for value in raw:
+        key = str(value or "").strip().lower()
+        if not CREATOR_KEY_RE.fullmatch(key):
+            raise ValueError("BAD_SUPERSEDES_CREATOR_KEY")
+        if key == canonical_key:
+            raise ValueError("CREATOR_CANNOT_SUPERSEDE_ITSELF")
+        if key not in out:
+            out.append(key)
+    return out
+
+
+def _apply_explicit_supersession(
+    registry: dict,
+    canonical_key: str,
+    alias_keys: list[str],
+) -> tuple[dict, list[str]]:
+    """Disable explicitly named aliases without inferring identity from handles or platforms."""
+    if not alias_keys:
         return registry, []
 
-    canonical_name = str(canonical.get("display_name") or "").strip().casefold()
-    canonical_sources = {
-        (str(source.get("platform") or "").upper(), str(source.get("profile_url") or "").strip())
-        for source in canonical.get("sources", [])
-        if source.get("enabled", True)
-    }
-    if not canonical_name or not canonical_sources:
-        return registry, []
+    canonical = registry["creators"].get(canonical_key)
+    if not canonical or str(canonical.get("status", "ACTIVE")).upper() != "ACTIVE":
+        raise ValueError("CANONICAL_CREATOR_NOT_ACTIVE")
 
     creators = dict(registry["creators"])
     disabled: list[str] = []
-    for key, profile in creators.items():
-        if key == canonical_key or str(profile.get("status", "ACTIVE")).upper() != "ACTIVE":
-            continue
-        if str(profile.get("display_name") or "").strip().casefold() != canonical_name:
-            continue
-        source_ids = {
-            (str(source.get("platform") or "").upper(), str(source.get("profile_url") or "").strip())
-            for source in profile.get("sources", [])
-            if source.get("enabled", True)
-        }
-        if source_ids != canonical_sources:
-            continue
-        creators[key] = {
+    for alias_key in alias_keys:
+        profile = creators.get(alias_key)
+        if profile is None:
+            raise ValueError(f"SUPERSEDED_CREATOR_NOT_REGISTERED:{alias_key}")
+
+        status = str(profile.get("status", "ACTIVE")).upper()
+        if status == "DISABLED":
+            if str(profile.get("superseded_by") or "") == canonical_key:
+                continue
+            raise ValueError(f"CREATOR_ALREADY_DISABLED:{alias_key}")
+
+        creators[alias_key] = {
             **profile,
             "status": "DISABLED",
             "monitoring_enabled": False,
             "superseded_by": canonical_key,
             "disabled_at": now_iso(),
         }
-        disabled.append(key)
+        disabled.append(alias_key)
 
     if not disabled:
         return registry, []
@@ -535,30 +572,52 @@ def register_creator(root: Path, req: dict) -> dict:
     registry = load_registry(root)
     profile = normalize_registration_request(req)
     key = profile["creator_key"]
+    supersedes = _normalize_supersedes_creator_keys(req, key)
     existing = registry["creators"].get(key)
+
     if existing:
-        candidate = {**profile, "verification": {**profile["verification"], "verified_at": (existing.get("verification") or {}).get("verified_at", profile["verification"]["verified_at"])}}
-        if _functional_profile(existing) == _functional_profile(candidate):
-            cleaned, disabled = _disable_exact_duplicate_profiles(registry, key)
+        candidate = {
+            **profile,
+            "verification": {
+                **profile["verification"],
+                "verified_at": (existing.get("verification") or {}).get(
+                    "verified_at",
+                    profile["verification"]["verified_at"],
+                ),
+            },
+        }
+
+        # Verification evidence can evolve independently of source configuration.
+        # Treat an operationally identical request as a re-assertion, not a conflict.
+        if _operational_registration_shape(existing) == _operational_registration_shape(candidate):
+            merged, disabled = _apply_explicit_supersession(registry, key, supersedes)
             if disabled:
-                cleaned = validate_registry(cleaned)
-                atomic_json(path, cleaned)
+                merged = validate_registry(merged)
+                atomic_json(path, merged)
                 return {
-                    "result": "DEDUPLICATED",
+                    "result": "SUPERSEDED",
                     "creator_key": key,
                     "registry_changed": True,
-                    "source_count": len(profile["sources"]),
-                    "disabled_duplicate_keys": disabled,
+                    "source_count": len(existing["sources"]),
+                    "superseded_creator_keys": disabled,
                 }
-            return {"result": "ALREADY_REGISTERED", "creator_key": key, "registry_changed": False, "source_count": len(profile["sources"])}
+            return {
+                "result": "ALREADY_REGISTERED",
+                "creator_key": key,
+                "registry_changed": False,
+                "source_count": len(existing["sources"]),
+            }
 
         existing_platforms = {str(source.get("platform")) for source in existing.get("sources", [])}
         candidate_platforms = {str(source.get("platform")) for source in candidate.get("sources", [])}
         if existing_platforms < candidate_platforms:
             extended = _extend_existing_profile_sources(existing, candidate)
-            merged = {**registry, "updated_at": now_iso(), "creators": {**registry["creators"], key: extended}}
-            merged = validate_registry(merged)
-            merged, disabled = _disable_exact_duplicate_profiles(merged, key)
+            merged = {
+                **registry,
+                "updated_at": now_iso(),
+                "creators": {**registry["creators"], key: extended},
+            }
+            merged, disabled = _apply_explicit_supersession(merged, key, supersedes)
             merged = validate_registry(merged)
             atomic_json(path, merged)
             return {
@@ -566,28 +625,26 @@ def register_creator(root: Path, req: dict) -> dict:
                 "creator_key": key,
                 "registry_changed": True,
                 "source_count": len(extended["sources"]),
-                "disabled_duplicate_keys": disabled,
+                "superseded_creator_keys": disabled,
             }
 
         if _functional_profile_without_runtime_metadata(existing) != _functional_profile_without_runtime_metadata(candidate):
             raise ValueError("CREATOR_KEY_CONFLICT")
+
         enriched = _enrich_runtime_source_metadata(existing, candidate)
-        if _functional_profile(existing) == _functional_profile(enriched):
-            cleaned, disabled = _disable_exact_duplicate_profiles(registry, key)
-            if disabled:
-                cleaned = validate_registry(cleaned)
-                atomic_json(path, cleaned)
-                return {
-                    "result": "DEDUPLICATED",
-                    "creator_key": key,
-                    "registry_changed": True,
-                    "source_count": len(profile["sources"]),
-                    "disabled_duplicate_keys": disabled,
-                }
-            return {"result": "ALREADY_REGISTERED", "creator_key": key, "registry_changed": False, "source_count": len(profile["sources"])}
-        merged = {**registry, "updated_at": now_iso(), "creators": {**registry["creators"], key: enriched}}
-        merged = validate_registry(merged)
-        merged, disabled = _disable_exact_duplicate_profiles(merged, key)
+        merged = {
+            **registry,
+            "updated_at": now_iso(),
+            "creators": {**registry["creators"], key: enriched},
+        }
+        merged, disabled = _apply_explicit_supersession(merged, key, supersedes)
+        if _functional_profile(existing) == _functional_profile(enriched) and not disabled:
+            return {
+                "result": "ALREADY_REGISTERED",
+                "creator_key": key,
+                "registry_changed": False,
+                "source_count": len(profile["sources"]),
+            }
         merged = validate_registry(merged)
         atomic_json(path, merged)
         return {
@@ -595,7 +652,7 @@ def register_creator(root: Path, req: dict) -> dict:
             "creator_key": key,
             "registry_changed": True,
             "source_count": len(profile["sources"]),
-            "disabled_duplicate_keys": disabled,
+            "superseded_creator_keys": disabled,
         }
 
     profile["registration"] = {
@@ -604,10 +661,21 @@ def register_creator(root: Path, req: dict) -> dict:
         "registered_at": now_iso(),
         "registration_path": "MCP_REGISTER_CREATOR",
     }
-    merged = {**registry, "updated_at": now_iso(), "creators": {**registry["creators"], key: profile}}
+    merged = {
+        **registry,
+        "updated_at": now_iso(),
+        "creators": {**registry["creators"], key: profile},
+    }
+    merged, disabled = _apply_explicit_supersession(merged, key, supersedes)
     merged = validate_registry(merged)
     atomic_json(path, merged)
-    return {"result": "REGISTERED", "creator_key": key, "registry_changed": True, "source_count": len(profile["sources"])}
+    return {
+        "result": "REGISTERED",
+        "creator_key": key,
+        "registry_changed": True,
+        "source_count": len(profile["sources"]),
+        "superseded_creator_keys": disabled,
+    }
 
 
 def load_registry(root: Path) -> dict:
