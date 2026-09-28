@@ -153,6 +153,69 @@ class ResearchQueueContentSufficiencyTests(unittest.TestCase):
             self.assertEqual(packet["visual_text_source"], "GEMINI_VIDEO_VISIBLE_TEXT")
 
 
+    def test_deferred_visual_description_is_not_analysis_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            manifest = {
+                "schema_version": 1,
+                "items": {
+                    "ig_story_123": {
+                        "creator": "creator",
+                        "source_platform": "INSTAGRAM",
+                        "source_subtype": "STORY",
+                        "source_id": "story:123",
+                        "url": "https://www.instagram.com/stories/creator/123/",
+                        "caption": "",
+                        "browser_text": "creator 1h",
+                        "published_at": "2026-09-28T18:00:00+00:00",
+                        "download_status": "DONE",
+                        "transcription_status": "NOT_APPLICABLE",
+                        "screenshot_file": "output/creator/stories/screenshots/123.png",
+                        "visual_description": (
+                            "Old stale local-model text that is long enough to pass the normal "
+                            "readiness threshold but must not be analyzed while extraction is deferred."
+                        ),
+                        "visual_description_status": "DEFERRED",
+                        "visual_description_deferred_reason": "PROVIDER_RATE_LIMIT",
+                        "visual_description_retry_after": "2099-01-01T00:00:00+00:00",
+                    }
+                },
+            }
+            self._write_common(root, manifest)
+
+            with mock.patch.object(sys, "argv", ["research_queue.py", "--root", str(root)]):
+                self.assertEqual(research_queue.main(), 0)
+
+            queue = json.loads((root / "state" / "research_queue.json").read_text(encoding="utf-8"))
+            self.assertEqual(queue["count"], 0)
+            self.assertEqual(queue["deferred_extraction_count"], 1)
+            self.assertEqual(
+                queue["deferred_extraction_items"][0]["queue_id"],
+                "ig_story_123",
+            )
+
+    def test_build_packet_excludes_stale_deferred_visual_text(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            item = {
+                "creator": "creator",
+                "source_platform": "INSTAGRAM",
+                "visual_description": "STALE VISUAL MODEL EVIDENCE MUST NOT LEAK",
+                "visual_description_status": "DEFERRED",
+                "caption": "Short caption",
+            }
+            packet = research_queue.build_packet(
+                root,
+                "ig_story_123",
+                item,
+                None,
+                evidence_lineage_id="EL-test",
+                duplicate_of=None,
+                duplicate_basis=None,
+            )
+            self.assertEqual(packet["visual_description"], "")
+            self.assertNotIn("STALE VISUAL MODEL EVIDENCE", packet["analysis_evidence_text"])
+
 
 if __name__ == "__main__":
     unittest.main()
