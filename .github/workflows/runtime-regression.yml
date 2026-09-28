@@ -44,3 +44,5 @@ jobs:
           test_camofox_container_config
           test_local_runtime_namespace
           test_mcp_contract
+          test_research_queue_story
+          test_research_queue_content_sufficiency

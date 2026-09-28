@@ -22,6 +22,7 @@ from transcription_backend import transcribe_video
 APP_VERSION = "0.4.4"
 STORY_URL_RE = re.compile(r"/stories/(?P<user>[^/]+)/(?P<id>\d+)/?")
 HIGHLIGHT_URL_RE = re.compile(r"/stories/highlights/(?P<id>\d+)/?")
+STRICT_STORY_ROOT_PATH_RE = re.compile(r"^/stories/[A-Za-z0-9._-]{1,64}/?$")
 STRICT_STORY_PATH_RE = re.compile(r"^/stories/[A-Za-z0-9._-]{1,64}/\d+/?$")
 STRICT_HIGHLIGHT_PATH_RE = re.compile(r"^/stories/highlights/\d+/?$")
 
@@ -31,7 +32,11 @@ def canonical_instagram_ephemeral_url(value: str) -> str:
     host = (parsed.hostname or "").casefold().rstrip(".")
     if parsed.scheme != "https" or not (host == "instagram.com" or host.endswith(".instagram.com")):
         raise ValueError("Invalid Instagram story/highlight host")
-    if not (STRICT_STORY_PATH_RE.fullmatch(parsed.path) or STRICT_HIGHLIGHT_PATH_RE.fullmatch(parsed.path)):
+    if not (
+        STRICT_STORY_ROOT_PATH_RE.fullmatch(parsed.path)
+        or STRICT_STORY_PATH_RE.fullmatch(parsed.path)
+        or STRICT_HIGHLIGHT_PATH_RE.fullmatch(parsed.path)
+    ):
         raise ValueError("Invalid Instagram story/highlight path")
     return f"https://www.instagram.com{parsed.path}"
 

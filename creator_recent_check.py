@@ -18,7 +18,7 @@ import tiktok_camofox_sync as tts
 import instagram_camofox_public_smoke as instagram_smoke
 import ephemeral_ingest as ephemeral
 
-RECENT_CHECK_VERSION = "0.2.0"
+RECENT_CHECK_VERSION = "0.2.1"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
@@ -867,14 +867,63 @@ def _main_impl() -> int:
                         "error": f"{type(exc).__name__}: {exc}",
                     })
 
-        selected_keys = {x["item_key"] for x in selected_pending}
-        selected_keys.update(x["item_key"] for x in story_selected)
-        analysis_targets = _queue_targets(root, selected_keys)
+        # Rebuild the queue even when all recent items were already ingested. This
+        # migrates older evidence through the current content-readiness gate instead
+        # of silently treating an empty/weak transcript as analysis-ready.
+        queue_refresh = tts.run_research_queue(root)
+        if not queue_refresh.get("ok"):
+            errors.append({
+                "stage": "RESEARCH_QUEUE",
+                "error": f"QUEUE_REFRESH_FAILED:{queue_refresh}",
+            })
+        queue_snapshot = load_json(
+            root / "state" / "research_queue.json",
+            {"items": [], "insufficient_content_items": []},
+        )
+        insufficient_by_key = {
+            str(item.get("queue_id") or ""): item
+            for item in (queue_snapshot.get("insufficient_content_items") or [])
+            if isinstance(item, dict) and item.get("queue_id")
+        }
+
+        # Pending analysis can include a recent item ingested by an earlier run.
+        # Return those targets too; do not require a fresh download in this run.
+        analysis_candidate_keys = {x["item_key"] for x in all_recent}
+        analysis_candidate_keys.update(x["item_key"] for x in story_selected)
+        analysis_targets = _queue_targets(root, analysis_candidate_keys)
         completed_keys = {x["queue_id"] for x in analysis_targets}
-        for item in selected_pending:
+
+        for item in all_recent:
             item["queued_for_analysis"] = item["item_key"] in completed_keys
+            insufficient = insufficient_by_key.get(item["item_key"])
+            if insufficient:
+                item["analysis_content_status"] = "INSUFFICIENT_CONTENT"
+                item["analysis_content_reason"] = insufficient.get("reason")
         for item in story_selected:
             item["queued_for_analysis"] = item["item_key"] in completed_keys
+            insufficient = insufficient_by_key.get(item["item_key"])
+            if insufficient:
+                item["analysis_content_status"] = "INSUFFICIENT_CONTENT"
+                item["analysis_content_reason"] = insufficient.get("reason")
+
+        insufficient_recent = [
+            {
+                "item_key": item["item_key"],
+                "creator_key": item.get("creator_key"),
+                "platform": item.get("platform"),
+                "source_id": item.get("source_id"),
+                "published_at": item.get("published_at"),
+                "reason": item.get("analysis_content_reason"),
+            }
+            for item in (all_recent + story_selected)
+            if item.get("analysis_content_status") == "INSUFFICIENT_CONTENT"
+        ]
+        if insufficient_recent:
+            errors.append({
+                "stage": "CONTENT_EXTRACTION",
+                "error": f"INSUFFICIENT_CONTENT:{len(insufficient_recent)}",
+                "items": insufficient_recent[:100],
+            })
 
         incomplete_windows = [
             {"creator_key": d["creator_key"], "platform": d["platform"]}
@@ -908,6 +957,8 @@ def _main_impl() -> int:
             "selected_for_ingestion_count": len(selected_pending) + len(story_selected),
             "deferred_due_to_cap_count": len(deferred),
             "queued_for_analysis_count": len(analysis_targets),
+            "insufficient_content_count": len(insufficient_recent),
+            "insufficient_content_items": insufficient_recent[:100],
             "auto_ingest": True,
             "auto_analysis_contract": {
                 "enabled": True,

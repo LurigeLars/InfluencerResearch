@@ -78,6 +78,8 @@ def summarize_status(path: Path | None) -> dict | None:
         "selected_for_ingestion_count",
         "queued_for_analysis_count",
         "analysis_targets",
+        "insufficient_content_count",
+        "insufficient_content_items",
     }
     return {key: obj[key] for key in allowed if key in obj}
 
