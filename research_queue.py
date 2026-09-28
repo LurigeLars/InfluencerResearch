@@ -131,10 +131,12 @@ def assess_analysis_content(item: dict, transcript: str) -> dict:
     transcript = str(transcript or "").strip()
     caption = str(item.get("caption") or "").strip()
     browser_text = str(item.get("browser_text") or "").strip()
+    visible_text = str(item.get("visible_text") or "").strip()
 
     transcript_words = len(transcript.split())
     caption_words = len(caption.split())
     browser_text_words = len(browser_text.split())
+    visible_text_words = len(visible_text.split())
     has_visual_evidence = bool(
         item.get("screenshot_file")
         or (
@@ -146,9 +148,12 @@ def assess_analysis_content(item: dict, transcript: str) -> dict:
     if transcript_words >= MIN_TRANSCRIPT_WORDS or len(transcript) >= MIN_TRANSCRIPT_CHARS:
         status = "READY"
         reason = "TRANSCRIPT"
-    elif browser_text_words >= MIN_FALLBACK_TEXT_WORDS or len(browser_text) >= MIN_FALLBACK_TEXT_CHARS:
+    elif visible_text_words >= MIN_TRANSCRIPT_WORDS or len(visible_text) >= MIN_TRANSCRIPT_CHARS:
         status = "READY"
         reason = "VISIBLE_TEXT"
+    elif browser_text_words >= MIN_FALLBACK_TEXT_WORDS or len(browser_text) >= MIN_FALLBACK_TEXT_CHARS:
+        status = "READY"
+        reason = "BROWSER_TEXT"
     elif caption_words >= MIN_FALLBACK_TEXT_WORDS or len(caption) >= MIN_FALLBACK_TEXT_CHARS:
         status = "READY"
         reason = "METADATA_TEXT"
@@ -165,6 +170,7 @@ def assess_analysis_content(item: dict, transcript: str) -> dict:
         "transcript_word_count": transcript_words,
         "caption_word_count": caption_words,
         "browser_text_word_count": browser_text_words,
+        "visible_text_word_count": visible_text_words,
         "has_visual_evidence": has_visual_evidence,
     }
 
@@ -185,6 +191,9 @@ def build_packet(
         else str(item.get("browser_text") or "").strip()
     )
     caption = str(item.get("caption") or "").strip()
+    visible_text = str(item.get("visible_text") or "").strip()
+    evidence_parts = [x for x in (transcript, visible_text, caption) if x]
+    analysis_evidence_text = "\n\n".join(evidence_parts)
 
     return {
         "schema_version": 2,
@@ -221,6 +230,12 @@ def build_packet(
         ),
         "transcript_text": transcript,
         "transcript_source": item.get("transcript_source"),
+        "visible_text": visible_text,
+        "visual_text_status": item.get("visual_text_status"),
+        "visual_text_source": item.get("visual_text_source"),
+        "visual_text_provider": item.get("visual_text_provider"),
+        "visual_text_model": item.get("visual_text_model"),
+        "analysis_evidence_text": analysis_evidence_text,
         "word_count": len(transcript.split()),
         "visual_evidence_status": item.get("visual_evidence_status"),
         "visual_evidence_index": item.get("visual_evidence_index"),
@@ -229,7 +244,7 @@ def build_packet(
         "screenshot_file": item.get("screenshot_file"),
         "full_video_persisted": item.get("full_video_persisted"),
         "media_retention": item.get("media_retention"),
-        "discovery_tags": keyword_tags(caption + "\n" + transcript),
+        "discovery_tags": keyword_tags(caption + "\n" + transcript + "\n" + visible_text),
         # Kept as "ai_instruction" for backward compatibility with existing consumers.
         "ai_instruction": {
             "owner_project": ANALYSIS_OWNER,
@@ -380,6 +395,7 @@ def main() -> int:
             "transcript_word_count": readiness["transcript_word_count"],
             "caption_word_count": readiness["caption_word_count"],
             "browser_text_word_count": readiness["browser_text_word_count"],
+            "visible_text_word_count": readiness["visible_text_word_count"],
             "has_visual_evidence": readiness["has_visual_evidence"],
         }
         for key, value in desired_content_meta.items():

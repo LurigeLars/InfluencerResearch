@@ -68,8 +68,12 @@ def manifest_done_ids(root: Path, platform: str) -> set[str]:
     for key, item in (manifest.get("items") or {}).items():
         if not str(key).startswith(prefix) or not isinstance(item, dict):
             continue
+        if platform == "TIKTOK":
+            if tts._manifest_item_extraction_complete(item):
+                out.add(str(key)[3:])
+            continue
         if item.get("download_status") == "DONE" and item.get("transcription_status") == "DONE":
-            if platform != "YOUTUBE" or item.get("visual_evidence_status") == "DONE":
+            if item.get("visual_evidence_status") == "DONE":
                 out.add(str(key)[3:])
     return out
 

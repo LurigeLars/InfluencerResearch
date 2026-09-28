@@ -38,6 +38,13 @@ jobs:
             }
           }
           if ($failed) { exit 1 }
+      - name: Compile changed Python runtime modules
+        run: >-
+          python -m py_compile
+          transcription_backend.py
+          tiktok_camofox_sync.py
+          research_queue.py
+          creator_monitor.py
       - name: Run runtime secret regression tests
         run: >-
           python -m unittest -v
@@ -46,3 +53,7 @@ jobs:
           test_mcp_contract
           test_research_queue_story
           test_research_queue_content_sufficiency
+          test_tiktok_content_fallback
+          test_transcription_backend
+          test_creator_monitor
+          test_creator_recent_analysis_targets

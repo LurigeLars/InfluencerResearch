@@ -25,9 +25,13 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import camofox_container as camofox_container_config
+from transcription_backend import extract_visible_text_gemini, transcribe_video
 
 
-APP_VERSION = "0.8.8"
+APP_VERSION = "0.8.9"
+CONTENT_EXTRACTION_VERSION = 1
+MIN_ANALYSIS_TRANSCRIPT_WORDS = 8
+MIN_ANALYSIS_TRANSCRIPT_CHARS = 48
 CAMOFOX_FALLBACK_EXPECTED_NODE_VERSION = "v22.23.2"
 CAMOFOX_FALLBACK_EXPECTED_CAMOFOX_VERSION = "1.17.0"
 CAMOFOX_FALLBACK_EXPECTED_CAMOUFOX_JS_VERSION = "0.11.5"
@@ -1215,6 +1219,14 @@ def download_one(url: str, video_dir: Path) -> dict:
         }
 
 
+def _text_is_analysis_ready(value: str) -> bool:
+    text = str(value or "").strip()
+    return (
+        len(text.split()) >= MIN_ANALYSIS_TRANSCRIPT_WORDS
+        or len(text) >= MIN_ANALYSIS_TRANSCRIPT_CHARS
+    )
+
+
 def transcribe(
     root: Path,
     creator_key: str,
@@ -1227,47 +1239,106 @@ def transcribe(
     txt_path = transcript_dir / f"{media_path.stem}.txt"
     json_path = transcript_dir / f"{media_path.stem}.json"
 
+    # Keep a useful existing transcript, but retry historical empty/thin transcripts
+    # through the shared Gemini -> Faster-Whisper backend.
     if txt_path.exists() and json_path.exists():
-        return {
-            "ok": True,
-            "source": "existing_transcript",
-            "txt": txt_path,
-            "json": json_path,
-            "transcribed_at": datetime.fromtimestamp(
-                txt_path.stat().st_mtime, timezone.utc
-            ).isoformat(),
-        }
+        existing_text = txt_path.read_text(encoding="utf-8", errors="replace").strip()
+        if _text_is_analysis_ready(existing_text):
+            return {
+                "ok": True,
+                "source": "existing_transcript",
+                "text": existing_text,
+                "txt": txt_path,
+                "json": json_path,
+                "transcribed_at": datetime.fromtimestamp(
+                    txt_path.stat().st_mtime, timezone.utc
+                ).isoformat(),
+            }
 
     valid, validation = validate_media(media_path)
     if not valid:
         return {"ok": False, "error": f"invalid_media:{validation}"}
 
-    if model_holder.get("model") is None:
-        os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
-        from faster_whisper import WhisperModel
-        model_holder["model"] = WhisperModel("small", device="cpu", compute_type="int8")
-
-    model = model_holder["model"]
-    segments, info = model.transcribe(
-        str(media_path),
-        beam_size=5,
-        vad_filter=True,
-    )
-
-    rows = []
-    text_parts = []
-    for seg in segments:
-        text = (seg.text or "").strip()
-        if text:
-            text_parts.append(text)
-        rows.append({
-            "start": round(float(seg.start), 3),
-            "end": round(float(seg.end), 3),
-            "text": text,
-        })
-
+    _ = model_holder  # retained for backward-compatible call sites
+    settings = load_json(root / "control" / "settings.json", {})
+    tcfg = settings.get("transcription", {}) if isinstance(settings, dict) else {}
+    result = transcribe_video(media_path, tcfg)
+    full_text = str(result.get("text") or "").strip()
     when = utc_now()
-    txt_path.write_text(" ".join(text_parts).strip() + "\n", encoding="utf-8")
+    txt_path.write_text(full_text + ("\n" if full_text else ""), encoding="utf-8")
+
+    metadata = {
+        "schema_version": 1,
+        "app_version": APP_VERSION,
+        "source_platform": "TIKTOK",
+        "creator": creator_key,
+        "video_id": media_path.stem,
+        "generated_at": when,
+        "provider": result.get("provider"),
+        "model": result.get("model"),
+        "language": result.get("language"),
+        "language_probability": result.get("language_probability"),
+        "duration": result.get("duration"),
+        "segments": result.get("segments", []),
+    }
+    if result.get("fallback_from"):
+        metadata["fallback_from"] = result.get("fallback_from")
+        metadata["fallback_error"] = result.get("fallback_error")
+    atomic_json(json_path, metadata)
+    return {
+        "ok": True,
+        "source": str(result.get("provider") or "unknown"),
+        "text": full_text,
+        "provider": result.get("provider"),
+        "model": result.get("model"),
+        "txt": txt_path,
+        "json": json_path,
+        "transcribed_at": when,
+    }
+
+
+def extract_visible_text(
+    root: Path,
+    creator_key: str,
+    media_path: Path,
+) -> dict:
+    visual_dir = root / "output" / creator_key / "tiktok" / "visual_text"
+    visual_dir.mkdir(parents=True, exist_ok=True)
+    txt_path = visual_dir / f"{media_path.stem}.txt"
+    json_path = visual_dir / f"{media_path.stem}.json"
+
+    if txt_path.exists() and json_path.exists():
+        existing_text = txt_path.read_text(encoding="utf-8", errors="replace").strip()
+        try:
+            existing_meta = json.loads(json_path.read_text(encoding="utf-8"))
+        except Exception:
+            existing_meta = {}
+        return {
+            "ok": True,
+            "source": "existing_visual_text",
+            "text": existing_text,
+            "provider": existing_meta.get("provider"),
+            "model": existing_meta.get("model"),
+            "processing": existing_meta.get("processing"),
+            "txt": txt_path,
+            "json": json_path,
+            "generated_at": existing_meta.get("generated_at"),
+        }
+
+    settings = load_json(root / "control" / "settings.json", {})
+    tcfg = settings.get("transcription", {}) if isinstance(settings, dict) else {}
+    visual_model = str(tcfg.get("gemini_visual_model") or "gemini-3.8-flash").strip()
+    if not visual_model:
+        raise ValueError("gemini_visual_model must not be empty")
+
+    result = extract_visible_text_gemini(
+        media_path,
+        model=visual_model,
+        processing="static",
+    )
+    full_text = str(result.get("text") or "").strip()
+    when = utc_now()
+    txt_path.write_text(full_text + ("\n" if full_text else ""), encoding="utf-8")
     atomic_json(json_path, {
         "schema_version": 1,
         "app_version": APP_VERSION,
@@ -1275,17 +1346,22 @@ def transcribe(
         "creator": creator_key,
         "video_id": media_path.stem,
         "generated_at": when,
-        "language": getattr(info, "language", None),
-        "language_probability": getattr(info, "language_probability", None),
-        "duration": getattr(info, "duration", None),
-        "segments": rows,
+        "provider": result.get("provider"),
+        "model": result.get("model"),
+        "source": result.get("source"),
+        "processing": result.get("processing"),
+        "visible_text": full_text,
     })
     return {
         "ok": True,
-        "source": "whisper",
+        "source": result.get("source"),
+        "text": full_text,
+        "provider": result.get("provider"),
+        "model": result.get("model"),
+        "processing": result.get("processing"),
         "txt": txt_path,
         "json": json_path,
-        "transcribed_at": when,
+        "generated_at": when,
     }
 
 
@@ -1331,6 +1407,7 @@ def update_main_manifest(
     url: str,
     download: dict,
     transcription: dict,
+    visual_text: dict | None,
 ) -> dict:
     manifest_path = root / "state" / "manifest.json"
     manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
@@ -1379,8 +1456,48 @@ def update_main_manifest(
         "media_validation": download.get("validation"),
         "transcribed_at": transcription["transcribed_at"],
         "transcription_status": "DONE",
+        "transcript_source": transcription.get("source"),
+        "transcript_provider": transcription.get("provider"),
+        "transcript_model": transcription.get("model"),
         "transcript_txt": str(txt_path.relative_to(root)),
         "transcript_json": str(json_path.relative_to(root)),
+        "visible_text": (
+            str((visual_text or {}).get("text") or "").strip()
+            if visual_text is not None
+            else str(old.get("visible_text") or "").strip()
+        ),
+        "visual_text_status": (
+            "DONE"
+            if visual_text is not None and visual_text.get("ok") and str(visual_text.get("text") or "").strip()
+            else (
+                "NO_VISIBLE_TEXT"
+                if visual_text is not None and visual_text.get("ok")
+                else (
+                    "FAILED"
+                    if visual_text is not None
+                    else old.get("visual_text_status") or "NOT_NEEDED"
+                )
+            )
+        ),
+        "visual_text_source": (visual_text or {}).get("source"),
+        "visual_text_provider": (visual_text or {}).get("provider"),
+        "visual_text_model": (visual_text or {}).get("model"),
+        "visual_text_processing": (visual_text or {}).get("processing"),
+        "visual_text_txt": (
+            str(Path(visual_text["txt"]).relative_to(root))
+            if visual_text is not None and visual_text.get("txt")
+            else old.get("visual_text_txt")
+        ),
+        "visual_text_json": (
+            str(Path(visual_text["json"]).relative_to(root))
+            if visual_text is not None and visual_text.get("json")
+            else old.get("visual_text_json")
+        ),
+        "content_extraction_version": CONTENT_EXTRACTION_VERSION,
+        "content_extraction_exhausted": bool(
+            _text_is_analysis_ready(str(transcription.get("text") or ""))
+            or (visual_text is not None and visual_text.get("ok"))
+        ),
         "research_status": old.get("research_status") or "PENDING",
         "source_class": "INFLUENCER_DISCOVERY_SECONDARY",
     }
@@ -1404,6 +1521,21 @@ def run_research_queue(root: Path) -> dict:
         "stdout_tail": (result.stdout or "")[-3000:],
         "stderr_tail": (result.stderr or "")[-3000:],
     }
+
+
+def _manifest_item_extraction_complete(item: dict) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if item.get("download_status") != "DONE" or item.get("transcription_status") != "DONE":
+        return False
+    if str(item.get("visual_text_status") or "").upper() == "FAILED":
+        return False
+    if str(item.get("research_status") or "").upper() == "INSUFFICIENT_CONTENT":
+        return (
+            bool(item.get("content_extraction_exhausted"))
+            and int(item.get("content_extraction_version") or 0) >= CONTENT_EXTRACTION_VERSION
+        )
+    return True
 
 
 def process_source(root: Path, source: dict, *, max_new_override: int | None = None, include_video_ids: set[str] | None = None, discovery_target_override: int | None = None) -> dict:
@@ -1496,17 +1628,15 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
     ]
     skipped_known = sum(
         1 for url in ordered_urls
-        if f"tt_{video_id_from_url(url)}" in main_items
-        and main_items[f"tt_{video_id_from_url(url)}"].get("download_status") == "DONE"
-        and main_items[f"tt_{video_id_from_url(url)}"].get("transcription_status") == "DONE"
+        if _manifest_item_extraction_complete(
+            main_items.get(f"tt_{video_id_from_url(url)}", {})
+        )
     )
     candidates = [
         url for url in ordered_urls
         if (include_video_ids is None or video_id_from_url(url) in include_video_ids)
-        and not (
-            f"tt_{video_id_from_url(url)}" in main_items
-            and main_items[f"tt_{video_id_from_url(url)}"].get("download_status") == "DONE"
-            and main_items[f"tt_{video_id_from_url(url)}"].get("transcription_status") == "DONE"
+        and not _manifest_item_extraction_complete(
+            main_items.get(f"tt_{video_id_from_url(url)}", {})
         )
     ]
     if max_new_downloads is not None:
@@ -1559,19 +1689,49 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
             })
             continue
 
+        visual_text = None
+        transcript_text = str(transcription.get("text") or "").strip()
+        if not _text_is_analysis_ready(transcript_text):
+            try:
+                visual_text = extract_visible_text(
+                    root,
+                    creator_key,
+                    Path(download["media_file"]),
+                )
+            except Exception as exc:
+                visual_text = {
+                    "ok": False,
+                    "source": "GEMINI_VIDEO_VISIBLE_TEXT",
+                    "text": "",
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+
         record = update_main_manifest(
             root,
             creator_key=creator_key,
             url=url,
             download=download,
             transcription=transcription,
+            visual_text=visual_text,
         )
+
+        if visual_text is not None and not visual_text.get("ok"):
+            failures.append({
+                "video_id": vid,
+                "url": url,
+                "stage": "visual_text",
+                "detail": visual_text.get("error"),
+            })
+            continue
+
         completed.append({
             "video_id": vid,
             "url": url,
             "download_source": download.get("source"),
             "media_file": record["media_file"],
             "transcript_txt": record["transcript_txt"],
+            "visual_text_status": record.get("visual_text_status"),
+            "visual_text_txt": record.get("visual_text_txt"),
         })
 
     return {

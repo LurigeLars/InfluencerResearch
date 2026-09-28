@@ -22,6 +22,7 @@ RECENT_CHECK_VERSION = "0.2.1"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
+MAX_ANALYSIS_EVIDENCE_CHARS = 6000
 STOCKHOLM_TZ = ZoneInfo("Europe/Stockholm")
 
 
@@ -708,6 +709,13 @@ def _queue_targets(root: Path, item_keys: set[str]) -> list[dict]:
             continue
         if str(item.get("analysis_status", "")).upper() != "PENDING_ANALYSIS":
             continue
+        evidence = str(
+            item.get("analysis_evidence_text")
+            or item.get("transcript_text")
+            or item.get("visible_text")
+            or item.get("caption")
+            or ""
+        ).strip()
         out.append({
             "queue_id": qid,
             "creator_key": item.get("creator"),
@@ -715,6 +723,13 @@ def _queue_targets(root: Path, item_keys: set[str]) -> list[dict]:
             "source_id": item.get("source_id"),
             "published_at": item.get("published_at"),
             "source_url": item.get("source_url"),
+            "caption": item.get("caption"),
+            "analysis_content_status": item.get("analysis_content_status"),
+            "analysis_content_reason": item.get("analysis_content_reason"),
+            "transcript_source": item.get("transcript_source"),
+            "word_count": item.get("word_count"),
+            "analysis_evidence_text": evidence[:MAX_ANALYSIS_EVIDENCE_CHARS],
+            "analysis_evidence_truncated": len(evidence) > MAX_ANALYSIS_EVIDENCE_CHARS,
         })
     return out
 
