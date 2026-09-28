@@ -486,6 +486,30 @@ def _extend_existing_profile_sources(existing: dict, candidate: dict) -> dict:
     }
 
 
+def _operational_registration_shape(profile: dict) -> dict:
+    source_keys = {
+        "platform",
+        "profile_url",
+        "enabled",
+        "evaluation_enabled",
+        "monitoring_enabled",
+        "priority",
+        *RUNTIME_SOURCE_METADATA_KEYS,
+    }
+    sources = []
+    for source in profile.get("sources", []):
+        shaped = {key: source.get(key) for key in source_keys if key in source}
+        sources.append(shaped)
+    sources.sort(key=lambda source: (str(source.get("platform") or ""), str(source.get("profile_url") or "")))
+    return {
+        "creator_key": profile.get("creator_key"),
+        "display_name": profile.get("display_name"),
+        "status": profile.get("status"),
+        "monitoring_enabled": bool(profile.get("monitoring_enabled", False)),
+        "sources": sources,
+    }
+
+
 def _disable_exact_duplicate_profiles(registry: dict, canonical_key: str) -> tuple[dict, list[str]]:
     """Disable exact active aliases after an existing canonical key is re-asserted."""
     canonical = registry["creators"].get(canonical_key)
@@ -538,6 +562,24 @@ def register_creator(root: Path, req: dict) -> dict:
     existing = registry["creators"].get(key)
     if existing:
         candidate = {**profile, "verification": {**profile["verification"], "verified_at": (existing.get("verification") or {}).get("verified_at", profile["verification"]["verified_at"])}}
+
+        # A creator may accumulate verification evidence over time, leaving older
+        # sources with a different verification_basis than a fresh registration
+        # request. That metadata difference must not block retirement of an exact
+        # duplicate alias when the operational source configuration is unchanged.
+        if _operational_registration_shape(existing) == _operational_registration_shape(candidate):
+            cleaned, disabled = _disable_exact_duplicate_profiles(registry, key)
+            if disabled:
+                cleaned = validate_registry(cleaned)
+                atomic_json(path, cleaned)
+                return {
+                    "result": "DEDUPLICATED",
+                    "creator_key": key,
+                    "registry_changed": True,
+                    "source_count": len(profile["sources"]),
+                    "disabled_duplicate_keys": disabled,
+                }
+
         if _functional_profile(existing) == _functional_profile(candidate):
             cleaned, disabled = _disable_exact_duplicate_profiles(registry, key)
             if disabled:
