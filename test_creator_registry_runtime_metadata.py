@@ -247,5 +247,134 @@ class CreatorRegistryRuntimeMetadataTests(unittest.TestCase):
 
 
 
+    def test_dedupe_ignores_mixed_source_verification_history(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            initial = {
+                "creator_key": "nicholascrown",
+                "display_name": "Nicholas Crown",
+                "sources": [
+                    {
+                        "platform": "TIKTOK",
+                        "profile_url": "https://www.tiktok.com/@nicholas_crown",
+                        "evaluation_enabled": True,
+                        "monitoring_enabled": True,
+                        "priority": 10,
+                        "discovery_step": 200,
+                        "max_catalog": 2500,
+                    }
+                ],
+                "verification_methods": ["EXISTING_ACCEPTED_SOURCE_CONFIG"],
+                "verification_refs": ["https://www.tiktok.com/@nicholas_crown"],
+                "request_id": "initial",
+                "issued_by": "unit-test",
+            }
+            self.assertEqual(register_creator(root, initial)["result"], "REGISTERED")
+
+            extended = {
+                "creator_key": "nicholascrown",
+                "display_name": "Nicholas Crown",
+                "sources": [
+                    {
+                        "platform": "TIKTOK",
+                        "profile_url": "https://www.tiktok.com/@nicholas_crown",
+                        "evaluation_enabled": True,
+                        "monitoring_enabled": True,
+                        "priority": 10,
+                        "discovery_step": 200,
+                        "max_catalog": 2500,
+                    },
+                    {
+                        "platform": "INSTAGRAM",
+                        "profile_url": "https://www.instagram.com/nicholascrown/",
+                        "evaluation_enabled": False,
+                        "monitoring_enabled": False,
+                        "priority": 50,
+                    },
+                ],
+                "verification_methods": [
+                    "HANDLE_BRANDING_BIO_CROSSCHECK",
+                    "MULTI_SOURCE_CORROBORATION",
+                ],
+                "verification_refs": [
+                    "https://www.tiktok.com/@nicholas_crown",
+                    "https://www.instagram.com/nicholascrown/",
+                    "https://www.nicholascrown.com/",
+                ],
+                "request_id": "extend",
+                "issued_by": "unit-test",
+            }
+            self.assertEqual(register_creator(root, extended)["result"], "EXTENDED")
+
+            alias = {
+                "creator_key": "nicholascrown_ingest",
+                "display_name": "Nicholas Crown",
+                "sources": [
+                    {
+                        "platform": "TIKTOK",
+                        "profile_url": "https://www.tiktok.com/@nicholas_crown",
+                        "evaluation_enabled": True,
+                        "monitoring_enabled": False,
+                        "priority": 10,
+                        "discovery_step": 200,
+                        "max_catalog": 2500,
+                    },
+                    {
+                        "platform": "INSTAGRAM",
+                        "profile_url": "https://www.instagram.com/nicholascrown/",
+                        "evaluation_enabled": False,
+                        "monitoring_enabled": False,
+                        "priority": 50,
+                    },
+                ],
+                "verification_methods": ["HANDLE_BRANDING_BIO_CROSSCHECK"],
+                "verification_refs": [
+                    "https://www.instagram.com/nicholascrown/",
+                    "https://www.tiktok.com/@nicholas_crown",
+                    "https://www.nicholascrown.com/",
+                ],
+                "request_id": "alias",
+                "issued_by": "unit-test",
+            }
+            self.assertEqual(register_creator(root, alias)["result"], "REGISTERED")
+
+            reassert = {
+                "creator_key": "nicholascrown",
+                "display_name": "Nicholas Crown",
+                "sources": extended["sources"],
+                "verification_methods": [
+                    "EXISTING_ACCEPTED_SOURCE_CONFIG",
+                    "HANDLE_BRANDING_BIO_CROSSCHECK",
+                    "MULTI_SOURCE_CORROBORATION",
+                ],
+                "verification_refs": [
+                    "https://www.tiktok.com/@nicholas_crown",
+                    "https://www.instagram.com/nicholascrown/",
+                    "https://www.nicholascrown.com/",
+                ],
+                "request_id": "reassert",
+                "issued_by": "unit-test",
+            }
+            result = register_creator(root, reassert)
+            self.assertEqual(result["result"], "DEDUPLICATED")
+            self.assertEqual(result["disabled_duplicate_keys"], ["nicholascrown_ingest"])
+
+            registry = load_registry(root)
+            canonical = registry["creators"]["nicholascrown"]
+            self.assertEqual(canonical["status"], "ACTIVE")
+            tiktok = next(source for source in canonical["sources"] if source["platform"] == "TIKTOK")
+            instagram = next(source for source in canonical["sources"] if source["platform"] == "INSTAGRAM")
+            self.assertEqual(tiktok["verification_basis"], "EXISTING_ACCEPTED_SOURCE_CONFIG")
+            self.assertEqual(
+                instagram["verification_basis"],
+                "HANDLE_BRANDING_BIO_CROSSCHECK+MULTI_SOURCE_CORROBORATION",
+            )
+            disabled = registry["creators"]["nicholascrown_ingest"]
+            self.assertEqual(disabled["status"], "DISABLED")
+            self.assertEqual(disabled["superseded_by"], "nicholascrown")
+
+
+
 if __name__ == "__main__":
     unittest.main()
