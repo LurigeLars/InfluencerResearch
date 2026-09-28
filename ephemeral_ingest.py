@@ -931,6 +931,66 @@ def _story_visual_needs_enrichment(item: dict) -> bool:
 
 
 
+OLLAMA_INSUFFICIENT_CACHE_STATUS = "INSUFFICIENT"
+
+
+def _story_ollama_attempt_fingerprint(
+    screenshot_path: Path,
+    *,
+    model: str,
+    num_ctx: int,
+    ocr_hint: str,
+) -> str:
+    """Fingerprint exact static Story evidence plus the local-model contract."""
+    digest = hashlib.sha256()
+    digest.update(b"story-ollama-insufficient-cache-v1\0")
+    digest.update(str(model).encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(OLLAMA_VISUAL_CONTRACT.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(str(max(2048, int(num_ctx))).encode("ascii"))
+    digest.update(b"\0")
+    digest.update(str(ocr_hint or "").encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(screenshot_path.read_bytes())
+    return digest.hexdigest()
+
+
+def _story_ollama_cached_insufficient(item: dict, fingerprint: str) -> bool:
+    return (
+        str(item.get("ollama_visual_attempt_status") or "").upper()
+        == OLLAMA_INSUFFICIENT_CACHE_STATUS
+        and str(item.get("ollama_visual_attempt_fingerprint") or "") == fingerprint
+    )
+
+
+def _record_story_ollama_insufficient(
+    item: dict,
+    *,
+    fingerprint: str,
+    model: str,
+    num_ctx: int,
+) -> None:
+    item["ollama_visual_attempt_status"] = OLLAMA_INSUFFICIENT_CACHE_STATUS
+    item["ollama_visual_attempt_fingerprint"] = fingerprint
+    item["ollama_visual_attempt_model"] = model
+    item["ollama_visual_attempt_contract"] = OLLAMA_VISUAL_CONTRACT
+    item["ollama_visual_attempt_num_ctx"] = max(2048, int(num_ctx))
+    item["ollama_visual_attempted_at"] = utc_now()
+
+
+def _clear_story_ollama_insufficient(item: dict) -> None:
+    for field in (
+        "ollama_visual_attempt_status",
+        "ollama_visual_attempt_fingerprint",
+        "ollama_visual_attempt_model",
+        "ollama_visual_attempt_contract",
+        "ollama_visual_attempt_num_ctx",
+        "ollama_visual_attempted_at",
+    ):
+        item.pop(field, None)
+
+
 def extract_story_text_local_ocr(screenshot_path: Path) -> dict:
     """Extract visible Story text locally with bounded Tesseract OCR."""
     proc = subprocess.run(
@@ -1014,6 +1074,7 @@ def enrich_story_visual_evidence(
     ollama_attempted = 0
     ollama_completed = 0
     ollama_insufficient = 0
+    ollama_cached_insufficient = 0
     ollama_errors: list[str] = []
     provider_events: list[str] = []
     ocr_duration_ms = 0.0
@@ -1074,6 +1135,7 @@ def enrich_story_visual_evidence(
                 item.pop("visual_description_error", None)
                 item.pop("visual_description_deferred_reason", None)
                 item.pop("visual_description_retry_after", None)
+                _clear_story_ollama_insufficient(item)
                 changed = True
                 completed += 1
                 ocr_completed += 1
@@ -1085,9 +1147,31 @@ def enrich_story_visual_evidence(
         finally:
             ocr_duration_ms += (time.perf_counter() - ocr_clock) * 1000
 
-        # Ollama is the local multimodal second pass. It can correct noisy OCR and
-        # interpret charts/screenshots without consuming Gemini quota.
-        if (
+        # Ollama is the local multimodal second pass. Cache only a grounded
+        # INSUFFICIENT result for this exact screenshot + OCR hint + model contract.
+        # Transport/provider errors are deliberately never cached.
+        ollama_fingerprint = ""
+        ollama_cache_hit = False
+        if ollama_enabled:
+            try:
+                ollama_fingerprint = _story_ollama_attempt_fingerprint(
+                    screenshot_path,
+                    model=ollama_model,
+                    num_ctx=ollama_num_ctx,
+                    ocr_hint=ocr_text,
+                )
+                ollama_cache_hit = _story_ollama_cached_insufficient(
+                    item,
+                    ollama_fingerprint,
+                )
+            except OSError as exc:
+                ollama_errors.append(
+                    f"{key}: {type(exc).__name__}: Ollama cache fingerprint failed"
+                )
+
+        if ollama_cache_hit:
+            ollama_cached_insufficient += 1
+        elif (
             ollama_enabled
             and int(ollama_budget_state.get("attempted") or 0) < max_ollama_attempts
         ):
@@ -1274,6 +1358,7 @@ def enrich_story_visual_evidence(
         "ollama_attempted": ollama_attempted,
         "ollama_completed": ollama_completed,
         "ollama_insufficient": ollama_insufficient,
+        "ollama_cached_insufficient": ollama_cached_insufficient,
         "ollama_errors": ollama_errors,
         "ollama_model": ollama_model,
         "ollama_max_attempts": max_ollama_attempts,
