@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from influencerresearch_mcp import summarize_status
+from research_status_summary import summarize_status
 
 
 class McpStatusSummaryTests(unittest.TestCase):
