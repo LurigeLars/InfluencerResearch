@@ -73,6 +73,7 @@ def get_gemini_provider_health(root: Path) -> dict:
     if not isinstance(gemini, dict):
         gemini = {}
     keys = (
+        "signal_scope",
         "last_success_at",
         "last_error_at",
         "last_429_at",
@@ -105,6 +106,7 @@ def update_gemini_provider_health(
     if not isinstance(gemini, dict):
         gemini = {}
 
+    gemini["signal_scope"] = "STORY_VISUAL"
     gemini["story_visual_calls"] = int(gemini.get("story_visual_calls") or 0) + max(0, int(calls))
     gemini["story_visual_successes"] = int(gemini.get("story_visual_successes") or 0) + max(0, int(successes))
     gemini["story_visual_deferred"] = int(gemini.get("story_visual_deferred") or 0) + max(0, int(deferred))
