@@ -108,5 +108,92 @@ class CreatorRegistryRuntimeMetadataTests(unittest.TestCase):
                 register_creator(root, request)
 
 
+    def test_existing_creator_can_add_verified_instagram_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            initial = {
+                "creator_key": "nicholascrown",
+                "display_name": "Nicholas Crown",
+                "sources": [
+                    {
+                        "platform": "TIKTOK",
+                        "profile_url": "https://www.tiktok.com/@nicholas_crown",
+                        "evaluation_enabled": True,
+                        "monitoring_enabled": True,
+                        "priority": 10,
+                    }
+                ],
+                "verification_methods": ["EXISTING_ACCEPTED_SOURCE_CONFIG"],
+                "verification_refs": ["https://www.tiktok.com/@nicholas_crown"],
+                "request_id": "initial",
+                "issued_by": "unit-test",
+            }
+            self.assertEqual(register_creator(root, initial)["result"], "REGISTERED")
+
+            extended = {
+                "creator_key": "nicholascrown",
+                "display_name": "Nicholas Crown",
+                "sources": [
+                    {
+                        "platform": "TIKTOK",
+                        "profile_url": "https://www.tiktok.com/@nicholas_crown",
+                        "evaluation_enabled": True,
+                        "monitoring_enabled": True,
+                        "priority": 10,
+                    },
+                    {
+                        "platform": "INSTAGRAM",
+                        "profile_url": "https://www.instagram.com/nicholascrown/",
+                        "evaluation_enabled": False,
+                        "monitoring_enabled": False,
+                        "priority": 50,
+                    },
+                ],
+                "verification_methods": [
+                    "HANDLE_BRANDING_BIO_CROSSCHECK",
+                    "MULTI_SOURCE_CORROBORATION",
+                ],
+                "verification_refs": [
+                    "https://www.tiktok.com/@nicholas_crown",
+                    "https://www.instagram.com/nicholascrown/",
+                    "https://www.nicholascrown.com/",
+                ],
+                "request_id": "extend",
+                "issued_by": "unit-test",
+            }
+            result = register_creator(root, extended)
+            self.assertEqual(result["result"], "EXTENDED")
+            profile = get_creator(root, "nicholascrown")
+            self.assertEqual(
+                {source["platform"] for source in profile["sources"]},
+                {"TIKTOK", "INSTAGRAM"},
+            )
+            instagram = next(source for source in profile["sources"] if source["platform"] == "INSTAGRAM")
+            self.assertFalse(instagram["monitoring_enabled"])
+            self.assertTrue(profile["monitoring_enabled"])
+            self.assertIn("HANDLE_BRANDING_BIO_CROSSCHECK", profile["verification"]["methods"])
+
+    def test_additive_registration_cannot_mutate_existing_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            initial = base_request()
+            register_creator(root, initial)
+
+            changed = base_request()
+            changed["sources"][0]["priority"] = 999
+            changed["sources"].append(
+                {
+                    "platform": "INSTAGRAM",
+                    "profile_url": "https://www.instagram.com/runtimecreator/",
+                    "evaluation_enabled": False,
+                    "monitoring_enabled": False,
+                    "priority": 50,
+                }
+            )
+            with self.assertRaisesRegex(ValueError, "CREATOR_SOURCE_CONFLICT:TIKTOK:priority"):
+                register_creator(root, changed)
+
+
+
 if __name__ == "__main__":
     unittest.main()
