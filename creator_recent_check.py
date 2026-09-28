@@ -19,11 +19,13 @@ import tiktok_camofox_sync as tts
 import instagram_camofox_public_smoke as instagram_smoke
 import ephemeral_ingest as ephemeral
 
-RECENT_CHECK_VERSION = "0.2.8"
+RECENT_CHECK_VERSION = "0.2.9"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
 YOUTUBE_METADATA_PROBE_WORKERS = 4
+DISCOVERY_BROWSER_WORKERS = 2
+DISCOVERY_NETWORK_WORKERS = 4
 MAX_ANALYSIS_EVIDENCE_CHARS = 6000
 STOCKHOLM_TZ = ZoneInfo("Europe/Stockholm")
 
@@ -417,13 +419,21 @@ def _instagram_handle(source: dict) -> str:
     return handle
 
 
-def discover_instagram(profile: dict, source: dict, cutoff: datetime, end: datetime, discovery_limit: int) -> dict:
+def discover_instagram(
+    profile: dict,
+    source: dict,
+    cutoff: datetime,
+    end: datetime,
+    discovery_limit: int,
+    *,
+    run_index: int = 1,
+) -> dict:
     target = min(20, max(1, int(discovery_limit)))
     handle = _instagram_handle(source)
     probe = instagram_smoke.probe_public_session(
         source["profile_url"],
         handle,
-        run_index=1,
+        run_index=max(1, int(run_index)),
         inspect_reel_times=True,
     )
     entries = list(probe.get("reel_items") or [])
@@ -1066,6 +1076,163 @@ def _queue_targets(root: Path, item_keys: set[str]) -> list[dict]:
     return out
 
 
+def _run_discovery_batch(
+    root: Path,
+    selected: list[tuple[dict, list[dict]]],
+    cutoff: datetime,
+    end: datetime,
+    discovery_limit: int,
+) -> tuple[list[dict], list[dict], dict, list[dict], dict]:
+    """Discover all selected sources with bounded platform-aware concurrency."""
+    work: list[tuple[int, dict, dict, str]] = []
+    source_map: dict[tuple[str, str], tuple[dict, dict]] = {}
+    task_index = 0
+    for profile, sources in selected:
+        for source in sources:
+            platform = str(source.get("platform") or "").upper()
+            if platform not in SUPPORTED_PLATFORMS:
+                continue
+            source_map[(str(profile["creator_key"]), platform)] = (profile, source)
+            work.append((task_index, profile, source, platform))
+            task_index += 1
+
+    browser_tasks = [task for task in work if task[3] in {"INSTAGRAM", "TIKTOK"}]
+    network_tasks = [task for task in work if task[3] == "YOUTUBE"]
+    browser_bootstrap_error: str | None = None
+    if browser_tasks:
+        try:
+            # Prime the shared CamoFox runtime once before worker threads touch it.
+            # This avoids concurrent first-use initialization while preserving the
+            # existing process-wide run lock.
+            tts.start_server()
+        except Exception as exc:
+            browser_bootstrap_error = f"{type(exc).__name__}: {exc}"
+
+    def discover_one(task: tuple[int, dict, dict, str]) -> dict:
+        index, profile, source, platform = task
+        source_clock = time.perf_counter()
+        discovery = None
+        error = None
+        youtube_timings: list[dict] = []
+        try:
+            if platform in {"INSTAGRAM", "TIKTOK"} and browser_bootstrap_error:
+                raise RuntimeError(f"CAMOFOX_BOOTSTRAP_FAILED:{browser_bootstrap_error}")
+            if platform == "YOUTUBE":
+                discovery = discover_youtube(profile, source, cutoff, end, discovery_limit)
+            elif platform == "TIKTOK":
+                discovery = discover_tiktok(root, profile, source, cutoff, end, discovery_limit)
+            elif platform == "INSTAGRAM":
+                discovery = discover_instagram(
+                    profile,
+                    source,
+                    cutoff,
+                    end,
+                    discovery_limit,
+                    run_index=index + 1,
+                )
+            if platform == "YOUTUBE" and discovery is not None:
+                for pass_index, yt_timing in enumerate(
+                    discovery.get("timings") or [],
+                    start=1,
+                ):
+                    youtube_timings.append({
+                        "stage": "YOUTUBE_ENUMERATION",
+                        "creator_key": profile["creator_key"],
+                        "platform": platform,
+                        "pass_index": pass_index,
+                        "requested_limit": yt_timing.get("requested_limit"),
+                        "duration_ms": float(yt_timing.get("enumeration_ms") or 0.0),
+                    })
+                    youtube_timings.append({
+                        "stage": "YOUTUBE_METADATA_PROBE",
+                        "creator_key": profile["creator_key"],
+                        "platform": platform,
+                        "pass_index": pass_index,
+                        "requested_limit": yt_timing.get("requested_limit"),
+                        "item_count": yt_timing.get("metadata_probe_attempted"),
+                        "resolved_count": yt_timing.get("metadata_probe_resolved"),
+                        "duration_ms": float(yt_timing.get("metadata_probe_ms") or 0.0),
+                    })
+        except Exception as exc:
+            error = {
+                "creator_key": profile["creator_key"],
+                "platform": platform,
+                "stage": "DISCOVERY",
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+        return {
+            "index": index,
+            "profile": profile,
+            "platform": platform,
+            "discovery": discovery,
+            "error": error,
+            "timings": youtube_timings + [{
+                "stage": "DISCOVERY",
+                "creator_key": profile["creator_key"],
+                "platform": platform,
+                "duration_ms": round((time.perf_counter() - source_clock) * 1000, 1),
+            }],
+        }
+
+    batch_clock = time.perf_counter()
+    futures: dict[int, object] = {}
+    executors: list[ThreadPoolExecutor] = []
+    try:
+        if browser_tasks:
+            browser_executor = ThreadPoolExecutor(
+                max_workers=min(DISCOVERY_BROWSER_WORKERS, len(browser_tasks)),
+                thread_name_prefix="recent-browser-discovery",
+            )
+            executors.append(browser_executor)
+            for task in browser_tasks:
+                futures[task[0]] = browser_executor.submit(discover_one, task)
+        if network_tasks:
+            network_executor = ThreadPoolExecutor(
+                max_workers=min(DISCOVERY_NETWORK_WORKERS, len(network_tasks)),
+                thread_name_prefix="recent-network-discovery",
+            )
+            executors.append(network_executor)
+            for task in network_tasks:
+                futures[task[0]] = network_executor.submit(discover_one, task)
+
+        results = [futures[index].result() for index in sorted(futures)]
+    finally:
+        for executor in executors:
+            executor.shutdown(wait=True, cancel_futures=False)
+
+    discoveries: list[dict] = []
+    errors: list[dict] = []
+    stage_timings: list[dict] = []
+    for result in results:
+        stage_timings.extend(result["timings"])
+        discovery = result.get("discovery")
+        if isinstance(discovery, dict):
+            discoveries.append(discovery)
+            if discovery.get("missing_publish_time_ids"):
+                errors.append({
+                    "creator_key": result["profile"]["creator_key"],
+                    "platform": result["platform"],
+                    "stage": "PUBLISH_TIME",
+                    "error": (
+                        f"UNRESOLVED_IDS:"
+                        f"{len(discovery['missing_publish_time_ids'])}"
+                    ),
+                })
+        if result.get("error"):
+            errors.append(result["error"])
+
+    meta = {
+        "wall_duration_ms": round((time.perf_counter() - batch_clock) * 1000, 1),
+        "source_count": len(work),
+        "browser_task_count": len(browser_tasks),
+        "browser_worker_limit": min(DISCOVERY_BROWSER_WORKERS, len(browser_tasks)),
+        "network_task_count": len(network_tasks),
+        "network_worker_limit": min(DISCOVERY_NETWORK_WORKERS, len(network_tasks)),
+        "browser_bootstrap_error": browser_bootstrap_error,
+    }
+    return discoveries, errors, source_map, stage_timings, meta
+
+
 def _main_impl() -> int:
     ap = argparse.ArgumentParser(description="InfluencerResearch recent-window discovery + automatic ingestion")
     ap.add_argument("--root", type=Path, required=True)
@@ -1110,57 +1277,24 @@ def _main_impl() -> int:
     discoveries = []
     errors = []
     source_map: dict[tuple[str, str], tuple[dict, dict]] = {}
+    discovery_parallelism: dict = {}
     try:
         selected = select_profiles_and_sources(root, args.scope, creator_keys)
-        for profile, sources in selected:
-            for source in sources:
-                platform = str(source.get("platform", "")).upper()
-                source_map[(str(profile["creator_key"]), platform)] = (profile, source)
-                source_clock = time.perf_counter()
-                try:
-                    if platform == "YOUTUBE":
-                        d = discover_youtube(profile, source, cutoff, end, discovery_limit)
-                    elif platform == "TIKTOK":
-                        d = discover_tiktok(root, profile, source, cutoff, end, discovery_limit)
-                    elif platform == "INSTAGRAM":
-                        d = discover_instagram(profile, source, cutoff, end, discovery_limit)
-                    else:
-                        continue
-                    discoveries.append(d)
-                    if platform == "YOUTUBE":
-                        for pass_index, yt_timing in enumerate(d.get("timings") or [], start=1):
-                            stage_timings.append({
-                                "stage": "YOUTUBE_ENUMERATION",
-                                "creator_key": profile["creator_key"],
-                                "platform": platform,
-                                "pass_index": pass_index,
-                                "requested_limit": yt_timing.get("requested_limit"),
-                                "duration_ms": float(yt_timing.get("enumeration_ms") or 0.0),
-                            })
-                            stage_timings.append({
-                                "stage": "YOUTUBE_METADATA_PROBE",
-                                "creator_key": profile["creator_key"],
-                                "platform": platform,
-                                "pass_index": pass_index,
-                                "requested_limit": yt_timing.get("requested_limit"),
-                                "item_count": yt_timing.get("metadata_probe_attempted"),
-                                "resolved_count": yt_timing.get("metadata_probe_resolved"),
-                                "duration_ms": float(yt_timing.get("metadata_probe_ms") or 0.0),
-                            })
-                    if d.get("missing_publish_time_ids"):
-                        errors.append({
-                            "creator_key": profile["creator_key"], "platform": platform,
-                            "stage": "PUBLISH_TIME", "error": f"UNRESOLVED_IDS:{len(d['missing_publish_time_ids'])}",
-                        })
-                except Exception as exc:
-                    errors.append({"creator_key": profile["creator_key"], "platform": platform, "stage": "DISCOVERY", "error": f"{type(exc).__name__}: {exc}"})
-                finally:
-                    record_timing(
-                        "DISCOVERY",
-                        source_clock,
-                        creator_key=profile["creator_key"],
-                        platform=platform,
-                    )
+        (
+            discoveries,
+            discovery_errors,
+            source_map,
+            discovery_timings,
+            discovery_parallelism,
+        ) = _run_discovery_batch(
+            root,
+            selected,
+            cutoff,
+            end,
+            discovery_limit,
+        )
+        errors.extend(discovery_errors)
+        stage_timings.extend(discovery_timings)
 
         all_recent = [item for d in discoveries for item in d.get("items", [])]
         all_recent.sort(key=lambda x: x["published_at"], reverse=True)
@@ -1545,6 +1679,10 @@ def _main_impl() -> int:
             },
             "timings": {
                 "total_duration_ms": total_duration_ms,
+                "discovery_wall_ms": float(
+                    discovery_parallelism.get("wall_duration_ms") or 0.0
+                ),
+                "discovery_parallelism": discovery_parallelism,
                 "stage_totals_ms": stage_totals_ms,
                 "slowest_operations": slowest_operations,
             },
