@@ -723,6 +723,8 @@ def _promote_story_items(
                 "visual_description_model": item.get("visual_description_model"),
                 "visual_description_generated_at": item.get("visual_description_generated_at"),
                 "visual_description_error": item.get("visual_description_error"),
+                "visual_description_deferred_reason": item.get("visual_description_deferred_reason"),
+                "visual_description_retry_after": item.get("visual_description_retry_after"),
             }
             for field, value in evidence_updates.items():
                 if existing.get(field) != value:
@@ -762,6 +764,8 @@ def _promote_story_items(
             "visual_description_model": item.get("visual_description_model") or alias_source.get("visual_description_model"),
             "visual_description_generated_at": item.get("visual_description_generated_at") or alias_source.get("visual_description_generated_at"),
             "visual_description_error": item.get("visual_description_error") or alias_source.get("visual_description_error"),
+            "visual_description_deferred_reason": item.get("visual_description_deferred_reason") or alias_source.get("visual_description_deferred_reason"),
+            "visual_description_retry_after": item.get("visual_description_retry_after") or alias_source.get("visual_description_retry_after"),
             "screenshot_file": screenshot_rel or None,
             "visual_evidence_status": "DONE" if has_screenshot else "NOT_AVAILABLE",
             "visual_evidence_index": screenshot_rel or None,
