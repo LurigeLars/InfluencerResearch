@@ -1201,11 +1201,20 @@ def enrich_story_visual_evidence(
                     item.pop("visual_description_error", None)
                     item.pop("visual_description_deferred_reason", None)
                     item.pop("visual_description_retry_after", None)
+                    _clear_story_ollama_insufficient(item)
                     changed = True
                     completed += 1
                     ollama_completed += 1
                     continue
                 ollama_insufficient += 1
+                if ollama_fingerprint:
+                    _record_story_ollama_insufficient(
+                        item,
+                        fingerprint=ollama_fingerprint,
+                        model=ollama_model,
+                        num_ctx=ollama_num_ctx,
+                    )
+                    changed = True
             except Exception as exc:
                 # Local model failure must never block the Gemini fallback.
                 ollama_errors.append(f"{key}: {type(exc).__name__}: {exc}")
