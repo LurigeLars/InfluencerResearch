@@ -18,7 +18,7 @@ import tiktok_camofox_sync as tts
 import instagram_camofox_public_smoke as instagram_smoke
 import ephemeral_ingest as ephemeral
 
-RECENT_CHECK_VERSION = "0.2.1"
+RECENT_CHECK_VERSION = "0.2.2"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
@@ -546,15 +546,25 @@ def _promote_story_items(
     handle: str,
     cutoff: datetime,
     max_new: int,
-) -> list[dict]:
-    """Bridge already captured Story evidence into the canonical manifest.
+) -> dict:
+    """Bridge current Story evidence into the canonical manifest.
 
-    Active Stories are necessarily recent; when Instagram does not expose an exact
-    publish timestamp we persist observed_at explicitly as the time basis rather
-    than inventing a more precise timestamp.
+    Fresh evidence is promoted once. Existing evidence is still returned as an
+    available analysis candidate so repeated recent-check runs can expose the
+    pending target without re-ingesting it. Evidence owned by an explicitly
+    superseded creator key is re-attributed to the canonical key in place.
     """
+    empty = {
+        "promoted": [],
+        "available": [],
+        "reused_existing_count": 0,
+        "reattributed_count": 0,
+        "conflicts": [],
+        "manifest_changed": False,
+    }
     if max_new <= 0:
-        return []
+        return empty
+
     ephemeral_manifest = load_json(
         root / "state" / "ephemeral" / "manifest.json",
         {"schema_version": 1, "items": {}},
@@ -562,6 +572,16 @@ def _promote_story_items(
     manifest_path = root / "state" / "manifest.json"
     manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
     manifest.setdefault("items", {})
+
+    canonical_key = str(profile["creator_key"])
+    registry = load_registry(root)
+    superseded_keys = {
+        str(key)
+        for key, candidate in (registry.get("creators") or {}).items()
+        if isinstance(candidate, dict)
+        and str(candidate.get("status") or "").upper() == "DISABLED"
+        and str(candidate.get("superseded_by") or "") == canonical_key
+    }
 
     candidates: list[tuple[datetime, dict]] = []
     for item in (ephemeral_manifest.get("items") or {}).values():
@@ -581,16 +601,32 @@ def _promote_story_items(
 
     candidates.sort(key=lambda row: row[0], reverse=True)
     promoted: list[dict] = []
+    available: list[dict] = []
+    conflicts: list[dict] = []
+    reused_existing_count = 0
+    reattributed_count = 0
     changed = False
+
+    def descriptor(key: str, identity: str, manifest_item: dict, observed: datetime) -> dict:
+        return {
+            "creator_key": canonical_key,
+            "platform": "INSTAGRAM",
+            "source_id": str(manifest_item.get("source_id") or f"story:{identity}"),
+            "item_key": key,
+            "url": manifest_item.get("url"),
+            "title": "",
+            "published_at": str(manifest_item.get("published_at") or observed.isoformat()),
+            "profile_url": f"https://www.instagram.com/{handle}/",
+            "source_subtype": "STORY",
+        }
+
     for observed, item in candidates:
-        if len(promoted) >= max_new:
+        if len(available) >= max_new:
             break
         identity = str(item.get("story_id") or item.get("evidence_id") or "").strip()
         if not identity:
             continue
         key = f"ig_story_{identity}"
-        if key in manifest["items"]:
-            continue
 
         screenshot_rel = str(item.get("screenshot_file") or "").strip()
         screenshot_path = root / screenshot_rel if screenshot_rel else None
@@ -600,9 +636,38 @@ def _promote_story_items(
         if not has_screenshot and not has_transcript:
             continue
 
-        manifest["items"][key] = {
+        existing = manifest["items"].get(key)
+        if isinstance(existing, dict):
+            existing_creator = str(existing.get("creator") or "")
+            if existing_creator != canonical_key:
+                if existing_creator in superseded_keys:
+                    history = [
+                        str(value)
+                        for value in (existing.get("creator_key_history") or [])
+                        if str(value)
+                    ]
+                    if existing_creator not in history:
+                        history.append(existing_creator)
+                    existing["creator_key_history"] = history
+                    existing["creator"] = canonical_key
+                    existing["creator_reattributed_at"] = now_iso()
+                    changed = True
+                    reattributed_count += 1
+                else:
+                    conflicts.append({
+                        "item_key": key,
+                        "existing_creator": existing_creator or None,
+                        "canonical_creator": canonical_key,
+                    })
+                    continue
+
+            available.append(descriptor(key, identity, existing, observed))
+            reused_existing_count += 1
+            continue
+
+        manifest_item = {
             "schema_version": 1,
-            "creator": profile["creator_key"],
+            "creator": canonical_key,
             "source_platform": "INSTAGRAM",
             "source_subtype": "STORY",
             "source_id": f"story:{identity}",
@@ -629,22 +694,23 @@ def _promote_story_items(
             "research_status": "PENDING",
             "source_class": "INFLUENCER_DISCOVERY_SECONDARY",
         }
+        manifest["items"][key] = manifest_item
         changed = True
-        promoted.append({
-            "creator_key": profile["creator_key"],
-            "platform": "INSTAGRAM",
-            "source_id": f"story:{identity}",
-            "item_key": key,
-            "url": item.get("source_url"),
-            "title": "",
-            "published_at": observed.isoformat(),
-            "profile_url": f"https://www.instagram.com/{handle}/",
-            "source_subtype": "STORY",
-        })
+        row = descriptor(key, identity, manifest_item, observed)
+        promoted.append(row)
+        available.append(row)
 
     if changed:
         atomic_json(manifest_path, manifest)
-    return promoted
+
+    return {
+        "promoted": promoted,
+        "available": available,
+        "reused_existing_count": reused_existing_count,
+        "reattributed_count": reattributed_count,
+        "conflicts": conflicts,
+        "manifest_changed": changed,
+    }
 
 
 def _ingest_instagram_stories(
@@ -666,8 +732,10 @@ def _ingest_instagram_stories(
         force=False,
         max_items=min(6, max(1, max_new + 2)),
     )
-    promoted = _promote_story_items(root, profile, handle, cutoff, max_new)
-    queue = tts.run_research_queue(root) if promoted else None
+    bridge = _promote_story_items(root, profile, handle, cutoff, max_new)
+    promoted = list(bridge.get("promoted") or [])
+    available = list(bridge.get("available") or [])
+    queue = tts.run_research_queue(root) if bridge.get("manifest_changed") else None
 
     warnings: list[str] = []
     capture = run.get("capture") or {}
@@ -681,9 +749,17 @@ def _ingest_instagram_stories(
         warnings.extend(str(x) for x in (run.get("errors") or []))
     if queue is not None and not queue.get("ok"):
         warnings.append(f"research_queue failed: {queue}")
+    if bridge.get("conflicts"):
+        warnings.append(
+            f"STORY_ITEM_OWNERSHIP_CONFLICT:{len(bridge.get('conflicts') or [])}"
+        )
 
     return {
         "promoted": promoted,
+        "available": available,
+        "reused_existing_count": int(bridge.get("reused_existing_count") or 0),
+        "reattributed_count": int(bridge.get("reattributed_count") or 0),
+        "conflicts": list(bridge.get("conflicts") or []),
         "capture": capture,
         "queue": queue,
         "warnings": warnings,
@@ -739,12 +815,21 @@ def _queue_targets(root: Path, item_keys: set[str]) -> list[dict]:
             "platform": item.get("source_platform"),
             "source_id": item.get("source_id"),
             "published_at": item.get("published_at"),
+            "published_at_basis": item.get("published_at_basis"),
+            "observed_at": item.get("observed_at"),
             "source_url": item.get("source_url"),
+            "source_subtype": item.get("source_subtype"),
             "caption": item.get("caption"),
             "analysis_content_status": item.get("analysis_content_status"),
             "analysis_content_reason": item.get("analysis_content_reason"),
             "transcript_source": item.get("transcript_source"),
             "word_count": item.get("word_count"),
+            "visual_evidence_status": item.get("visual_evidence_status"),
+            "visual_evidence_index": item.get("visual_evidence_index"),
+            "visual_frame_count": item.get("visual_frame_count"),
+            "visual_capture_strategy": item.get("visual_capture_strategy"),
+            "screenshot_file": item.get("screenshot_file"),
+            "media_retention": item.get("media_retention"),
             "analysis_evidence_text": evidence[:MAX_ANALYSIS_EVIDENCE_CHARS],
             "analysis_evidence_truncated": len(evidence) > MAX_ANALYSIS_EVIDENCE_CHARS,
         })
@@ -856,6 +941,9 @@ def _main_impl() -> int:
 
         story_results = []
         story_selected: list[dict] = []
+        story_available: list[dict] = []
+        story_reused_existing_count = 0
+        story_reattributed_count = 0
         remaining_story_slots = max(0, max_items - len(selected_pending))
         if remaining_story_slots:
             seen_instagram_creators: set[str] = set()
@@ -881,7 +969,15 @@ def _main_impl() -> int:
                         remaining_story_slots,
                     )
                     promoted = list(story_result.get("promoted") or [])
+                    available = list(story_result.get("available") or [])
                     story_selected.extend(promoted)
+                    story_available.extend(available)
+                    story_reused_existing_count += int(
+                        story_result.get("reused_existing_count") or 0
+                    )
+                    story_reattributed_count += int(
+                        story_result.get("reattributed_count") or 0
+                    )
                     remaining_story_slots -= len(promoted)
                     story_results.append({"creator_key": creator_key, **story_result})
                     if story_result.get("warnings"):
@@ -920,8 +1016,16 @@ def _main_impl() -> int:
 
         # Pending analysis can include a recent item ingested by an earlier run.
         # Return those targets too; do not require a fresh download in this run.
+        # Stories captured by an earlier run remain valid candidates while they
+        # are active/current. Fresh promotion is not required for target exposure.
+        story_available_by_key = {
+            str(item["item_key"]): item
+            for item in story_available
+            if item.get("item_key")
+        }
+        story_available = list(story_available_by_key.values())
         analysis_candidate_keys = {x["item_key"] for x in all_recent}
-        analysis_candidate_keys.update(x["item_key"] for x in story_selected)
+        analysis_candidate_keys.update(x["item_key"] for x in story_available)
         analysis_targets = _queue_targets(root, analysis_candidate_keys)
         completed_keys = {x["queue_id"] for x in analysis_targets}
 
@@ -931,7 +1035,7 @@ def _main_impl() -> int:
             if insufficient:
                 item["analysis_content_status"] = "INSUFFICIENT_CONTENT"
                 item["analysis_content_reason"] = insufficient.get("reason")
-        for item in story_selected:
+        for item in story_available:
             item["queued_for_analysis"] = item["item_key"] in completed_keys
             insufficient = insufficient_by_key.get(item["item_key"])
             if insufficient:
@@ -947,7 +1051,7 @@ def _main_impl() -> int:
                 "published_at": item.get("published_at"),
                 "reason": item.get("analysis_content_reason"),
             }
-            for item in (all_recent + story_selected)
+            for item in (all_recent + story_available)
             if item.get("analysis_content_status") == "INSUFFICIENT_CONTENT"
         ]
         if insufficient_recent:
@@ -987,6 +1091,11 @@ def _main_impl() -> int:
             "already_ingested_count": sum(1 for x in all_recent if x["already_ingested"]),
             "pending_found_count": len(pending),
             "selected_for_ingestion_count": len(selected_pending) + len(story_selected),
+            "selected_standard_ingestion_count": len(selected_pending),
+            "story_current_count": len(story_available),
+            "story_newly_promoted_count": len(story_selected),
+            "story_reused_existing_count": story_reused_existing_count,
+            "story_reattributed_count": story_reattributed_count,
             "deferred_due_to_cap_count": len(deferred),
             "queued_for_analysis_count": len(analysis_targets),
             "insufficient_content_count": len(insufficient_recent),
@@ -1000,6 +1109,7 @@ def _main_impl() -> int:
             },
             "recent_items": all_recent[:100],
             "selected_items": selected_pending + story_selected,
+            "story_items": story_available[:100],
             "deferred_items": deferred[:100],
             "analysis_targets": analysis_targets,
             "discoveries": discoveries,
