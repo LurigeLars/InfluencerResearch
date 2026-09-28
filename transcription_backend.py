@@ -59,15 +59,15 @@ def read_gemini_api_key(path: Path | None = None) -> str | None:
     return value
 
 
-def safe_gemini_error(exc: Exception, *, operation: str) -> str:
-    """Return non-sensitive Gemini diagnostics.
-
-    Deliberately excludes exception text, response bodies, prompts, URLs, and
-    credentials. Only exception type plus provider code/status are surfaced.
-    """
+def gemini_error_metadata(exc: Exception) -> dict[str, Any]:
+    """Return only non-sensitive structured provider diagnostics."""
     code = getattr(exc, "code", None)
     if code is None:
         code = getattr(exc, "status_code", None)
+    try:
+        code = int(code) if code is not None else None
+    except (TypeError, ValueError):
+        code = None
 
     status = getattr(exc, "status", None)
     if status is not None:
@@ -77,14 +77,25 @@ def safe_gemini_error(exc: Exception, *, operation: str) -> str:
         ):
             status = None
 
-    parts = [f"{type(exc).__name__}: Gemini {operation} failed"]
-    if code is not None:
-        try:
-            parts.append(f"code={int(code)}")
-        except (TypeError, ValueError):
-            pass
-    if status is not None:
-        parts.append(f"status={status}")
+    return {
+        "error_type": type(exc).__name__,
+        "code": code,
+        "status": status,
+    }
+
+
+def safe_gemini_error(exc: Exception, *, operation: str) -> str:
+    """Return non-sensitive Gemini diagnostics.
+
+    Deliberately excludes exception text, response bodies, prompts, URLs, and
+    credentials. Only exception type plus provider code/status are surfaced.
+    """
+    meta = gemini_error_metadata(exc)
+    parts = [f"{meta['error_type']}: Gemini {operation} failed"]
+    if meta["code"] is not None:
+        parts.append(f"code={meta['code']}")
+    if meta["status"] is not None:
+        parts.append(f"status={meta['status']}")
     return " ".join(parts)
 
 

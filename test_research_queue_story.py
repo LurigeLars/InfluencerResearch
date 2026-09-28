@@ -76,14 +76,15 @@ class ResearchQueueStoryTests(unittest.TestCase):
             self.assertEqual(packet["source_subtype"], "STORY")
             self.assertEqual(packet["published_at_basis"], "ACTIVE_STORY_OBSERVED_AT")
             self.assertIsNone(packet["transcript_file"])
-            self.assertEqual(packet["transcript_text"], "creator\\n2h")
+            self.assertEqual(packet["transcript_text"], "")
+            self.assertEqual(packet["browser_text"], "creator\\n2h")
             self.assertEqual(packet["analysis_content_reason"], "VISUAL_DESCRIPTION")
             self.assertIn("Brent-WTI", packet["visual_description"])
             self.assertIn("Brent-WTI", packet["analysis_evidence_text"])
             self.assertEqual(packet["screenshot_file"], str(shot.relative_to(root)))
 
 
-    def test_story_screenshot_without_readable_description_fails_closed(self) -> None:
+    def test_story_visual_provider_error_is_not_mislabeled_insufficient(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             state = root / "state"
@@ -131,7 +132,77 @@ class ResearchQueueStoryTests(unittest.TestCase):
 
             queue = json.loads((state / "research_queue.json").read_text(encoding="utf-8"))
             self.assertEqual(queue["count"], 0)
-            self.assertEqual(queue["insufficient_content_count"], 1)
+            self.assertEqual(queue["insufficient_content_count"], 0)
+            self.assertEqual(queue["extraction_error_count"], 1)
+            self.assertEqual(
+                queue["extraction_error_items"][0]["status"],
+                "EXTRACTION_ERROR",
+            )
+
+
+    def test_story_rate_limit_is_deferred_not_insufficient(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            state = root / "state"
+            control = root / "control"
+            state.mkdir(parents=True)
+            control.mkdir(parents=True)
+
+            shot = root / "output" / "creator" / "stories" / "screenshots" / "deferred.png"
+            shot.parent.mkdir(parents=True)
+            shot.write_bytes(b"png")
+            manifest = {
+                "schema_version": 1,
+                "items": {
+                    "ig_story_deferred": {
+                        "creator": "creator",
+                        "source_platform": "INSTAGRAM",
+                        "source_subtype": "STORY",
+                        "source_id": "story:deferred",
+                        "url": "https://www.instagram.com/stories/creator/123/",
+                        "published_at": "2026-09-28T10:00:00+00:00",
+                        "download_status": "DONE",
+                        "transcription_status": "NOT_APPLICABLE",
+                        "browser_text": "creator\\n2h",
+                        "screenshot_file": str(shot.relative_to(root)),
+                        "visual_evidence_status": "DONE",
+                        "visual_frame_count": 1,
+                        "visual_description_status": "DEFERRED",
+                        "visual_description_deferred_reason": "PROVIDER_RATE_LIMIT",
+                        "visual_description_retry_after": "2026-09-28T10:05:00+00:00",
+                        "visual_description_error": (
+                            "ClientError: Gemini visual evidence extraction failed "
+                            "code=429 status=RESOURCE_EXHAUSTED"
+                        ),
+                        "permanent_source": True,
+                    }
+                },
+            }
+            (state / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (state / "research_decisions.json").write_text(
+                json.dumps({"schema_version": 2, "items": {}}),
+                encoding="utf-8",
+            )
+            (control / "research_screening.json").write_text(
+                json.dumps({"max_queue_items": 100, "creators": []}),
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(sys, "argv", ["research_queue.py", "--root", str(root)]):
+                self.assertEqual(research_queue.main(), 0)
+
+            queue = json.loads((state / "research_queue.json").read_text(encoding="utf-8"))
+            self.assertEqual(queue["count"], 0)
+            self.assertEqual(queue["insufficient_content_count"], 0)
+            self.assertEqual(queue["deferred_extraction_count"], 1)
+            deferred = queue["deferred_extraction_items"][0]
+            self.assertEqual(deferred["status"], "DEFERRED_EXTRACTION")
+            self.assertEqual(deferred["reason"], "PROVIDER_RATE_LIMIT")
+            updated = json.loads((state / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                updated["items"]["ig_story_deferred"]["research_status"],
+                "PENDING_EXTRACTION",
+            )
 
 
     def test_legacy_root_frame_is_retired_from_queue(self) -> None:

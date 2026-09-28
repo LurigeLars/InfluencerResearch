@@ -11,7 +11,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 
-SCREEN_VERSION = "0.4.4"
+SCREEN_VERSION = "0.4.5"
 ANALYSIS_OWNER = "EKONOMI"
 MIN_TRANSCRIPT_WORDS = 8
 MIN_TRANSCRIPT_CHARS = 48
@@ -163,8 +163,25 @@ def assess_analysis_content(item: dict, transcript: str) -> dict:
         status = "READY"
         reason = "METADATA_TEXT"
     else:
-        status = "INSUFFICIENT_CONTENT"
-        reason = "NO_ANALYZABLE_TEXT_OR_VISUAL_EVIDENCE"
+        visual_status = str(item.get("visual_description_status") or "").upper()
+        if visual_status == "DEFERRED":
+            status = "DEFERRED_EXTRACTION"
+            reason = str(
+                item.get("visual_description_deferred_reason")
+                or "VISUAL_EXTRACTION_DEFERRED"
+            )
+        elif visual_status == "ERROR":
+            status = "EXTRACTION_ERROR"
+            reason = "VISUAL_EXTRACTION_ERROR"
+        elif visual_status == "INSUFFICIENT_CONTENT":
+            status = "INSUFFICIENT_CONTENT"
+            reason = "NO_MEANINGFUL_VISUAL_EVIDENCE"
+        elif has_visual_evidence:
+            status = "PENDING_EXTRACTION"
+            reason = "VISUAL_EXTRACTION_PENDING"
+        else:
+            status = "INSUFFICIENT_CONTENT"
+            reason = "NO_ANALYZABLE_TEXT_OR_VISUAL_EVIDENCE"
 
     return {
         "status": status,
@@ -188,16 +205,15 @@ def build_packet(
     duplicate_of: str | None,
     duplicate_basis: str | None,
 ) -> dict:
-    transcript = (
-        read_text(transcript_path)
-        if transcript_path is not None
-        else str(item.get("browser_text") or "").strip()
-    )
+    transcript = read_text(transcript_path) if transcript_path is not None else ""
+    browser_text = str(item.get("browser_text") or "").strip()
     caption = str(item.get("caption") or "").strip()
     visible_text = str(item.get("visible_text") or "").strip()
     visual_description = str(item.get("visual_description") or "").strip()
     evidence_parts = [
-        x for x in (transcript, visual_description, visible_text, caption) if x
+        x
+        for x in (transcript, visual_description, visible_text, browser_text, caption)
+        if x
     ]
     analysis_evidence_text = "\n\n".join(evidence_parts)
 
@@ -236,6 +252,7 @@ def build_packet(
         ),
         "transcript_text": transcript,
         "transcript_source": item.get("transcript_source"),
+        "browser_text": browser_text,
         "visible_text": visible_text,
         "visual_description": visual_description,
         "visual_description_status": item.get("visual_description_status"),
@@ -364,6 +381,9 @@ def main() -> int:
     # appearing as analysis-ready queue items.
     records: list[dict] = []
     insufficient_content_items: list[dict] = []
+    deferred_extraction_items: list[dict] = []
+    extraction_error_items: list[dict] = []
+    pending_extraction_items: list[dict] = []
     skipped_missing_transcript = 0
     manifest_changed = False
     for shortcode, item in manifest.get("items", {}).items():
@@ -413,8 +433,11 @@ def main() -> int:
         transcript_missing = False
         if transcript_path is None or not transcript_path.exists():
             if is_visual_story:
+                # Browser chrome/text is a separate weak fallback source. Do not
+                # mislabel it as a transcript or let the lower transcript threshold
+                # turn username/timestamp/music chrome into READY evidence.
                 transcript_path = None
-                transcript = str(item.get("browser_text") or "").strip()
+                transcript = ""
             else:
                 skipped_missing_transcript += 1
                 transcript_missing = True
@@ -442,24 +465,41 @@ def main() -> int:
                 item[key] = value
                 manifest_changed = True
 
-        if readiness["status"] == "INSUFFICIENT_CONTENT":
+        if readiness["status"] != "READY":
             existing_decision = decisions.get("items", {}).get(shortcode, {})
             if existing_decision.get("decision") not in FINAL_DECISIONS:
-                if item.get("research_status") != "INSUFFICIENT_CONTENT":
-                    item["research_status"] = "INSUFFICIENT_CONTENT"
+                desired_research_status = {
+                    "INSUFFICIENT_CONTENT": "INSUFFICIENT_CONTENT",
+                    "DEFERRED_EXTRACTION": "PENDING_EXTRACTION",
+                    "PENDING_EXTRACTION": "PENDING_EXTRACTION",
+                    "EXTRACTION_ERROR": "EXTRACTION_ERROR",
+                }.get(readiness["status"], "PENDING_EXTRACTION")
+                if item.get("research_status") != desired_research_status:
+                    item["research_status"] = desired_research_status
                     manifest_changed = True
                 if item.get("analysis_owner") != ANALYSIS_OWNER:
                     item["analysis_owner"] = ANALYSIS_OWNER
                     manifest_changed = True
-            insufficient_content_items.append({
+
+            nonready = {
                 "queue_id": shortcode,
                 "creator": item.get("creator"),
                 "source_platform": item.get("source_platform"),
                 "source_id": item.get("source_id"),
                 "source_url": item.get("url"),
                 "published_at": item.get("published_at"),
+                "visual_description_error": item.get("visual_description_error"),
+                "visual_description_retry_after": item.get("visual_description_retry_after"),
                 **readiness,
-            })
+            }
+            if readiness["status"] == "INSUFFICIENT_CONTENT":
+                insufficient_content_items.append(nonready)
+            elif readiness["status"] == "DEFERRED_EXTRACTION":
+                deferred_extraction_items.append(nonready)
+            elif readiness["status"] == "EXTRACTION_ERROR":
+                extraction_error_items.append(nonready)
+            else:
+                pending_extraction_items.append(nonready)
             continue
 
         fp = transcript_fingerprint(transcript)
@@ -627,6 +667,12 @@ def main() -> int:
         "skipped_missing_transcript": skipped_missing_transcript,
         "insufficient_content_count": len(insufficient_content_items),
         "insufficient_content_items": insufficient_content_items,
+        "deferred_extraction_count": len(deferred_extraction_items),
+        "deferred_extraction_items": deferred_extraction_items,
+        "extraction_error_count": len(extraction_error_items),
+        "extraction_error_items": extraction_error_items,
+        "pending_extraction_count": len(pending_extraction_items),
+        "pending_extraction_items": pending_extraction_items,
         "must_include_requested": must_include,
         "must_include_eligible": must_include_eligible,
         "must_include_queued": must_include_queued,
@@ -653,6 +699,9 @@ def main() -> int:
         "skipped_duplicates": skipped_duplicates,
         "skipped_missing_transcript": skipped_missing_transcript,
         "insufficient_content_count": len(insufficient_content_items),
+        "deferred_extraction_count": len(deferred_extraction_items),
+        "extraction_error_count": len(extraction_error_items),
+        "pending_extraction_count": len(pending_extraction_items),
         "must_include_requested": must_include,
         "must_include_eligible": must_include_eligible,
         "must_include_queued": must_include_queued,

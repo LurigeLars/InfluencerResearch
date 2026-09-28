@@ -186,8 +186,13 @@ class InstagramPathSegmentTests(unittest.TestCase):
             self.assertEqual(result["deferred"], 1)
             self.assertEqual(result["max_attempts"], 2)
             self.assertEqual(extract.call_count, 2)
-            self.assertIsNone(
-                manifest["items"][keys[2]].get("visual_description_status")
+            self.assertEqual(
+                manifest["items"][keys[2]]["visual_description_status"],
+                "DEFERRED",
+            )
+            self.assertEqual(
+                manifest["items"][keys[2]]["visual_description_deferred_reason"],
+                "PER_RUN_BUDGET",
             )
 
 
@@ -232,13 +237,74 @@ class InstagramPathSegmentTests(unittest.TestCase):
                 "FakeGeminiError: Gemini visual evidence extraction failed "
                 "code=429 status=RESOURCE_EXHAUSTED"
             )
+            item = manifest["items"][key]
+            self.assertEqual(item["visual_description_error"], expected)
+            self.assertEqual(item["visual_description_status"], "DEFERRED")
             self.assertEqual(
-                manifest["items"][key]["visual_description_error"],
-                expected,
+                item["visual_description_deferred_reason"],
+                "PROVIDER_RATE_LIMIT",
+            )
+            self.assertIn("visual_description_retry_after", item)
+            self.assertTrue(result["provider_circuit_breaker"]["open"])
+            self.assertEqual(
+                result["provider_circuit_breaker"]["reason"],
+                "PROVIDER_RATE_LIMIT",
             )
             self.assertEqual(result["errors"], [f"{key}: {expected}"])
             self.assertNotIn("secret provider body", str(result))
 
+
+
+    def test_story_rate_limit_opens_circuit_breaker_for_remaining_items(self) -> None:
+        class FakeGeminiError(Exception):
+            code = 429
+            status = "RESOURCE_EXHAUSTED"
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            settings = root / "control" / "settings.json"
+            settings.parent.mkdir(parents=True)
+            settings.write_text("{}", encoding="utf-8")
+            manifest = {"items": {}}
+            keys = []
+            for index in range(3):
+                shot = root / "output" / f"rate-{index}.png"
+                shot.parent.mkdir(parents=True, exist_ok=True)
+                shot.write_bytes(b"png")
+                key = f"STORY:example:rate-{index}"
+                keys.append(key)
+                manifest["items"][key] = {
+                    "source_type": "STORY",
+                    "creator": "example",
+                    "research_status": "PENDING",
+                    "screenshot_file": str(shot.relative_to(root)),
+                }
+
+            with mock.patch(
+                "ephemeral_ingest.extract_image_evidence_gemini",
+                side_effect=FakeGeminiError("provider quota body"),
+            ) as extract:
+                result = enrich_story_visual_evidence(
+                    root,
+                    manifest,
+                    keys,
+                    max_attempts=3,
+                )
+
+            self.assertEqual(extract.call_count, 1)
+            self.assertEqual(result["attempted"], 1)
+            self.assertEqual(result["deferred"], 3)
+            self.assertEqual(result["provider_deferred"], 3)
+            self.assertEqual(len(result["errors"]), 1)
+            for key in keys:
+                self.assertEqual(
+                    manifest["items"][key]["visual_description_status"],
+                    "DEFERRED",
+                )
+                self.assertEqual(
+                    manifest["items"][key]["visual_description_deferred_reason"],
+                    "PROVIDER_RATE_LIMIT",
+                )
 
 
     def test_existing_numeric_story_backfills_media_identity_without_rewriting_evidence(self) -> None:

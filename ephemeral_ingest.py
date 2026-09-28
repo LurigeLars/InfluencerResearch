@@ -9,23 +9,25 @@ import re
 import subprocess
 import sys
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
 from playwright.sync_api import sync_playwright
 
-from transcription_backend import DEFAULT_GEMINI_VISUAL_MODEL, extract_image_evidence_gemini, safe_gemini_error, transcribe_video
+from transcription_backend import DEFAULT_GEMINI_VISUAL_MODEL, extract_image_evidence_gemini, gemini_error_metadata, safe_gemini_error, transcribe_video
 
 
-APP_VERSION = "0.4.9"
+APP_VERSION = "0.5.0"
 STORY_URL_RE = re.compile(r"/stories/(?P<user>[^/]+)/(?P<id>\d+)/?")
 HIGHLIGHT_URL_RE = re.compile(r"/stories/highlights/(?P<id>\d+)/?")
 STRICT_STORY_ROOT_PATH_RE = re.compile(r"^/stories/[A-Za-z0-9._-]{1,64}/?$")
 STRICT_STORY_PATH_RE = re.compile(r"^/stories/[A-Za-z0-9._-]{1,64}/\d+/?$")
 STRICT_HIGHLIGHT_PATH_RE = re.compile(r"^/stories/highlights/\d+/?$")
 MAX_STORY_VISUAL_ENRICHMENTS_PER_RUN = 2
+STORY_GEMINI_RATE_LIMIT_COOLDOWN_SECONDS = 300
+STORY_GEMINI_PROVIDER_ERROR_COOLDOWN_SECONDS = 60
 
 
 def canonical_instagram_ephemeral_url(value: str) -> str:
@@ -669,6 +671,39 @@ def capture_story_frames(
     }
 
 
+def _parse_retry_after(value: Any) -> datetime | None:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _defer_story_visual(
+    item: dict,
+    *,
+    reason: str,
+    retry_after: datetime | None,
+    safe_error: str | None = None,
+) -> None:
+    item["visual_description_status"] = "DEFERRED"
+    item["visual_description_deferred_reason"] = reason
+    item["visual_description_generated_at"] = utc_now()
+    if retry_after is not None:
+        item["visual_description_retry_after"] = retry_after.isoformat()
+    else:
+        item.pop("visual_description_retry_after", None)
+    if safe_error:
+        item["visual_description_error"] = safe_error
+    else:
+        item.pop("visual_description_error", None)
+
+
 def enrich_story_visual_evidence(
     root: Path,
     manifest: dict,
@@ -676,7 +711,13 @@ def enrich_story_visual_evidence(
     *,
     max_attempts: int = MAX_STORY_VISUAL_ENRICHMENTS_PER_RUN,
 ) -> dict:
-    """Backfill readable multimodal evidence for visited Story screenshots."""
+    """Backfill readable multimodal evidence for visited Story screenshots.
+
+    Provider 429/5xx failures are transient extraction state, not evidence that the
+    Story itself lacks content. A provider-wide failure opens a per-run circuit
+    breaker so the scan does not spend additional quota on requests that are
+    expected to fail.
+    """
     settings = load_json(root / "control" / "settings.json", {})
     model = str(
         (settings.get("transcription") or {}).get(
@@ -689,8 +730,12 @@ def enrich_story_visual_evidence(
     completed = 0
     skipped = 0
     deferred = 0
+    provider_deferred = 0
     errors: list[str] = []
     changed = False
+    circuit_reason: str | None = None
+    circuit_retry_after: datetime | None = None
+    now = datetime.now(timezone.utc)
 
     for key in item_keys:
         item = (manifest.get("items") or {}).get(key)
@@ -707,7 +752,33 @@ def enrich_story_visual_evidence(
             skipped += 1
             continue
 
+        existing_retry_after = _parse_retry_after(item.get("visual_description_retry_after"))
+        if (
+            str(item.get("visual_description_status") or "").upper() == "DEFERRED"
+            and existing_retry_after is not None
+            and existing_retry_after > now
+        ):
+            deferred += 1
+            continue
+
+        if circuit_reason is not None:
+            _defer_story_visual(
+                item,
+                reason=circuit_reason,
+                retry_after=circuit_retry_after,
+            )
+            changed = True
+            deferred += 1
+            provider_deferred += 1
+            continue
+
         if attempted >= max(0, int(max_attempts)):
+            _defer_story_visual(
+                item,
+                reason="PER_RUN_BUDGET",
+                retry_after=None,
+            )
+            changed = True
             deferred += 1
             continue
 
@@ -731,6 +802,8 @@ def enrich_story_visual_evidence(
             item["visual_description_model"] = result.get("model")
             item["visual_description_generated_at"] = utc_now()
             item.pop("visual_description_error", None)
+            item.pop("visual_description_deferred_reason", None)
+            item.pop("visual_description_retry_after", None)
             changed = True
             if text:
                 completed += 1
@@ -738,9 +811,35 @@ def enrich_story_visual_evidence(
                 errors.append(f"{key}: NO_MEANINGFUL_VISUAL_EVIDENCE")
         except Exception as exc:
             safe_error = safe_gemini_error(exc, operation="visual evidence extraction")
-            item["visual_description_status"] = "ERROR"
-            item["visual_description_error"] = safe_error
-            item["visual_description_generated_at"] = utc_now()
+            meta = gemini_error_metadata(exc)
+            code = meta.get("code")
+            transient = code is None or code == 429 or (isinstance(code, int) and code >= 500)
+
+            if transient:
+                if code == 429:
+                    reason = "PROVIDER_RATE_LIMIT"
+                    cooldown = STORY_GEMINI_RATE_LIMIT_COOLDOWN_SECONDS
+                else:
+                    reason = "PROVIDER_UNAVAILABLE"
+                    cooldown = STORY_GEMINI_PROVIDER_ERROR_COOLDOWN_SECONDS
+                retry_after = now + timedelta(seconds=cooldown)
+                _defer_story_visual(
+                    item,
+                    reason=reason,
+                    retry_after=retry_after,
+                    safe_error=safe_error,
+                )
+                circuit_reason = reason
+                circuit_retry_after = retry_after
+                provider_deferred += 1
+                deferred += 1
+            else:
+                item["visual_description_status"] = "ERROR"
+                item["visual_description_error"] = safe_error
+                item["visual_description_generated_at"] = utc_now()
+                item.pop("visual_description_deferred_reason", None)
+                item.pop("visual_description_retry_after", None)
+
             changed = True
             errors.append(f"{key}: {safe_error}")
 
@@ -749,10 +848,18 @@ def enrich_story_visual_evidence(
         "completed": completed,
         "skipped": skipped,
         "deferred": deferred,
+        "provider_deferred": provider_deferred,
         "max_attempts": max(0, int(max_attempts)),
         "errors": errors,
         "changed": changed,
         "model": model,
+        "provider_circuit_breaker": {
+            "open": circuit_reason is not None,
+            "reason": circuit_reason,
+            "retry_after": (
+                circuit_retry_after.isoformat() if circuit_retry_after is not None else None
+            ),
+        },
     }
 
 
