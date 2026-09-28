@@ -16,7 +16,18 @@ from urllib.parse import urlsplit
 
 from playwright.sync_api import sync_playwright
 
-from transcription_backend import DEFAULT_GEMINI_VISUAL_MODEL, extract_image_evidence_gemini, gemini_error_metadata, gemini_retry_after_seconds, safe_gemini_error, transcribe_video
+from transcription_backend import (
+    DEFAULT_GEMINI_VISUAL_MODEL,
+    DEFAULT_OLLAMA_BASE_URL,
+    DEFAULT_OLLAMA_VISUAL_MODEL,
+    OLLAMA_VISUAL_TIMEOUT_SECONDS,
+    extract_image_evidence_gemini,
+    extract_image_evidence_ollama,
+    gemini_error_metadata,
+    gemini_retry_after_seconds,
+    safe_gemini_error,
+    transcribe_video,
+)
 
 
 APP_VERSION = "0.5.1"
@@ -26,12 +37,15 @@ STRICT_STORY_ROOT_PATH_RE = re.compile(r"^/stories/[A-Za-z0-9._-]{1,64}/?$")
 STRICT_STORY_PATH_RE = re.compile(r"^/stories/[A-Za-z0-9._-]{1,64}/\d+/?$")
 STRICT_HIGHLIGHT_PATH_RE = re.compile(r"^/stories/highlights/\d+/?$")
 MAX_STORY_VISUAL_ENRICHMENTS_PER_RUN = 2
+MAX_STORY_OLLAMA_ENRICHMENTS_PER_RUN = 4
 STORY_GEMINI_RATE_LIMIT_COOLDOWN_SECONDS = 300
 STORY_GEMINI_PROVIDER_ERROR_COOLDOWN_SECONDS = 60
 STORY_OCR_TIMEOUT_SECONDS = 20
 STORY_OCR_LANGUAGES = "eng+swe"
 STORY_OCR_MIN_WORDS = 8
 STORY_OCR_MIN_CHARS = 48
+STORY_OCR_MIN_MEANINGFUL_RATIO = 0.60
+STORY_OCR_MAX_NOISE_RATIO = 0.30
 
 
 def canonical_instagram_ephemeral_url(value: str) -> str:
@@ -803,9 +817,35 @@ def _defer_story_visual(
         item.pop("visual_description_error", None)
 
 
-def _story_ocr_text_sufficient(text: str) -> bool:
+def _story_evidence_text_sufficient(text: str) -> bool:
     text = str(text or "").strip()
     return len(text.split()) >= STORY_OCR_MIN_WORDS or len(text) >= STORY_OCR_MIN_CHARS
+
+
+def _story_ocr_text_sufficient(text: str) -> bool:
+    """Require enough OCR text and reject symbol-heavy / fragmented output."""
+    text = str(text or "").strip()
+    if not _story_evidence_text_sufficient(text):
+        return False
+
+    tokens = re.findall(r"\\S+", text)
+    if not tokens:
+        return False
+    meaningful = [
+        token for token in tokens
+        if re.search(r"[A-Za-zÅÄÖåäö]{2,}", token) or re.search(r"\\d", token)
+    ]
+    noise = [
+        token for token in tokens
+        if not re.search(r"[A-Za-zÅÄÖåäö0-9]", token)
+        or (len(token) == 1 and not token.isalnum())
+    ]
+    meaningful_ratio = len(meaningful) / len(tokens)
+    noise_ratio = len(noise) / len(tokens)
+    return (
+        meaningful_ratio >= STORY_OCR_MIN_MEANINGFUL_RATIO
+        and noise_ratio <= STORY_OCR_MAX_NOISE_RATIO
+    )
 
 
 def extract_story_text_local_ocr(screenshot_path: Path) -> dict:
@@ -855,19 +895,38 @@ def enrich_story_visual_evidence(
     expected to fail.
     """
     settings = load_json(root / "control" / "settings.json", {})
+    tcfg = settings.get("transcription") or {}
     model = str(
-        (settings.get("transcription") or {}).get(
-            "gemini_visual_model",
-            DEFAULT_GEMINI_VISUAL_MODEL,
-        )
+        tcfg.get("gemini_visual_model", DEFAULT_GEMINI_VISUAL_MODEL)
         or DEFAULT_GEMINI_VISUAL_MODEL
     ).strip()
+    ollama_enabled = bool(tcfg.get("ollama_visual_enabled", True))
+    ollama_model = str(
+        tcfg.get("ollama_visual_model", DEFAULT_OLLAMA_VISUAL_MODEL)
+        or DEFAULT_OLLAMA_VISUAL_MODEL
+    ).strip()
+    ollama_base_url = str(
+        tcfg.get("ollama_base_url", DEFAULT_OLLAMA_BASE_URL)
+        or DEFAULT_OLLAMA_BASE_URL
+    ).strip()
+    ollama_timeout_seconds = int(
+        tcfg.get("ollama_visual_timeout_seconds", OLLAMA_VISUAL_TIMEOUT_SECONDS)
+        or OLLAMA_VISUAL_TIMEOUT_SECONDS
+    )
+    max_ollama_attempts = max(
+        0,
+        int(tcfg.get("ollama_visual_max_attempts", MAX_STORY_OLLAMA_ENRICHMENTS_PER_RUN)),
+    )
     attempted = 0
     completed = 0
     ocr_attempted = 0
     ocr_completed = 0
     ocr_insufficient = 0
     ocr_errors: list[str] = []
+    ollama_attempted = 0
+    ollama_completed = 0
+    ollama_insufficient = 0
+    ollama_errors: list[str] = []
     skipped = 0
     deferred = 0
     provider_deferred = 0
@@ -927,6 +986,38 @@ def enrich_story_visual_evidence(
         except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
             # OCR failure is non-fatal; Gemini remains the richer fallback.
             ocr_errors.append(f"{key}: {type(exc).__name__}: {exc}")
+
+        # Ollama is the local multimodal second pass. It can correct noisy OCR and
+        # interpret charts/screenshots without consuming Gemini quota.
+        if ollama_enabled and ollama_attempted < max_ollama_attempts:
+            ollama_attempted += 1
+            try:
+                ollama_result = extract_image_evidence_ollama(
+                    screenshot_path,
+                    model=ollama_model,
+                    base_url=ollama_base_url,
+                    timeout_seconds=ollama_timeout_seconds,
+                    ocr_hint=ocr_text if "ocr_text" in locals() else None,
+                )
+                ollama_text = str(ollama_result.get("text") or "").strip()
+                if _story_evidence_text_sufficient(ollama_text):
+                    item["visual_description"] = ollama_text
+                    item["visual_description_status"] = "DONE"
+                    item["visual_description_source"] = ollama_result.get("source")
+                    item["visual_description_provider"] = ollama_result.get("provider")
+                    item["visual_description_model"] = ollama_result.get("model")
+                    item["visual_description_generated_at"] = utc_now()
+                    item.pop("visual_description_error", None)
+                    item.pop("visual_description_deferred_reason", None)
+                    item.pop("visual_description_retry_after", None)
+                    changed = True
+                    completed += 1
+                    ollama_completed += 1
+                    continue
+                ollama_insufficient += 1
+            except Exception as exc:
+                # Local model failure must never block the Gemini fallback.
+                ollama_errors.append(f"{key}: {type(exc).__name__}: {exc}")
 
         existing_retry_after = _parse_retry_after(item.get("visual_description_retry_after"))
         if (
@@ -1062,6 +1153,12 @@ def enrich_story_visual_evidence(
         "ocr_completed": ocr_completed,
         "ocr_insufficient": ocr_insufficient,
         "ocr_errors": ocr_errors,
+        "ollama_attempted": ollama_attempted,
+        "ollama_completed": ollama_completed,
+        "ollama_insufficient": ollama_insufficient,
+        "ollama_errors": ollama_errors,
+        "ollama_model": ollama_model,
+        "ollama_max_attempts": max_ollama_attempts,
         "skipped": skipped,
         "deferred": deferred,
         "provider_deferred": provider_deferred,
