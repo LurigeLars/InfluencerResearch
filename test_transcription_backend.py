@@ -19,6 +19,28 @@ class TranscriptionBackendTests(unittest.TestCase):
             },
         )
 
+    def test_story_gemini_http_options_are_stricter(self) -> None:
+        self.assertEqual(
+            tb.gemini_http_options(
+                timeout_ms=tb.STORY_GEMINI_HTTP_TIMEOUT_MS,
+                retry_attempts=tb.STORY_GEMINI_RETRY_ATTEMPTS,
+            ),
+            {
+                "timeout": 30_000,
+                "retry_options": {"attempts": 1},
+            },
+        )
+
+    def test_story_image_path_uses_inline_bytes_not_files_api(self) -> None:
+        source = Path(tb.__file__).read_text(encoding="utf-8")
+        start = source.index("def extract_image_evidence_gemini(")
+        end = source.index("\ndef extract_visible_text_gemini(", start)
+        block = source[start:end]
+        self.assertIn("types.Part.from_bytes", block)
+        self.assertIn("client.models.generate_content", block)
+        self.assertNotIn("client.files.upload", block)
+        self.assertNotIn("client.files.delete", block)
+
     def test_runtime_secret_path_is_tmpfs_location(self) -> None:
         self.assertEqual(
             tb.GEMINI_SECRET_PATH,
