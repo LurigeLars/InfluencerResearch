@@ -5,7 +5,7 @@ name: influencerresearch-public
 
 services:
   gateway:
-    image: node:26.9.0-alpine
+    image: node:26.10.0-alpine
     container_name: influencerresearch-gateway
     command: ["node", "/app/gateway.mjs"]
     user: node
