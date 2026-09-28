@@ -18,7 +18,7 @@ if not hasattr(playwright_sync, "sync_playwright"):
     playwright_sync.sync_playwright = lambda: None
 playwright_pkg.sync_api = playwright_sync
 
-from ephemeral_ingest import enrich_story_visual_evidence, extract_story_identity, invalidate_legacy_unstable_story_evidence, normalize_creator_handle, retire_root_media_aliases_for_numeric_story
+from ephemeral_ingest import backfill_story_identity_metadata, enrich_story_visual_evidence, extract_story_identity, invalidate_legacy_unstable_story_evidence, normalize_creator_handle, retire_root_media_aliases_for_numeric_story
 from instagram_ingest import safe_creator
 
 
@@ -189,6 +189,53 @@ class InstagramPathSegmentTests(unittest.TestCase):
             self.assertIsNone(
                 manifest["items"][keys[2]].get("visual_description_status")
             )
+
+
+    def test_existing_numeric_story_backfills_media_identity_without_rewriting_evidence(self) -> None:
+        item = {
+            "source_type": "STORY",
+            "creator": "example",
+            "evidence_id": "3995836448797052519",
+            "story_id": "3995836448797052519",
+            "source_url": "https://www.instagram.com/stories/example/3995836448797052519/",
+            "observed_at": "2026-09-28T08:19:07+00:00",
+            "screenshot_file": "output/example/stories/screenshots/3995836448797052519.png",
+            "visual_description": "Existing readable evidence",
+        }
+
+        changed = backfill_story_identity_metadata(
+            item,
+            story_id="3995836448797052519",
+            identity_basis="STORY_URL_ID",
+            media_identity_path="/v/t51.2885-15/shared.jpg",
+            source_url="https://www.instagram.com/stories/example/3995836448797052519/",
+        )
+
+        self.assertTrue(changed)
+        self.assertEqual(item["story_identity_basis"], "STORY_URL_ID")
+        self.assertEqual(item["media_identity_path"], "/v/t51.2885-15/shared.jpg")
+        self.assertEqual(item["visual_description"], "Existing readable evidence")
+        self.assertEqual(item["observed_at"], "2026-09-28T08:19:07+00:00")
+        self.assertIn("identity_metadata_updated_at", item)
+
+    def test_identity_backfill_does_not_overwrite_existing_media_path(self) -> None:
+        item = {
+            "story_id": "123",
+            "story_identity_basis": "STORY_URL_ID",
+            "media_identity_path": "/original.jpg",
+            "source_url": "https://www.instagram.com/stories/example/123/",
+        }
+
+        changed = backfill_story_identity_metadata(
+            item,
+            story_id="123",
+            identity_basis="STORY_URL_ID",
+            media_identity_path="/different.jpg",
+            source_url="https://www.instagram.com/stories/example/123/",
+        )
+
+        self.assertFalse(changed)
+        self.assertEqual(item["media_identity_path"], "/original.jpg")
 
 
 if __name__ == "__main__":
