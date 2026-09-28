@@ -848,6 +848,16 @@ def _story_ocr_text_sufficient(text: str) -> bool:
     )
 
 
+def _story_local_ocr_needs_upgrade(item: dict) -> bool:
+    text = str(item.get("visual_description") or "").strip()
+    return (
+        str(item.get("visual_description_status") or "").upper() == "DONE"
+        and str(item.get("visual_description_source") or "").upper() == "LOCAL_OCR"
+        and bool(text)
+        and not _story_ocr_text_sufficient(text)
+    )
+
+
 def extract_story_text_local_ocr(screenshot_path: Path) -> dict:
     """Extract visible Story text locally with bounded Tesseract OCR."""
     proc = subprocess.run(
@@ -952,6 +962,7 @@ def enrich_story_visual_evidence(
         if (
             str(item.get("visual_description_status") or "").upper() == "DONE"
             and str(item.get("visual_description") or "").strip()
+            and not _story_local_ocr_needs_upgrade(item)
         ):
             skipped += 1
             continue
@@ -1425,6 +1436,7 @@ def run_one(
             if (
                 str(item.get("visual_description_status") or "").upper() == "DONE"
                 and str(item.get("visual_description") or "").strip()
+                and not _story_local_ocr_needs_upgrade(item)
             ):
                 continue
             if key not in story_visual_keys:
