@@ -18,7 +18,7 @@ import tiktok_camofox_sync as tts
 import instagram_camofox_public_smoke as instagram_smoke
 import ephemeral_ingest as ephemeral
 
-RECENT_CHECK_VERSION = "0.2.5"
+RECENT_CHECK_VERSION = "0.2.6"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
@@ -953,6 +953,16 @@ def _main_impl() -> int:
     cutoff, end, window_meta = resolve_window(args.window, args.lookback_days)
     discovery_limit = min(MAX_DISCOVERY_PER_SOURCE, max(MIN_DISCOVERY_PER_SOURCE, max_items + 5))
     started = now_iso()
+    run_clock = time.perf_counter()
+    stage_timings: list[dict] = []
+
+    def record_timing(stage: str, started_clock: float, **dimensions) -> None:
+        stage_timings.append({
+            "stage": stage,
+            **{k: v for k, v in dimensions.items() if v not in {None, ""}},
+            "duration_ms": round((time.perf_counter() - started_clock) * 1000, 1),
+        })
+
     status_path = root / "state" / "creator_recent_check_status.json"
     atomic_json(status_path, {
         "schema_version": 1,
@@ -977,6 +987,7 @@ def _main_impl() -> int:
             for source in sources:
                 platform = str(source.get("platform", "")).upper()
                 source_map[(str(profile["creator_key"]), platform)] = (profile, source)
+                source_clock = time.perf_counter()
                 try:
                     if platform == "YOUTUBE":
                         d = discover_youtube(profile, source, cutoff, end, discovery_limit)
@@ -994,6 +1005,13 @@ def _main_impl() -> int:
                         })
                 except Exception as exc:
                     errors.append({"creator_key": profile["creator_key"], "platform": platform, "stage": "DISCOVERY", "error": f"{type(exc).__name__}: {exc}"})
+                finally:
+                    record_timing(
+                        "DISCOVERY",
+                        source_clock,
+                        creator_key=profile["creator_key"],
+                        platform=platform,
+                    )
 
         all_recent = [item for d in discoveries for item in d.get("items", [])]
         all_recent.sort(key=lambda x: x["published_at"], reverse=True)
@@ -1014,6 +1032,7 @@ def _main_impl() -> int:
         ingestion_results = []
         for (creator_key, platform), ids in grouped.items():
             profile, source = source_map[(creator_key, platform)]
+            ingestion_clock = time.perf_counter()
             try:
                 if platform == "YOUTUBE":
                     ing = _ingest_youtube(root, creator_key, ids)
@@ -1039,6 +1058,14 @@ def _main_impl() -> int:
                     errors.append({"creator_key": creator_key, "platform": platform, "stage": "INGESTION", "error": f"RETURNCODE:{ing.get('returncode')}"})
             except Exception as exc:
                 errors.append({"creator_key": creator_key, "platform": platform, "stage": "INGESTION", "error": f"{type(exc).__name__}: {exc}"})
+            finally:
+                record_timing(
+                    "INGESTION",
+                    ingestion_clock,
+                    creator_key=creator_key,
+                    platform=platform,
+                    item_count=len(ids),
+                )
 
         story_results = []
         story_gemini_circuit = ephemeral.initial_story_gemini_circuit(root)
@@ -1063,6 +1090,7 @@ def _main_impl() -> int:
                 if creator_key in seen_instagram_creators:
                     continue
                 seen_instagram_creators.add(creator_key)
+                story_clock = time.perf_counter()
                 try:
                     story_result = _ingest_instagram_stories(
                         root,
@@ -1101,11 +1129,20 @@ def _main_impl() -> int:
                         "stage": "STORY_INGESTION",
                         "error": f"{type(exc).__name__}: {exc}",
                     })
+                finally:
+                    record_timing(
+                        "STORY_INGESTION",
+                        story_clock,
+                        creator_key=creator_key,
+                        platform="INSTAGRAM",
+                    )
 
         # Rebuild the queue even when all recent items were already ingested. This
         # migrates older evidence through the current content-readiness gate instead
         # of silently treating an empty/weak transcript as analysis-ready.
+        queue_clock = time.perf_counter()
         queue_refresh = tts.run_research_queue(root)
+        record_timing("RESEARCH_QUEUE", queue_clock)
         if not queue_refresh.get("ok"):
             errors.append({
                 "stage": "RESEARCH_QUEUE",
@@ -1238,6 +1275,20 @@ def _main_impl() -> int:
             if not errors and not extraction_pending
             else ("PARTIAL" if discoveries else "FAILED")
         )
+        total_duration_ms = round((time.perf_counter() - run_clock) * 1000, 1)
+        stage_totals_ms: dict[str, float] = {}
+        for timing in stage_timings:
+            stage = str(timing.get("stage") or "")
+            stage_totals_ms[stage] = round(
+                stage_totals_ms.get(stage, 0.0) + float(timing.get("duration_ms") or 0.0),
+                1,
+            )
+        slowest_operations = sorted(
+            stage_timings,
+            key=lambda row: float(row.get("duration_ms") or 0.0),
+            reverse=True,
+        )[:20]
+
         status = {
             "schema_version": 1,
             "recent_check_version": RECENT_CHECK_VERSION,
@@ -1282,6 +1333,11 @@ def _main_impl() -> int:
             "provider_health": {
                 "gemini": ephemeral.get_gemini_provider_health(root),
             },
+            "timings": {
+                "total_duration_ms": total_duration_ms,
+                "stage_totals_ms": stage_totals_ms,
+                "slowest_operations": slowest_operations,
+            },
             "auto_ingest": True,
             "auto_analysis_contract": {
                 "enabled": True,
@@ -1315,6 +1371,14 @@ def _main_impl() -> int:
             "window": window_meta,
             "cutoff_at": cutoff.isoformat(),
             "error": f"{type(exc).__name__}: {exc}",
+            "timings": {
+                "total_duration_ms": round((time.perf_counter() - run_clock) * 1000, 1),
+                "slowest_operations": sorted(
+                    stage_timings,
+                    key=lambda row: float(row.get("duration_ms") or 0.0),
+                    reverse=True,
+                )[:20],
+            },
         }
         atomic_json(status_path, status)
         print(json.dumps(status, ensure_ascii=True, indent=2))
