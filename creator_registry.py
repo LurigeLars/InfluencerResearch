@@ -411,6 +411,81 @@ def _enrich_runtime_source_metadata(existing: dict, candidate: dict) -> dict:
     return {**existing, "sources": enriched_sources}
 
 
+def _extend_existing_profile_sources(existing: dict, candidate: dict) -> dict:
+    """Allow a verified creator registration to add new platforms without mutating existing ones."""
+    if (
+        existing.get("creator_key") != candidate.get("creator_key")
+        or existing.get("display_name") != candidate.get("display_name")
+        or existing.get("status") != candidate.get("status")
+    ):
+        raise ValueError("CREATOR_KEY_CONFLICT")
+
+    existing_sources = {
+        str(source.get("platform")): source
+        for source in existing.get("sources", [])
+    }
+    candidate_sources = {
+        str(source.get("platform")): source
+        for source in candidate.get("sources", [])
+    }
+    if not set(existing_sources) < set(candidate_sources):
+        raise ValueError("CREATOR_KEY_CONFLICT")
+
+    immutable_source_keys = {
+        "platform",
+        "profile_url",
+        "enabled",
+        "evaluation_enabled",
+        "monitoring_enabled",
+        "priority",
+    }
+    merged_sources = []
+    for source in existing.get("sources", []):
+        platform = str(source.get("platform"))
+        incoming = candidate_sources[platform]
+        for key in immutable_source_keys:
+            if source.get(key) != incoming.get(key):
+                raise ValueError(f"CREATOR_SOURCE_CONFLICT:{platform}:{key}")
+        enriched = dict(source)
+        for key in RUNTIME_SOURCE_METADATA_KEYS:
+            if key not in incoming:
+                continue
+            if key in source and source[key] != incoming[key]:
+                raise ValueError(f"RUNTIME_METADATA_CONFLICT:{platform}:{key}")
+            enriched[key] = incoming[key]
+        merged_sources.append(enriched)
+
+    for source in candidate.get("sources", []):
+        if str(source.get("platform")) not in existing_sources:
+            merged_sources.append(source)
+
+    existing_verification = existing.get("verification") or {}
+    candidate_verification = candidate.get("verification") or {}
+    methods = list(existing_verification.get("methods") or [])
+    for method in candidate_verification.get("methods") or []:
+        if method not in methods:
+            methods.append(method)
+    refs = list(existing_verification.get("references") or [])
+    for ref in candidate_verification.get("references") or []:
+        if ref not in refs:
+            refs.append(ref)
+
+    verification = {
+        **existing_verification,
+        "status": "VERIFIED",
+        "basis": "+".join(methods),
+        "methods": methods,
+        "references": refs,
+        "references_are_passive": True,
+    }
+    return {
+        **existing,
+        "monitoring_enabled": any(bool(source.get("monitoring_enabled")) for source in merged_sources),
+        "verification": verification,
+        "sources": merged_sources,
+    }
+
+
 def register_creator(root: Path, req: dict) -> dict:
     root = root.resolve()
     path = root / "control" / "creator_registry.json"
@@ -422,6 +497,16 @@ def register_creator(root: Path, req: dict) -> dict:
         candidate = {**profile, "verification": {**profile["verification"], "verified_at": (existing.get("verification") or {}).get("verified_at", profile["verification"]["verified_at"])}}
         if _functional_profile(existing) == _functional_profile(candidate):
             return {"result": "ALREADY_REGISTERED", "creator_key": key, "registry_changed": False, "source_count": len(profile["sources"])}
+
+        existing_platforms = {str(source.get("platform")) for source in existing.get("sources", [])}
+        candidate_platforms = {str(source.get("platform")) for source in candidate.get("sources", [])}
+        if existing_platforms < candidate_platforms:
+            extended = _extend_existing_profile_sources(existing, candidate)
+            merged = {**registry, "updated_at": now_iso(), "creators": {**registry["creators"], key: extended}}
+            merged = validate_registry(merged)
+            atomic_json(path, merged)
+            return {"result": "EXTENDED", "creator_key": key, "registry_changed": True, "source_count": len(extended["sources"])}
+
         if _functional_profile_without_runtime_metadata(existing) != _functional_profile_without_runtime_metadata(candidate):
             raise ValueError("CREATOR_KEY_CONFLICT")
         enriched = _enrich_runtime_source_metadata(existing, candidate)
