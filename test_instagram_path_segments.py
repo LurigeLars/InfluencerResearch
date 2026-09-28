@@ -1,6 +1,19 @@
 from __future__ import annotations
 
+import sys
 import unittest
+from types import ModuleType
+
+# This unit only exercises pure path/identity helpers. CI does not install the
+# browser runtime, so provide the import surface needed by ephemeral_ingest.
+playwright_pkg = sys.modules.setdefault("playwright", ModuleType("playwright"))
+playwright_sync = sys.modules.setdefault(
+    "playwright.sync_api",
+    ModuleType("playwright.sync_api"),
+)
+if not hasattr(playwright_sync, "sync_playwright"):
+    playwright_sync.sync_playwright = lambda: None
+playwright_pkg.sync_api = playwright_sync
 
 from ephemeral_ingest import extract_story_identity, invalidate_legacy_unstable_story_evidence, normalize_creator_handle
 from instagram_ingest import safe_creator
