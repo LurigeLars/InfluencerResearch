@@ -319,13 +319,15 @@ def extract_image_evidence_ollama(
             line = raw_line.strip()
             if not line:
                 continue
-            line = re.sub(r"^(?:[-*•]+|\d+[.)])\s*", "", line)
+            # Strip Markdown list syntax, but do not mistake bold markers for bullets.
+            line = re.sub(r"^(?:[-*•]|\d+[.)])\s+", "", line)
             line = re.sub(
-                r"^\*{0,2}(?:visible text|textual evidence|headline|platform name)\*{0,2}\s*:\s*",
+                r"^\*{0,2}(?:visible text|textual evidence|headline|platform name)\s*:\*{0,2}\s*",
                 "",
                 line,
                 flags=re.IGNORECASE,
             ).strip()
+            line = line.strip("*_").strip()
             lower = line.casefold()
             if not line or lower in {"visible text", "textual evidence", "visual evidence"}:
                 continue
