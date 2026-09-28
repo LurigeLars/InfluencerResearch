@@ -67,6 +67,7 @@ class RecentAnalysisTargetTests(unittest.TestCase):
                         "visual_description_source": "GEMINI_STORY_SCREENSHOT_EVIDENCE",
                         "visual_description_provider": "gemini",
                         "visual_description_model": "gemini-3.8-flash",
+                        "visual_description_contract": "VISIBLE_TEXT_V2",
                         "visual_evidence_status": "DONE",
                         "visual_evidence_index": "output/creator/stories/screenshots/123.png",
                         "visual_frame_count": 1,
@@ -87,6 +88,7 @@ class RecentAnalysisTargetTests(unittest.TestCase):
             self.assertEqual(target["source_subtype"], "STORY")
             self.assertEqual(target["visual_evidence_status"], "DONE")
             self.assertEqual(target["visual_description_status"], "DONE")
+            self.assertEqual(target["visual_description_contract"], "VISIBLE_TEXT_V2")
             self.assertIn("positioning", target["visual_description"])
             self.assertEqual(
                 target["screenshot_file"],
@@ -99,6 +101,28 @@ class RecentAnalysisTargetTests(unittest.TestCase):
                 crc.MAX_ANALYSIS_EVIDENCE_CHARS,
             )
             self.assertTrue(target["analysis_evidence_truncated"])
+
+    def test_deferred_provider_state_does_not_make_scan_partial(self) -> None:
+        state, readiness = crc._recent_check_final_state(
+            errors=[],
+            discoveries=[{"creator_key": "creator"}],
+            deferred_extraction=[{"reason": "PROVIDER_RATE_LIMIT"}],
+            extraction_errors=[],
+            pending_extraction=[],
+        )
+        self.assertEqual(state, "COMPLETE")
+        self.assertFalse(readiness)
+
+    def test_real_extraction_error_remains_partial(self) -> None:
+        state, readiness = crc._recent_check_final_state(
+            errors=[{"stage": "CONTENT_EXTRACTION"}],
+            discoveries=[{"creator_key": "creator"}],
+            deferred_extraction=[],
+            extraction_errors=[{"reason": "VISUAL_EXTRACTION_ERROR"}],
+            pending_extraction=[],
+        )
+        self.assertEqual(state, "PARTIAL")
+        self.assertFalse(readiness)
 
 
 if __name__ == "__main__":

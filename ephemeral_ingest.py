@@ -876,6 +876,17 @@ def _story_ollama_needs_upgrade(item: dict) -> bool:
     )
 
 
+
+def _story_visual_needs_enrichment(item: dict) -> bool:
+    """Return true for missing, low-quality, or legacy local Story evidence."""
+    text = str(item.get("visual_description") or "").strip()
+    status = str(item.get("visual_description_status") or "").upper()
+    if status != "DONE" or not text:
+        return True
+    return _story_local_ocr_needs_upgrade(item) or _story_ollama_needs_upgrade(item)
+
+
+
 def extract_story_text_local_ocr(screenshot_path: Path) -> dict:
     """Extract visible Story text locally with bounded Tesseract OCR."""
     proc = subprocess.run(
@@ -981,12 +992,7 @@ def enrich_story_visual_evidence(
             continue
         if str(item.get("research_status") or "").upper() == "INVALID":
             continue
-        if (
-            str(item.get("visual_description_status") or "").upper() == "DONE"
-            and str(item.get("visual_description") or "").strip()
-            and not _story_local_ocr_needs_upgrade(item)
-            and not _story_ollama_needs_upgrade(item)
-        ):
+        if not _story_visual_needs_enrichment(item):
             skipped += 1
             continue
 
@@ -1477,11 +1483,7 @@ def run_one(
                 continue
             if str(item.get("research_status") or "").upper() == "INVALID":
                 continue
-            if (
-                str(item.get("visual_description_status") or "").upper() == "DONE"
-                and str(item.get("visual_description") or "").strip()
-                and not _story_local_ocr_needs_upgrade(item)
-            ):
+            if not _story_visual_needs_enrichment(item):
                 continue
             if key not in story_visual_keys:
                 story_visual_keys.append(key)

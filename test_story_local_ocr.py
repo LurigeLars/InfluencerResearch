@@ -280,6 +280,17 @@ class StoryLocalOcrTests(unittest.TestCase):
             self.assertIn("ollama_total_ms", result["timings"])
             self.assertIn("gemini_total_ms", result["timings"])
 
+    def test_legacy_ollama_without_contract_requires_enrichment(self):
+        item = {
+            "visual_description": "Visible Story text that was produced by the old local model path",
+            "visual_description_status": "DONE",
+            "visual_description_source": "OLLAMA_STORY_SCREENSHOT_EVIDENCE",
+            "visual_description_provider": "ollama",
+        }
+        self.assertTrue(ei._story_visual_needs_enrichment(item))
+        item["visual_description_contract"] = ei.OLLAMA_VISUAL_CONTRACT
+        self.assertFalse(ei._story_visual_needs_enrichment(item))
+
 
 if __name__ == "__main__":
     unittest.main()
