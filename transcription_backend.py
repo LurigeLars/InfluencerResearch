@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import contextlib
+import json
 import math
 import os
 import subprocess
@@ -10,10 +12,15 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 
 GEMINI_SECRET_PATH = Path("/run/influencerresearch-secrets/gemini_api_key")
 DEFAULT_GEMINI_MODEL = "gemini-3.5-transcribe"
 DEFAULT_GEMINI_VISUAL_MODEL = "gemini-3.8-flash"
+DEFAULT_OLLAMA_VISUAL_MODEL = "gemma3-12b-16k"
+DEFAULT_OLLAMA_BASE_URL = "http://host.docker.internal:11434"
+OLLAMA_VISUAL_TIMEOUT_SECONDS = 90
 GEMINI_HTTP_TIMEOUT_MS = 45_000
 GEMINI_RETRY_ATTEMPTS = 2
 STORY_GEMINI_HTTP_TIMEOUT_MS = 30_000
@@ -231,6 +238,75 @@ def transcribe_gemini(
         with contextlib.suppress(OSError):
             audio_path.unlink(missing_ok=True)
 
+
+
+
+def extract_image_evidence_ollama(
+    image_path: Path,
+    *,
+    model: str = DEFAULT_OLLAMA_VISUAL_MODEL,
+    base_url: str = DEFAULT_OLLAMA_BASE_URL,
+    timeout_seconds: int = OLLAMA_VISUAL_TIMEOUT_SECONDS,
+    ocr_hint: str | None = None,
+) -> dict[str, Any]:
+    """Convert a Story screenshot to factual evidence with the shared host Ollama."""
+    image_bytes = image_path.read_bytes()
+    if not image_bytes:
+        raise RuntimeError("Story screenshot is empty.")
+
+    prompt = (
+        "Convert this Instagram Story screenshot into compact factual evidence for downstream "
+        "financial research. Ignore Instagram viewer chrome such as username, age, progress "
+        "bar, reply/share controls. Preserve meaningful visible text, tickers, prices, "
+        "percentages, dates, labels, chart axes and source names. Describe only meaningful "
+        "non-text visual evidence such as chart direction, highlighted regions, tables, "
+        "headlines or assets shown. Do not infer intent, do not recommend a trade, and do not "
+        "add facts that are not visibly present. If there is no meaningful content, output "
+        "exactly NO_MEANINGFUL_VISUAL_EVIDENCE."
+    )
+    hint = str(ocr_hint or "").strip()
+    if hint:
+        prompt += (
+            "\n\nA local OCR pass produced the following noisy hint. It may contain errors; "
+            "use the screenshot as the source of truth and correct obvious OCR mistakes:\n"
+            + hint[:4000]
+        )
+
+    body = json.dumps({
+        "model": model,
+        "messages": [{
+            "role": "user",
+            "content": prompt,
+            "images": [base64.b64encode(image_bytes).decode("ascii")],
+        }],
+        "stream": False,
+        "keep_alive": "5m",
+        "options": {"temperature": 0, "num_predict": 900},
+    }).encode("utf-8")
+    req = urllib_request.Request(
+        f"{base_url.rstrip('/')}/api/chat",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib_request.urlopen(req, timeout=max(1, int(timeout_seconds))) as response:
+            payload = json.load(response)
+    except urllib_error.HTTPError as exc:
+        raise RuntimeError(f"Ollama visual extraction failed HTTP {exc.code}") from exc
+    except urllib_error.URLError as exc:
+        raise RuntimeError("Ollama visual extraction unavailable") from exc
+
+    text = str(((payload.get("message") or {}).get("content")) or "").strip()
+    if text == "NO_MEANINGFUL_VISUAL_EVIDENCE":
+        text = ""
+    return {
+        "provider": "ollama",
+        "model": model,
+        "source": "OLLAMA_STORY_SCREENSHOT_EVIDENCE",
+        "transport": "HOST_DOCKER_INTERNAL",
+        "text": text,
+    }
 
 
 def extract_image_evidence_gemini(
