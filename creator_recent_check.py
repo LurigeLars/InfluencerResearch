@@ -932,6 +932,7 @@ def _ingest_instagram_stories(
     cutoff: datetime,
     max_new: int,
     gemini_circuit: dict | None = None,
+    ollama_budget_state: dict | None = None,
 ) -> dict:
     handle = _instagram_handle(source)
     if max_new <= 0:
@@ -945,6 +946,7 @@ def _ingest_instagram_stories(
         force=False,
         max_items=min(6, max(1, max_new + 2)),
         gemini_circuit=gemini_circuit,
+        ollama_budget_state=ollama_budget_state,
     )
     bridge = _promote_story_items(root, profile, handle, cutoff, max_new)
     promoted = list(bridge.get("promoted") or [])
@@ -1216,6 +1218,7 @@ def _main_impl() -> int:
 
         story_results = []
         story_gemini_circuit = ephemeral.initial_story_gemini_circuit(root)
+        story_ollama_budget = {"attempted": 0}
         story_selected: list[dict] = []
         story_available: list[dict] = []
         story_reused_existing_count = 0
@@ -1246,6 +1249,7 @@ def _main_impl() -> int:
                         cutoff,
                         remaining_story_slots,
                         gemini_circuit=story_gemini_circuit,
+                        ollama_budget_state=story_ollama_budget,
                     )
                     promoted = list(story_result.get("promoted") or [])
                     available = list(story_result.get("available") or [])
@@ -1486,6 +1490,7 @@ def _main_impl() -> int:
         story_visual_enrichment = {
             "by_creator": visual_by_creator,
             "totals": visual_totals,
+            "ollama_budget": dict(story_ollama_budget),
         }
 
         status = {

@@ -23,6 +23,7 @@ class StoryOllamaBackendTests(unittest.TestCase):
                     model="gemma3-12b-16k",
                     base_url="http://host.docker.internal:11434",
                     timeout_seconds=12,
+                    num_ctx=3072,
                     ocr_hint="noisy OCR",
                 )
 
@@ -31,12 +32,14 @@ class StoryOllamaBackendTests(unittest.TestCase):
             self.assertEqual(request.full_url, "http://host.docker.internal:11434/api/chat")
             self.assertEqual(urlopen.call_args.kwargs["timeout"], 12)
             self.assertEqual(payload["model"], "gemma3-12b-16k")
+            self.assertEqual(payload["options"]["num_ctx"], 3072)
             self.assertFalse(payload["stream"])
             self.assertEqual(len(payload["messages"][0]["images"]), 1)
             self.assertIn("noisy OCR", payload["messages"][0]["content"])
             self.assertEqual(result["provider"], "ollama")
             self.assertEqual(result["source"], "OLLAMA_STORY_SCREENSHOT_EVIDENCE")
             self.assertEqual(result["contract"], tb.OLLAMA_VISUAL_CONTRACT)
+            self.assertEqual(result["num_ctx"], 3072)
 
     def test_ollama_embedded_no_content_marker_is_removed(self):
         with tempfile.TemporaryDirectory() as tmp:

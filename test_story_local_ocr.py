@@ -294,6 +294,69 @@ ov"""
             self.assertEqual(item["visual_description_contract"], ei.OLLAMA_VISUAL_CONTRACT)
             gemini.assert_not_called()
 
+    def test_shared_ollama_budget_is_global_across_enrichment_calls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "control").mkdir(parents=True)
+            (root / "control" / "settings.json").write_text(
+                '{"transcription":{"ollama_visual_max_attempts":1}}',
+                encoding="utf-8",
+            )
+            shared_budget = {"attempted": 0}
+
+            def manifest_for(name: str):
+                shot = root / f"{name}.png"
+                shot.write_bytes(b"not-a-real-png")
+                return {
+                    "items": {
+                        name: {
+                            "source_type": "STORY",
+                            "research_status": "NEW",
+                            "screenshot_file": f"{name}.png",
+                        }
+                    }
+                }
+
+            with patch("ephemeral_ingest.extract_story_text_local_ocr", return_value={
+                "text": "tiny",
+                "source": "LOCAL_OCR",
+                "provider": "tesseract",
+                "model": "eng+swe",
+            }), patch("ephemeral_ingest.extract_image_evidence_ollama", return_value={
+                "text": "Corrected visible Story evidence with enough grounded words for analysis",
+                "source": "OLLAMA_STORY_SCREENSHOT_EVIDENCE",
+                "provider": "ollama",
+                "model": "gemma3-12b-16k",
+                "contract": ei.OLLAMA_VISUAL_CONTRACT,
+            }) as ollama, patch("ephemeral_ingest.extract_image_evidence_gemini", return_value={
+                "text": "Gemini fallback evidence with enough visible text for analysis",
+                "source": "GEMINI_STORY_SCREENSHOT_EVIDENCE",
+                "provider": "gemini",
+                "model": "test-model",
+            }) as gemini:
+                first = manifest_for("story-1")
+                result_one = ei.enrich_story_visual_evidence(
+                    root,
+                    first,
+                    ["story-1"],
+                    ollama_budget_state=shared_budget,
+                )
+                second = manifest_for("story-2")
+                result_two = ei.enrich_story_visual_evidence(
+                    root,
+                    second,
+                    ["story-2"],
+                    ollama_budget_state=shared_budget,
+                )
+
+            self.assertEqual(ollama.call_count, 1)
+            self.assertEqual(gemini.call_count, 1)
+            self.assertEqual(shared_budget["attempted"], 1)
+            self.assertEqual(shared_budget["limit"], 1)
+            self.assertEqual(result_one["ollama_attempted"], 1)
+            self.assertEqual(result_two["ollama_attempted"], 0)
+            self.assertEqual(second["items"]["story-2"]["visual_description_provider"], "gemini")
+
     def test_gemini_rate_limit_is_deferred_not_fatal(self):
         class RateLimitError(Exception):
             code = 429

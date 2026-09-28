@@ -22,6 +22,7 @@ DEFAULT_GEMINI_VISUAL_MODEL = "gemini-3.8-flash"
 DEFAULT_OLLAMA_VISUAL_MODEL = "gemma3-12b-16k"
 DEFAULT_OLLAMA_BASE_URL = "http://host.docker.internal:11434"
 OLLAMA_VISUAL_TIMEOUT_SECONDS = 90
+OLLAMA_VISUAL_NUM_CTX = 4096
 OLLAMA_VISUAL_MAX_CHARS = 2200
 OLLAMA_VISUAL_CONTRACT = "VISIBLE_TEXT_V2"
 OLLAMA_VISUAL_MIN_GROUNDING_OVERLAP = 0.25
@@ -252,6 +253,7 @@ def extract_image_evidence_ollama(
     model: str = DEFAULT_OLLAMA_VISUAL_MODEL,
     base_url: str = DEFAULT_OLLAMA_BASE_URL,
     timeout_seconds: int = OLLAMA_VISUAL_TIMEOUT_SECONDS,
+    num_ctx: int = OLLAMA_VISUAL_NUM_CTX,
     ocr_hint: str | None = None,
 ) -> dict[str, Any]:
     """Convert a Story screenshot to factual evidence with the shared host Ollama."""
@@ -287,7 +289,7 @@ def extract_image_evidence_ollama(
         }],
         "stream": False,
         "keep_alive": "5m",
-        "options": {"temperature": 0, "num_predict": 400},
+        "options": {"temperature": 0, "num_predict": 400, "num_ctx": max(2048, int(num_ctx))},
     }).encode("utf-8")
     req = urllib_request.Request(
         f"{base_url.rstrip('/')}/api/chat",
@@ -387,6 +389,7 @@ def extract_image_evidence_ollama(
         "source": "OLLAMA_STORY_SCREENSHOT_EVIDENCE",
         "transport": "HOST_DOCKER_INTERNAL",
         "contract": OLLAMA_VISUAL_CONTRACT,
+        "num_ctx": max(2048, int(num_ctx)),
         "text": text,
     }
 

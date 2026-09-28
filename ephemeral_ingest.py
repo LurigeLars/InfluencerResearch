@@ -23,6 +23,7 @@ from transcription_backend import (
     DEFAULT_OLLAMA_VISUAL_MODEL,
     OLLAMA_VISUAL_TIMEOUT_SECONDS,
     OLLAMA_VISUAL_MAX_CHARS,
+    OLLAMA_VISUAL_NUM_CTX,
     OLLAMA_VISUAL_CONTRACT,
     extract_image_evidence_gemini,
     extract_image_evidence_ollama,
@@ -968,6 +969,7 @@ def enrich_story_visual_evidence(
     *,
     max_attempts: int = MAX_STORY_VISUAL_ENRICHMENTS_PER_RUN,
     circuit_state: dict | None = None,
+    ollama_budget_state: dict | None = None,
 ) -> dict:
     """Backfill readable multimodal evidence for visited Story screenshots.
 
@@ -995,6 +997,10 @@ def enrich_story_visual_evidence(
         tcfg.get("ollama_visual_timeout_seconds", OLLAMA_VISUAL_TIMEOUT_SECONDS)
         or OLLAMA_VISUAL_TIMEOUT_SECONDS
     )
+    ollama_num_ctx = max(
+        2048,
+        int(tcfg.get("ollama_visual_num_ctx", OLLAMA_VISUAL_NUM_CTX) or OLLAMA_VISUAL_NUM_CTX),
+    )
     max_ollama_attempts = max(
         0,
         int(tcfg.get("ollama_visual_max_attempts", MAX_STORY_OLLAMA_ENRICHMENTS_PER_RUN)),
@@ -1021,6 +1027,10 @@ def enrich_story_visual_evidence(
     changed = False
     if circuit_state is None:
         circuit_state = initial_story_gemini_circuit(root)
+    if ollama_budget_state is None:
+        ollama_budget_state = {"attempted": 0}
+    ollama_budget_state.setdefault("attempted", 0)
+    ollama_budget_state["limit"] = max_ollama_attempts
 
     circuit_reason = str(circuit_state.get("reason") or "") or None
     circuit_retry_after = _parse_retry_after(circuit_state.get("retry_after"))
@@ -1077,8 +1087,14 @@ def enrich_story_visual_evidence(
 
         # Ollama is the local multimodal second pass. It can correct noisy OCR and
         # interpret charts/screenshots without consuming Gemini quota.
-        if ollama_enabled and ollama_attempted < max_ollama_attempts:
+        if (
+            ollama_enabled
+            and int(ollama_budget_state.get("attempted") or 0) < max_ollama_attempts
+        ):
             ollama_attempted += 1
+            ollama_budget_state["attempted"] = int(
+                ollama_budget_state.get("attempted") or 0
+            ) + 1
             ollama_clock = time.perf_counter()
             try:
                 ollama_result = extract_image_evidence_ollama(
@@ -1086,6 +1102,7 @@ def enrich_story_visual_evidence(
                     model=ollama_model,
                     base_url=ollama_base_url,
                     timeout_seconds=ollama_timeout_seconds,
+                    num_ctx=ollama_num_ctx,
                     ocr_hint=ocr_text or None,
                 )
                 ollama_text = str(ollama_result.get("text") or "").strip()
@@ -1248,6 +1265,8 @@ def enrich_story_visual_evidence(
     return {
         "attempted": attempted,
         "completed": completed,
+        "ollama_budget_attempted": int(ollama_budget_state.get("attempted") or 0),
+        "ollama_budget_limit": max_ollama_attempts,
         "ocr_attempted": ocr_attempted,
         "ocr_completed": ocr_completed,
         "ocr_insufficient": ocr_insufficient,
@@ -1446,6 +1465,7 @@ def run_one(
     force: bool,
     max_items: int,
     gemini_circuit: dict | None = None,
+    ollama_budget_state: dict | None = None,
 ) -> dict:
     manifest_path = root / "state" / "ephemeral" / "manifest.json"
     manifest = load_json(
@@ -1538,6 +1558,7 @@ def run_one(
             story_visual_keys,
             max_attempts=MAX_STORY_VISUAL_ENRICHMENTS_PER_RUN,
             circuit_state=gemini_circuit,
+            ollama_budget_state=ollama_budget_state,
         )
         if source_type == "STORY"
         else {
@@ -1578,6 +1599,7 @@ def run_one(
         "highlight_label": highlight_label,
         "capture": capture,
         "visual_enrichment": visual_enrichment,
+        "ollama_budget_state": dict(ollama_budget_state or {}),
         "video_download": ytdlp,
         "transcription": transcription,
         "state": "DONE" if not errors else "DONE_WITH_ERRORS",
