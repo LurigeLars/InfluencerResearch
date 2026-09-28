@@ -546,15 +546,25 @@ def _promote_story_items(
     handle: str,
     cutoff: datetime,
     max_new: int,
-) -> list[dict]:
-    """Bridge already captured Story evidence into the canonical manifest.
+) -> dict:
+    """Bridge current Story evidence into the canonical manifest.
 
-    Active Stories are necessarily recent; when Instagram does not expose an exact
-    publish timestamp we persist observed_at explicitly as the time basis rather
-    than inventing a more precise timestamp.
+    Fresh evidence is promoted once. Existing evidence is still returned as an
+    available analysis candidate so repeated recent-check runs can expose the
+    pending target without re-ingesting it. Evidence owned by an explicitly
+    superseded creator key is re-attributed to the canonical key in place.
     """
+    empty = {
+        "promoted": [],
+        "available": [],
+        "reused_existing_count": 0,
+        "reattributed_count": 0,
+        "conflicts": [],
+        "manifest_changed": False,
+    }
     if max_new <= 0:
-        return []
+        return empty
+
     ephemeral_manifest = load_json(
         root / "state" / "ephemeral" / "manifest.json",
         {"schema_version": 1, "items": {}},
@@ -562,6 +572,16 @@ def _promote_story_items(
     manifest_path = root / "state" / "manifest.json"
     manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
     manifest.setdefault("items", {})
+
+    canonical_key = str(profile["creator_key"])
+    registry = load_registry(root)
+    superseded_keys = {
+        str(key)
+        for key, candidate in (registry.get("creators") or {}).items()
+        if isinstance(candidate, dict)
+        and str(candidate.get("status") or "").upper() == "DISABLED"
+        and str(candidate.get("superseded_by") or "") == canonical_key
+    }
 
     candidates: list[tuple[datetime, dict]] = []
     for item in (ephemeral_manifest.get("items") or {}).values():
@@ -581,16 +601,32 @@ def _promote_story_items(
 
     candidates.sort(key=lambda row: row[0], reverse=True)
     promoted: list[dict] = []
+    available: list[dict] = []
+    conflicts: list[dict] = []
+    reused_existing_count = 0
+    reattributed_count = 0
     changed = False
+
+    def descriptor(key: str, identity: str, manifest_item: dict, observed: datetime) -> dict:
+        return {
+            "creator_key": canonical_key,
+            "platform": "INSTAGRAM",
+            "source_id": str(manifest_item.get("source_id") or f"story:{identity}"),
+            "item_key": key,
+            "url": manifest_item.get("url"),
+            "title": "",
+            "published_at": str(manifest_item.get("published_at") or observed.isoformat()),
+            "profile_url": f"https://www.instagram.com/{handle}/",
+            "source_subtype": "STORY",
+        }
+
     for observed, item in candidates:
-        if len(promoted) >= max_new:
+        if len(available) >= max_new:
             break
         identity = str(item.get("story_id") or item.get("evidence_id") or "").strip()
         if not identity:
             continue
         key = f"ig_story_{identity}"
-        if key in manifest["items"]:
-            continue
 
         screenshot_rel = str(item.get("screenshot_file") or "").strip()
         screenshot_path = root / screenshot_rel if screenshot_rel else None
@@ -600,9 +636,38 @@ def _promote_story_items(
         if not has_screenshot and not has_transcript:
             continue
 
-        manifest["items"][key] = {
+        existing = manifest["items"].get(key)
+        if isinstance(existing, dict):
+            existing_creator = str(existing.get("creator") or "")
+            if existing_creator != canonical_key:
+                if existing_creator in superseded_keys:
+                    history = [
+                        str(value)
+                        for value in (existing.get("creator_key_history") or [])
+                        if str(value)
+                    ]
+                    if existing_creator not in history:
+                        history.append(existing_creator)
+                    existing["creator_key_history"] = history
+                    existing["creator"] = canonical_key
+                    existing["creator_reattributed_at"] = now_iso()
+                    changed = True
+                    reattributed_count += 1
+                else:
+                    conflicts.append({
+                        "item_key": key,
+                        "existing_creator": existing_creator or None,
+                        "canonical_creator": canonical_key,
+                    })
+                    continue
+
+            available.append(descriptor(key, identity, existing, observed))
+            reused_existing_count += 1
+            continue
+
+        manifest_item = {
             "schema_version": 1,
-            "creator": profile["creator_key"],
+            "creator": canonical_key,
             "source_platform": "INSTAGRAM",
             "source_subtype": "STORY",
             "source_id": f"story:{identity}",
@@ -629,22 +694,23 @@ def _promote_story_items(
             "research_status": "PENDING",
             "source_class": "INFLUENCER_DISCOVERY_SECONDARY",
         }
+        manifest["items"][key] = manifest_item
         changed = True
-        promoted.append({
-            "creator_key": profile["creator_key"],
-            "platform": "INSTAGRAM",
-            "source_id": f"story:{identity}",
-            "item_key": key,
-            "url": item.get("source_url"),
-            "title": "",
-            "published_at": observed.isoformat(),
-            "profile_url": f"https://www.instagram.com/{handle}/",
-            "source_subtype": "STORY",
-        })
+        row = descriptor(key, identity, manifest_item, observed)
+        promoted.append(row)
+        available.append(row)
 
     if changed:
         atomic_json(manifest_path, manifest)
-    return promoted
+
+    return {
+        "promoted": promoted,
+        "available": available,
+        "reused_existing_count": reused_existing_count,
+        "reattributed_count": reattributed_count,
+        "conflicts": conflicts,
+        "manifest_changed": changed,
+    }
 
 
 def _ingest_instagram_stories(
@@ -666,8 +732,10 @@ def _ingest_instagram_stories(
         force=False,
         max_items=min(6, max(1, max_new + 2)),
     )
-    promoted = _promote_story_items(root, profile, handle, cutoff, max_new)
-    queue = tts.run_research_queue(root) if promoted else None
+    bridge = _promote_story_items(root, profile, handle, cutoff, max_new)
+    promoted = list(bridge.get("promoted") or [])
+    available = list(bridge.get("available") or [])
+    queue = tts.run_research_queue(root) if bridge.get("manifest_changed") else None
 
     warnings: list[str] = []
     capture = run.get("capture") or {}
@@ -684,6 +752,10 @@ def _ingest_instagram_stories(
 
     return {
         "promoted": promoted,
+        "available": available,
+        "reused_existing_count": int(bridge.get("reused_existing_count") or 0),
+        "reattributed_count": int(bridge.get("reattributed_count") or 0),
+        "conflicts": list(bridge.get("conflicts") or []),
         "capture": capture,
         "queue": queue,
         "warnings": warnings,
