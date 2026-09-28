@@ -195,5 +195,57 @@ class CreatorRegistryRuntimeMetadataTests(unittest.TestCase):
 
 
 
+    def test_reregistered_canonical_key_disables_exact_duplicate_alias(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            canonical = {
+                "creator_key": "nicholascrown",
+                "display_name": "Nicholas Crown",
+                "sources": [
+                    {
+                        "platform": "TIKTOK",
+                        "profile_url": "https://www.tiktok.com/@nicholas_crown",
+                        "evaluation_enabled": True,
+                        "monitoring_enabled": True,
+                        "priority": 10,
+                    },
+                    {
+                        "platform": "INSTAGRAM",
+                        "profile_url": "https://www.instagram.com/nicholascrown/",
+                        "evaluation_enabled": False,
+                        "monitoring_enabled": False,
+                        "priority": 50,
+                    },
+                ],
+                "verification_methods": ["HANDLE_BRANDING_BIO_CROSSCHECK"],
+                "verification_refs": [
+                    "https://www.tiktok.com/@nicholas_crown",
+                    "https://www.instagram.com/nicholascrown/",
+                ],
+                "request_id": "canonical",
+                "issued_by": "unit-test",
+            }
+            alias = {
+                **canonical,
+                "creator_key": "nicholascrown_ingest",
+                "request_id": "alias",
+            }
+
+            self.assertEqual(register_creator(root, canonical)["result"], "REGISTERED")
+            self.assertEqual(register_creator(root, alias)["result"], "REGISTERED")
+
+            result = register_creator(root, canonical)
+            self.assertEqual(result["result"], "DEDUPLICATED")
+            self.assertEqual(result["disabled_duplicate_keys"], ["nicholascrown_ingest"])
+
+            registry = load_registry(root)
+            self.assertEqual(registry["creators"]["nicholascrown"]["status"], "ACTIVE")
+            disabled = registry["creators"]["nicholascrown_ingest"]
+            self.assertEqual(disabled["status"], "DISABLED")
+            self.assertFalse(disabled["monitoring_enabled"])
+            self.assertEqual(disabled["superseded_by"], "nicholascrown")
+
+
+
 if __name__ == "__main__":
     unittest.main()
