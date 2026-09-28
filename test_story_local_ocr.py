@@ -34,6 +34,53 @@ class StoryLocalOcrTests(unittest.TestCase):
             )
         )
 
+    def test_ocr_quality_gate_rejects_real_fragmented_chart_capture(self):
+        noisy = """Instagzam ik ll 2 i 0 VR ARKA x
+lickarmilj @ ich
+Vecka 40: räntan, Micron och jobben 82% ga
+tainaeg nu) (Toupee SS) ANF
+Bene |S. | ae oe Bee,
+2 Seat | en [csr
+— conti tong | eases tones | teen twig | 4) rec)
+SE mey [BERT eee | frn
+Imon a [RT | ite | armen
+Tomei a | parece
+= Annu en fantastisk live redo inför V.40 *
+bd ey
+——#i
+°e a SS É mwah. J ©
+rae al SIN er ais = Rage v
+=I seas we =
+7a ee 7 pee on
+Fogo pao
+—===
+=
+ov"""
+        self.assertGreater(
+            ei._story_ocr_fragmented_line_ratio(noisy),
+            ei.STORY_OCR_MAX_FRAGMENTED_LINE_RATIO,
+        )
+        self.assertFalse(ei._story_ocr_text_sufficient(noisy))
+
+    def test_ocr_quality_gate_keeps_usable_headline_capture(self):
+        usable = """Instagzam x
+tita omorrowpodcast and 1:37
+refine ofi¢ems Of Tomorrow
+/ @titans.of.tomorrow
+Kathy Lien: The Stop-Hunting Story Is
+More Complicated
+; |
+N DD
+|
+think tifeselbanks
+4
+ov"""
+        self.assertLessEqual(
+            ei._story_ocr_fragmented_line_ratio(usable),
+            ei.STORY_OCR_MAX_FRAGMENTED_LINE_RATIO,
+        )
+        self.assertTrue(ei._story_ocr_text_sufficient(usable))
+
     def _manifest(self, root: Path, *, deferred=False):
         shot = root / "shot.png"
         shot.write_bytes(b"not-a-real-png")
