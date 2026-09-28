@@ -257,5 +257,116 @@ class RecentInstagramTests(unittest.TestCase):
             self.assertEqual(item["creator_key_history"], ["legacy-key"])
 
 
+    def test_numeric_story_reuses_root_media_alias_in_canonical_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            shots = root / "output" / "example" / "stories" / "screenshots"
+            shots.mkdir(parents=True)
+            (shots / "media-old.png").write_bytes(b"old")
+            (shots / "3996180606061318570.png").write_bytes(b"new")
+
+            ep_path = root / "state" / "ephemeral" / "manifest.json"
+            ep_path.parent.mkdir(parents=True)
+            ep_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "items": {
+                            "STORY:example:media-old": {
+                                "source_type": "STORY",
+                                "creator": "example",
+                                "evidence_id": "media-old",
+                                "story_id": None,
+                                "story_identity_basis": "VISIBLE_MEDIA_URL_PATH",
+                                "media_identity_path": "/shared/story.jpg",
+                                "source_url": "https://www.instagram.com/stories/example/",
+                                "observed_at": "2026-09-27T10:00:00+00:00",
+                                "screenshot_file": str((shots / "media-old.png").relative_to(root)),
+                                "browser_text": "example\\n1h",
+                                "visual_description": "Oil battleground newsletter image",
+                                "visual_description_status": "DONE",
+                            },
+                            "STORY:example:3996180606061318570": {
+                                "source_type": "STORY",
+                                "creator": "example",
+                                "evidence_id": "3996180606061318570",
+                                "story_id": "3996180606061318570",
+                                "story_identity_basis": "STORY_URL_ID",
+                                "media_identity_path": "/shared/story.jpg",
+                                "source_url": "https://www.instagram.com/stories/example/3996180606061318570/",
+                                "observed_at": "2026-09-27T10:05:00+00:00",
+                                "screenshot_file": str((shots / "3996180606061318570.png").relative_to(root)),
+                                "browser_text": "example\\n1h",
+                                "visual_description": "Oil battleground newsletter image",
+                                "visual_description_status": "DONE",
+                            },
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            manifest_path = root / "state" / "manifest.json"
+            manifest_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "items": {
+                            "ig_story_media-old": {
+                                "creator": "registered-key",
+                                "source_platform": "INSTAGRAM",
+                                "source_subtype": "STORY",
+                                "source_id": "story:media-old",
+                                "url": "https://www.instagram.com/stories/example/",
+                                "published_at": "2026-09-27T10:00:00+00:00",
+                                "observed_at": "2026-09-27T10:00:00+00:00",
+                                "media_identity_path": "/shared/story.jpg",
+                                "download_status": "DONE",
+                                "transcription_status": "NOT_APPLICABLE",
+                                "screenshot_file": str((shots / "media-old.png").relative_to(root)),
+                                "visual_description": "Oil battleground newsletter image",
+                                "visual_description_status": "DONE",
+                                "research_status": "PENDING",
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = crc._promote_story_items(
+                root,
+                {"creator_key": "registered-key"},
+                "example",
+                datetime(2026, 9, 20, tzinfo=timezone.utc),
+                5,
+            )
+
+            self.assertEqual(result["promoted"], [])
+            self.assertEqual(len(result["available"]), 1)
+            self.assertEqual(result["reused_existing_count"], 1)
+            self.assertEqual(result["identity_aliases_retired_count"], 1)
+            self.assertEqual(
+                result["available"][0]["source_id"],
+                "story:3996180606061318570",
+            )
+
+            updated = json.loads(manifest_path.read_text(encoding="utf-8"))
+            old = updated["items"]["ig_story_media-old"]
+            self.assertEqual(old["research_status"], "INVALID")
+            self.assertEqual(old["invalid_reason"], "SUPERSEDED_BY_NUMERIC_STORY_ID")
+            self.assertEqual(old["superseded_by"], "ig_story_3996180606061318570")
+            numeric = updated["items"]["ig_story_3996180606061318570"]
+            self.assertEqual(numeric["identity_migrated_from"], ["ig_story_media-old"])
+            self.assertEqual(
+                numeric["published_at"],
+                "2026-09-27T10:00:00+00:00",
+            )
+            self.assertEqual(
+                numeric["visual_description"],
+                "Oil battleground newsletter image",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
