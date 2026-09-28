@@ -18,7 +18,7 @@ if not hasattr(playwright_sync, "sync_playwright"):
     playwright_sync.sync_playwright = lambda: None
 playwright_pkg.sync_api = playwright_sync
 
-from ephemeral_ingest import backfill_story_identity_metadata, enrich_story_visual_evidence, extract_story_identity, invalidate_legacy_unstable_story_evidence, normalize_creator_handle, retire_root_media_aliases_for_numeric_story
+from ephemeral_ingest import backfill_story_identity_metadata, enrich_story_visual_evidence, extract_story_identity, get_gemini_provider_health, initial_story_gemini_circuit, invalidate_legacy_unstable_story_evidence, normalize_creator_handle, retire_root_media_aliases_for_numeric_story
 from instagram_ingest import safe_creator
 
 
@@ -306,6 +306,121 @@ class InstagramPathSegmentTests(unittest.TestCase):
                     "PROVIDER_RATE_LIMIT",
                 )
 
+
+    def test_story_rate_limit_circuit_is_shared_across_creator_runs(self) -> None:
+        class FakeResponse:
+            headers = {"retry-after": "42"}
+
+        class FakeGeminiError(Exception):
+            code = 429
+            status = "RESOURCE_EXHAUSTED"
+            response = FakeResponse()
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            settings = root / "control" / "settings.json"
+            settings.parent.mkdir(parents=True)
+            settings.write_text("{}", encoding="utf-8")
+            circuit = {"open": False, "reason": None, "retry_after": None, "retry_after_source": None}
+
+            manifests = []
+            keys = []
+            for creator in ("first", "second"):
+                shot = root / "output" / creator / "story.png"
+                shot.parent.mkdir(parents=True, exist_ok=True)
+                shot.write_bytes(b"png")
+                key = f"STORY:{creator}:1"
+                keys.append(key)
+                manifests.append({
+                    "items": {
+                        key: {
+                            "source_type": "STORY",
+                            "creator": creator,
+                            "research_status": "PENDING",
+                            "screenshot_file": str(shot.relative_to(root)),
+                        }
+                    }
+                })
+
+            with mock.patch(
+                "ephemeral_ingest.extract_image_evidence_gemini",
+                side_effect=FakeGeminiError("provider body"),
+            ) as extract:
+                first = enrich_story_visual_evidence(
+                    root,
+                    manifests[0],
+                    [keys[0]],
+                    max_attempts=2,
+                    circuit_state=circuit,
+                )
+                second = enrich_story_visual_evidence(
+                    root,
+                    manifests[1],
+                    [keys[1]],
+                    max_attempts=2,
+                    circuit_state=circuit,
+                )
+
+            self.assertEqual(extract.call_count, 1)
+            self.assertTrue(circuit["open"])
+            self.assertEqual(circuit["reason"], "PROVIDER_RATE_LIMIT")
+            self.assertEqual(circuit["retry_after_source"], "PROVIDER_RETRY_AFTER")
+            self.assertEqual(first["provider_circuit_breaker"]["retry_after_source"], "PROVIDER_RETRY_AFTER")
+            self.assertEqual(second["attempted"], 0)
+            self.assertEqual(second["provider_deferred"], 1)
+            self.assertEqual(
+                manifests[1]["items"][keys[1]]["visual_description_status"],
+                "DEFERRED",
+            )
+
+            health = get_gemini_provider_health(root)
+            self.assertEqual(health["last_code"], 429)
+            self.assertEqual(health["last_status"], "RESOURCE_EXHAUSTED")
+            self.assertEqual(health["retry_after_source"], "PROVIDER_RETRY_AFTER")
+            self.assertEqual(health["story_visual_calls"], 1)
+            self.assertEqual(health["story_visual_deferred"], 2)
+            self.assertIn("last_429_at", health)
+            self.assertIn("cooldown_until", health)
+
+    def test_persisted_cooldown_opens_next_job_circuit(self) -> None:
+        class FakeResponse:
+            headers = {"retry-after": "120"}
+
+        class FakeGeminiError(Exception):
+            code = 429
+            status = "RESOURCE_EXHAUSTED"
+            response = FakeResponse()
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            settings = root / "control" / "settings.json"
+            settings.parent.mkdir(parents=True)
+            settings.write_text("{}", encoding="utf-8")
+            shot = root / "output" / "creator" / "story.png"
+            shot.parent.mkdir(parents=True)
+            shot.write_bytes(b"png")
+            key = "STORY:creator:1"
+            manifest = {
+                "items": {
+                    key: {
+                        "source_type": "STORY",
+                        "creator": "creator",
+                        "research_status": "PENDING",
+                        "screenshot_file": str(shot.relative_to(root)),
+                    }
+                }
+            }
+
+            with mock.patch(
+                "ephemeral_ingest.extract_image_evidence_gemini",
+                side_effect=FakeGeminiError("hidden"),
+            ):
+                enrich_story_visual_evidence(root, manifest, [key], max_attempts=1)
+
+            next_circuit = initial_story_gemini_circuit(root)
+            self.assertTrue(next_circuit["open"])
+            self.assertEqual(next_circuit["reason"], "PROVIDER_RATE_LIMIT")
+            self.assertEqual(next_circuit["retry_after_source"], "PROVIDER_RETRY_AFTER")
 
     def test_existing_numeric_story_backfills_media_identity_without_rewriting_evidence(self) -> None:
         item = {
