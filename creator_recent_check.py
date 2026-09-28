@@ -1387,6 +1387,58 @@ def _main_impl() -> int:
             reverse=True,
         )[:20]
 
+        visual_by_creator: list[dict] = []
+        visual_totals = {
+            "ocr_attempted": 0,
+            "ocr_completed": 0,
+            "ollama_attempted": 0,
+            "ollama_completed": 0,
+            "gemini_attempted": 0,
+            "completed": 0,
+            "deferred": 0,
+            "provider_event_count": 0,
+            "error_count": 0,
+            "ocr_total_ms": 0.0,
+            "ollama_total_ms": 0.0,
+            "gemini_total_ms": 0.0,
+        }
+        for story_result in story_results:
+            visual = story_result.get("visual_enrichment") or {}
+            vt = visual.get("timings") or {}
+            row = {
+                "creator_key": story_result.get("creator_key"),
+                "ocr_attempted": int(visual.get("ocr_attempted") or 0),
+                "ocr_completed": int(visual.get("ocr_completed") or 0),
+                "ollama_attempted": int(visual.get("ollama_attempted") or 0),
+                "ollama_completed": int(visual.get("ollama_completed") or 0),
+                "gemini_attempted": int(visual.get("attempted") or 0),
+                "completed": int(visual.get("completed") or 0),
+                "deferred": int(visual.get("deferred") or 0),
+                "provider_event_count": len(visual.get("provider_events") or []),
+                "error_count": len(visual.get("errors") or []),
+                "timings": {
+                    "ocr_total_ms": round(float(vt.get("ocr_total_ms") or 0.0), 1),
+                    "ollama_total_ms": round(float(vt.get("ollama_total_ms") or 0.0), 1),
+                    "gemini_total_ms": round(float(vt.get("gemini_total_ms") or 0.0), 1),
+                },
+            }
+            visual_by_creator.append(row)
+            for key in (
+                "ocr_attempted", "ocr_completed", "ollama_attempted", "ollama_completed",
+                "gemini_attempted", "completed", "deferred",
+                "provider_event_count", "error_count",
+            ):
+                visual_totals[key] += int(row[key])
+            for key in ("ocr_total_ms", "ollama_total_ms", "gemini_total_ms"):
+                visual_totals[key] = round(
+                    float(visual_totals[key]) + float(row["timings"][key]),
+                    1,
+                )
+        story_visual_enrichment = {
+            "by_creator": visual_by_creator,
+            "totals": visual_totals,
+        }
+
         status = {
             "schema_version": 1,
             "recent_check_version": RECENT_CHECK_VERSION,
@@ -1418,6 +1470,7 @@ def _main_impl() -> int:
             "deferred_due_to_cap_count": len(deferred),
             "queued_for_analysis_count": len(analysis_targets),
             "analysis_readiness_complete": analysis_readiness_complete,
+            "story_visual_enrichment": story_visual_enrichment,
             "insufficient_content_count": len(insufficient_recent),
             "insufficient_content_items": insufficient_recent[:100],
             "deferred_extraction_count": len(deferred_extraction_recent),

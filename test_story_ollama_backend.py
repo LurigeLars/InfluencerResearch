@@ -77,6 +77,8 @@ class StoryOllamaBackendTests(unittest.TestCase):
             image_path.write_bytes(b"png-bytes")
             response = io.BytesIO(json.dumps({
                 "message": {"content": (
+                    "snickarmiljonaren ◉ 25m\n"
+                    "Watch full reel >\n"
                     "**Visible Text:**\n"
                     "* **Headline:** NVIDIA Open Agent Safety Platform\n"
                     "The image shows a complex architecture diagram.\n"

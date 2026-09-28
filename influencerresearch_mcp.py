@@ -83,6 +83,8 @@ def summarize_status(path: Path | None) -> dict | None:
         "story_reattributed_count",
         "story_identity_aliases_retired_count",
         "queued_for_analysis_count",
+        "analysis_readiness_complete",
+        "story_visual_enrichment",
         "story_items",
         "analysis_targets",
         "insufficient_content_count",
