@@ -20,6 +20,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from creator_registry import get_creator, load_registry, register_creator
+from research_status_summary import summarize_status
 
 
 SERVER_NAME = "InfluencerResearch"
@@ -52,55 +53,6 @@ def load_json(path: Path, default: dict | None = None) -> dict:
 
 def as_text(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-
-
-def summarize_status(path: Path | None) -> dict | None:
-    if path is None or not path.is_file():
-        return None
-    obj = load_json(path, {})
-    allowed = {
-        "state",
-        "result",
-        "started_at",
-        "finished_at",
-        "creator_key",
-        "creator_filter",
-        "scope",
-        "window",
-        "source_count",
-        "error",
-        "error_count",
-        "errors",
-        "completed",
-        "completed_ids",
-        "failed_ids",
-        "failure_count",
-        "recent_found_count",
-        "selected_for_ingestion_count",
-        "selected_standard_ingestion_count",
-        "story_current_count",
-        "story_newly_promoted_count",
-        "story_reused_existing_count",
-        "story_reattributed_count",
-        "story_identity_aliases_retired_count",
-        "queued_for_analysis_count",
-        "analysis_readiness_complete",
-        "story_visual_enrichment",
-        "story_items",
-        "analysis_targets",
-        "insufficient_content_count",
-        "insufficient_content_items",
-        "deferred_extraction_count",
-        "deferred_extraction_items",
-        "extraction_error_count",
-        "extraction_error_items",
-        "pending_extraction_count",
-        "pending_extraction_items",
-        "provider_circuit_breaker",
-        "provider_health",
-        "timings",
-    }
-    return {key: obj[key] for key in allowed if key in obj}
 
 
 class CreatorSource(BaseModel):
