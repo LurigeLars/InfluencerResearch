@@ -95,6 +95,7 @@ def summarize_status(path: Path | None) -> dict | None:
         "pending_extraction_items",
         "provider_circuit_breaker",
         "provider_health",
+        "timings",
     }
     return {key: obj[key] for key in allowed if key in obj}
 
