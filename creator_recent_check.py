@@ -663,6 +663,23 @@ def _promote_story_items(
                     })
                     continue
 
+            evidence_updates = {
+                "story_identity_basis": item.get("story_identity_basis"),
+                "media_identity_path": item.get("media_identity_path"),
+                "browser_text": str(item.get("browser_text") or ""),
+                "visual_description": str(item.get("visual_description") or ""),
+                "visual_description_status": item.get("visual_description_status"),
+                "visual_description_source": item.get("visual_description_source"),
+                "visual_description_provider": item.get("visual_description_provider"),
+                "visual_description_model": item.get("visual_description_model"),
+                "visual_description_generated_at": item.get("visual_description_generated_at"),
+                "visual_description_error": item.get("visual_description_error"),
+            }
+            for field, value in evidence_updates.items():
+                if existing.get(field) != value:
+                    existing[field] = value
+                    changed = True
+
             available.append(descriptor(key, identity, existing, observed))
             reused_existing_count += 1
             continue
@@ -687,6 +704,13 @@ def _promote_story_items(
             ),
             "transcript_source": "STORY_VIDEO" if has_transcript else None,
             "browser_text": str(item.get("browser_text") or ""),
+            "visual_description": str(item.get("visual_description") or ""),
+            "visual_description_status": item.get("visual_description_status"),
+            "visual_description_source": item.get("visual_description_source"),
+            "visual_description_provider": item.get("visual_description_provider"),
+            "visual_description_model": item.get("visual_description_model"),
+            "visual_description_generated_at": item.get("visual_description_generated_at"),
+            "visual_description_error": item.get("visual_description_error"),
             "screenshot_file": screenshot_rel or None,
             "visual_evidence_status": "DONE" if has_screenshot else "NOT_AVAILABLE",
             "visual_evidence_index": screenshot_rel or None,
@@ -751,6 +775,9 @@ def _ingest_instagram_stories(
     }
     if run.get("state") == "DONE_WITH_ERRORS" and reason not in benign_reasons:
         warnings.extend(str(x) for x in (run.get("errors") or []))
+    visual_errors = list((run.get("visual_enrichment") or {}).get("errors") or [])
+    if visual_errors:
+        warnings.extend(f"visual_enrichment: {error}" for error in visual_errors)
     if queue is not None and not queue.get("ok"):
         warnings.append(f"research_queue failed: {queue}")
     if bridge.get("conflicts"):
@@ -828,6 +855,11 @@ def _queue_targets(root: Path, item_keys: set[str]) -> list[dict]:
             "analysis_content_reason": item.get("analysis_content_reason"),
             "transcript_source": item.get("transcript_source"),
             "word_count": item.get("word_count"),
+            "visual_description": item.get("visual_description"),
+            "visual_description_status": item.get("visual_description_status"),
+            "visual_description_source": item.get("visual_description_source"),
+            "visual_description_provider": item.get("visual_description_provider"),
+            "visual_description_model": item.get("visual_description_model"),
             "visual_evidence_status": item.get("visual_evidence_status"),
             "visual_evidence_index": item.get("visual_evidence_index"),
             "visual_frame_count": item.get("visual_frame_count"),
