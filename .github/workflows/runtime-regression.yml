@@ -68,3 +68,5 @@ jobs:
           test_creator_registry_runtime_metadata
           test_creator_recent_monitored_instagram
           test_creator_recent_youtube
+          test_recent_discovery_parallelism
+          test_mcp_status_summary
