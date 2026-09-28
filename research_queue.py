@@ -11,7 +11,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 
-SCREEN_VERSION = "0.4.3"
+SCREEN_VERSION = "0.4.4"
 ANALYSIS_OWNER = "EKONOMI"
 MIN_TRANSCRIPT_WORDS = 8
 MIN_TRANSCRIPT_CHARS = 48
@@ -132,11 +132,13 @@ def assess_analysis_content(item: dict, transcript: str) -> dict:
     caption = str(item.get("caption") or "").strip()
     browser_text = str(item.get("browser_text") or "").strip()
     visible_text = str(item.get("visible_text") or "").strip()
+    visual_description = str(item.get("visual_description") or "").strip()
 
     transcript_words = len(transcript.split())
     caption_words = len(caption.split())
     browser_text_words = len(browser_text.split())
     visible_text_words = len(visible_text.split())
+    visual_description_words = len(visual_description.split())
     has_visual_evidence = bool(
         item.get("screenshot_file")
         or (
@@ -148,6 +150,9 @@ def assess_analysis_content(item: dict, transcript: str) -> dict:
     if transcript_words >= MIN_TRANSCRIPT_WORDS or len(transcript) >= MIN_TRANSCRIPT_CHARS:
         status = "READY"
         reason = "TRANSCRIPT"
+    elif visual_description_words >= MIN_TRANSCRIPT_WORDS or len(visual_description) >= MIN_TRANSCRIPT_CHARS:
+        status = "READY"
+        reason = "VISUAL_DESCRIPTION"
     elif visible_text_words >= MIN_TRANSCRIPT_WORDS or len(visible_text) >= MIN_TRANSCRIPT_CHARS:
         status = "READY"
         reason = "VISIBLE_TEXT"
@@ -157,9 +162,6 @@ def assess_analysis_content(item: dict, transcript: str) -> dict:
     elif caption_words >= MIN_FALLBACK_TEXT_WORDS or len(caption) >= MIN_FALLBACK_TEXT_CHARS:
         status = "READY"
         reason = "METADATA_TEXT"
-    elif has_visual_evidence:
-        status = "READY"
-        reason = "VISUAL_EVIDENCE"
     else:
         status = "INSUFFICIENT_CONTENT"
         reason = "NO_ANALYZABLE_TEXT_OR_VISUAL_EVIDENCE"
@@ -171,6 +173,7 @@ def assess_analysis_content(item: dict, transcript: str) -> dict:
         "caption_word_count": caption_words,
         "browser_text_word_count": browser_text_words,
         "visible_text_word_count": visible_text_words,
+        "visual_description_word_count": visual_description_words,
         "has_visual_evidence": has_visual_evidence,
     }
 
@@ -192,7 +195,10 @@ def build_packet(
     )
     caption = str(item.get("caption") or "").strip()
     visible_text = str(item.get("visible_text") or "").strip()
-    evidence_parts = [x for x in (transcript, visible_text, caption) if x]
+    visual_description = str(item.get("visual_description") or "").strip()
+    evidence_parts = [
+        x for x in (transcript, visual_description, visible_text, caption) if x
+    ]
     analysis_evidence_text = "\n\n".join(evidence_parts)
 
     return {
@@ -231,6 +237,11 @@ def build_packet(
         "transcript_text": transcript,
         "transcript_source": item.get("transcript_source"),
         "visible_text": visible_text,
+        "visual_description": visual_description,
+        "visual_description_status": item.get("visual_description_status"),
+        "visual_description_source": item.get("visual_description_source"),
+        "visual_description_provider": item.get("visual_description_provider"),
+        "visual_description_model": item.get("visual_description_model"),
         "visual_text_status": item.get("visual_text_status"),
         "visual_text_source": item.get("visual_text_source"),
         "visual_text_provider": item.get("visual_text_provider"),
@@ -244,7 +255,9 @@ def build_packet(
         "screenshot_file": item.get("screenshot_file"),
         "full_video_persisted": item.get("full_video_persisted"),
         "media_retention": item.get("media_retention"),
-        "discovery_tags": keyword_tags(caption + "\n" + transcript + "\n" + visible_text),
+        "discovery_tags": keyword_tags(
+            caption + "\n" + transcript + "\n" + visual_description + "\n" + visible_text
+        ),
         # Kept as "ai_instruction" for backward compatibility with existing consumers.
         "ai_instruction": {
             "owner_project": ANALYSIS_OWNER,
@@ -421,6 +434,7 @@ def main() -> int:
             "caption_word_count": readiness["caption_word_count"],
             "browser_text_word_count": readiness["browser_text_word_count"],
             "visible_text_word_count": readiness["visible_text_word_count"],
+            "visual_description_word_count": readiness["visual_description_word_count"],
             "has_visual_evidence": readiness["has_visual_evidence"],
         }
         for key, value in desired_content_meta.items():
