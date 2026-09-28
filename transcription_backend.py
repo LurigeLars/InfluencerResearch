@@ -23,6 +23,9 @@ DEFAULT_OLLAMA_VISUAL_MODEL = "gemma3-12b-16k"
 DEFAULT_OLLAMA_BASE_URL = "http://host.docker.internal:11434"
 OLLAMA_VISUAL_TIMEOUT_SECONDS = 90
 OLLAMA_VISUAL_MAX_CHARS = 2200
+OLLAMA_VISUAL_CONTRACT = "VISIBLE_TEXT_V2"
+OLLAMA_VISUAL_MIN_GROUNDING_OVERLAP = 0.25
+
 GEMINI_HTTP_TIMEOUT_MS = 45_000
 GEMINI_RETRY_ATTEMPTS = 2
 STORY_GEMINI_HTTP_TIMEOUT_MS = 30_000
@@ -257,16 +260,14 @@ def extract_image_evidence_ollama(
         raise RuntimeError("Story screenshot is empty.")
 
     prompt = (
-        "Extract conservative factual evidence from this Instagram Story screenshot. "
-        "Priority 1 is accurate visible text. Correct obvious OCR spacing/casing errors only "
-        "when the screenshot clearly supports the correction; never expand or guess missing "
-        "words, labels, acronyms, tickers or numbers. Ignore Instagram viewer chrome such as "
-        "username, age, progress bar, reply/share controls. Preserve meaningful tickers, "
-        "prices, percentages, dates, source names and legible chart labels. After the visible "
-        "text, you may add at most two short sentences describing only obvious non-text visual "
-        "evidence. Do not identify people, infer intent, recommend a trade, translate text, "
-        "or invent details from an unreadable chart/diagram. Keep the entire answer under "
-        "1800 characters. If there is no meaningful readable content, output exactly "
+        "Transcribe and conservatively correct only text that is visibly readable in this "
+        "Instagram Story screenshot. The screenshot is the source of truth; the OCR hint below "
+        "is only a noisy aid. Preserve tickers, prices, percentages, dates and source names. "
+        "Ignore Instagram viewer chrome such as username, age, progress bar and reply/share "
+        "controls. Do not describe people, images, charts or layouts. Do not translate, explain, "
+        "summarize, infer intent, expand acronyms, or invent missing words/numbers. Return plain "
+        "visible text only, in reading order, with no Markdown headings or commentary. Keep the "
+        "answer under 1800 characters. If there is no meaningful readable text, output exactly "
         "NO_MEANINGFUL_VISUAL_EVIDENCE."
     )
     hint = str(ocr_hint or "").strip()
@@ -306,25 +307,74 @@ def extract_image_evidence_ollama(
     marker = "NO_MEANINGFUL_VISUAL_EVIDENCE"
     if marker in text:
         text = text.replace(marker, "").strip()
+
     if len(text) > OLLAMA_VISUAL_MAX_CHARS:
         text = ""
     else:
-        # Exact repeated lines are a common local-model failure mode; dedupe them
-        # before handing evidence to downstream analysis.
+        # Keep only plausible visible text. Local VLMs occasionally ignore the
+        # prompt and add image descriptions, translations or Markdown sections.
         lines = []
         seen_lines: set[str] = set()
         for raw_line in text.splitlines():
             line = raw_line.strip()
+            if not line:
+                continue
+            line = re.sub(r"^(?:[-*•]+|\\d+[.)])\\s*", "", line)
+            line = re.sub(
+                r"^\\*{0,2}(?:visible text|textual evidence|headline|platform name)\\*{0,2}\\s*:\\s*",
+                "",
+                line,
+                flags=re.IGNORECASE,
+            ).strip()
+            lower = line.casefold()
+            if not line or lower in {"visible text", "textual evidence", "visual evidence"}:
+                continue
+            if (
+                lower.startswith("the image shows")
+                or lower.startswith("the screenshot shows")
+                or lower.startswith("the image displays")
+                or lower.startswith("a graphic depicting")
+                or lower.startswith("visual evidence:")
+                or lower.startswith("person:")
+                or lower.startswith("here's a breakdown")
+                or lower.startswith("here is a breakdown")
+            ):
+                continue
+            line = re.sub(
+                r"\\s*\\((?:swedish|english)\\s+for\\s+[\"“].*?[\"”]\\)\\s*$",
+                "",
+                line,
+                flags=re.IGNORECASE,
+            ).strip()
             key = re.sub(r"\\s+", " ", line.casefold())
             if line and key not in seen_lines:
                 seen_lines.add(key)
                 lines.append(line)
         text = "\n".join(lines).strip()
+
+    # Treat Ollama strictly as OCR repair, not an independent source of facts.
+    # When OCR produced enough lexical anchors, require the model output to share
+    # a minimum fraction of them; otherwise fail closed into Gemini/deferred.
+    hint_tokens = {
+        token.casefold()
+        for token in re.findall(r"[A-Za-zÅÄÖåäö0-9][A-Za-zÅÄÖåäö0-9._:%+-]{1,}", hint)
+        if token.casefold() not in {"instagram", "story", "watch", "full", "reel", "reply"}
+    }
+    output_tokens = {
+        token.casefold()
+        for token in re.findall(r"[A-Za-zÅÄÖåäö0-9][A-Za-zÅÄÖåäö0-9._:%+-]{1,}", text)
+    }
+    if text and len(hint_tokens) >= 4:
+        overlap = len(hint_tokens & output_tokens) / max(1, min(len(hint_tokens), len(output_tokens)))
+        if overlap < OLLAMA_VISUAL_MIN_GROUNDING_OVERLAP:
+            text = ""
+
     return {
         "provider": "ollama",
         "model": model,
         "source": "OLLAMA_STORY_SCREENSHOT_EVIDENCE",
         "transport": "HOST_DOCKER_INTERNAL",
+        "contract": OLLAMA_VISUAL_CONTRACT,
         "text": text,
     }
 
