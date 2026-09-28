@@ -56,3 +56,4 @@ jobs:
           test_tiktok_content_fallback
           test_transcription_backend
           test_creator_monitor
+          test_creator_recent_analysis_targets
