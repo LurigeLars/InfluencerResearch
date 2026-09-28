@@ -38,6 +38,15 @@ class RecentAnalysisTargetTests(unittest.TestCase):
                         "analysis_content_reason": "TRANSCRIPT",
                         "transcript_source": "gemini",
                         "word_count": 1200,
+                        "source_subtype": "STORY",
+                        "published_at_basis": "ACTIVE_STORY_OBSERVED_AT",
+                        "observed_at": "2026-09-28T00:00:00+00:00",
+                        "visual_evidence_status": "DONE",
+                        "visual_evidence_index": "output/creator/stories/screenshots/123.png",
+                        "visual_frame_count": 1,
+                        "visual_capture_strategy": "INSTAGRAM_STORY_SCREENSHOT",
+                        "screenshot_file": "output/creator/stories/screenshots/123.png",
+                        "media_retention": "EPHEMERAL_CAPTURE",
                         "analysis_evidence_text": evidence,
                     }
                 ]
@@ -49,6 +58,13 @@ class RecentAnalysisTargetTests(unittest.TestCase):
             target = targets[0]
             self.assertEqual(target["analysis_content_status"], "READY")
             self.assertEqual(target["analysis_content_reason"], "TRANSCRIPT")
+            self.assertEqual(target["source_subtype"], "STORY")
+            self.assertEqual(target["visual_evidence_status"], "DONE")
+            self.assertEqual(
+                target["screenshot_file"],
+                "output/creator/stories/screenshots/123.png",
+            )
+            self.assertEqual(target["visual_frame_count"], 1)
             self.assertTrue(target["analysis_evidence_text"])
             self.assertLessEqual(
                 len(target["analysis_evidence_text"]),
