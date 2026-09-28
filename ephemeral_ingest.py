@@ -19,12 +19,13 @@ from playwright.sync_api import sync_playwright
 from transcription_backend import DEFAULT_GEMINI_VISUAL_MODEL, extract_image_evidence_gemini, transcribe_video
 
 
-APP_VERSION = "0.4.7"
+APP_VERSION = "0.4.8"
 STORY_URL_RE = re.compile(r"/stories/(?P<user>[^/]+)/(?P<id>\d+)/?")
 HIGHLIGHT_URL_RE = re.compile(r"/stories/highlights/(?P<id>\d+)/?")
 STRICT_STORY_ROOT_PATH_RE = re.compile(r"^/stories/[A-Za-z0-9._-]{1,64}/?$")
 STRICT_STORY_PATH_RE = re.compile(r"^/stories/[A-Za-z0-9._-]{1,64}/\d+/?$")
 STRICT_HIGHLIGHT_PATH_RE = re.compile(r"^/stories/highlights/\d+/?$")
+MAX_STORY_VISUAL_ENRICHMENTS_PER_RUN = 2
 
 
 def canonical_instagram_ephemeral_url(value: str) -> str:
@@ -630,6 +631,8 @@ def enrich_story_visual_evidence(
     root: Path,
     manifest: dict,
     item_keys: list[str],
+    *,
+    max_attempts: int = MAX_STORY_VISUAL_ENRICHMENTS_PER_RUN,
 ) -> dict:
     """Backfill readable multimodal evidence for visited Story screenshots."""
     settings = load_json(root / "control" / "settings.json", {})
@@ -643,6 +646,7 @@ def enrich_story_visual_evidence(
     attempted = 0
     completed = 0
     skipped = 0
+    deferred = 0
     errors: list[str] = []
     changed = False
 
@@ -659,6 +663,10 @@ def enrich_story_visual_evidence(
             and str(item.get("visual_description") or "").strip()
         ):
             skipped += 1
+            continue
+
+        if attempted >= max(0, int(max_attempts)):
+            deferred += 1
             continue
 
         screenshot_rel = str(item.get("screenshot_file") or "").strip()
@@ -697,6 +705,8 @@ def enrich_story_visual_evidence(
         "attempted": attempted,
         "completed": completed,
         "skipped": skipped,
+        "deferred": deferred,
+        "max_attempts": max(0, int(max_attempts)),
         "errors": errors,
         "changed": changed,
         "model": model,
@@ -958,12 +968,15 @@ def run_one(
             root,
             manifest,
             story_visual_keys,
+            max_attempts=MAX_STORY_VISUAL_ENRICHMENTS_PER_RUN,
         )
         if source_type == "STORY"
         else {
             "attempted": 0,
             "completed": 0,
             "skipped": 0,
+            "deferred": 0,
+            "max_attempts": MAX_STORY_VISUAL_ENRICHMENTS_PER_RUN,
             "errors": [],
             "changed": False,
         }
