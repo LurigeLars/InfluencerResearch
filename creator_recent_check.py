@@ -1039,6 +1039,7 @@ def _main_impl() -> int:
         story_available: list[dict] = []
         story_reused_existing_count = 0
         story_reattributed_count = 0
+        story_identity_aliases_retired_count = 0
         remaining_story_slots = max(0, max_items - len(selected_pending))
         if remaining_story_slots:
             seen_instagram_creators: set[str] = set()
@@ -1072,6 +1073,9 @@ def _main_impl() -> int:
                     )
                     story_reattributed_count += int(
                         story_result.get("reattributed_count") or 0
+                    )
+                    story_identity_aliases_retired_count += int(
+                        story_result.get("identity_aliases_retired_count") or 0
                     )
                     remaining_story_slots -= len(promoted)
                     story_results.append({"creator_key": creator_key, **story_result})
@@ -1191,6 +1195,7 @@ def _main_impl() -> int:
             "story_newly_promoted_count": len(story_selected),
             "story_reused_existing_count": story_reused_existing_count,
             "story_reattributed_count": story_reattributed_count,
+            "story_identity_aliases_retired_count": story_identity_aliases_retired_count,
             "deferred_due_to_cap_count": len(deferred),
             "queued_for_analysis_count": len(analysis_targets),
             "insufficient_content_count": len(insufficient_recent),
