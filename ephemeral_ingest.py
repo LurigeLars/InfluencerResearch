@@ -884,11 +884,33 @@ def run_one(
         finally:
             context.close()
 
+    story_visual_keys = list(capture.get("visited_item_keys") or [])
+    if source_type == "STORY":
+        # Also backfill previously captured stable Story screenshots. This matters
+        # after upgrades: an older Story may no longer be active in the viewer but
+        # its retained screenshot is still within the recent-check evidence window.
+        for key, item in (manifest.get("items") or {}).items():
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("source_type") or "").upper() != "STORY":
+                continue
+            if str(item.get("creator") or "").casefold() != creator.casefold():
+                continue
+            if str(item.get("research_status") or "").upper() == "INVALID":
+                continue
+            if (
+                str(item.get("visual_description_status") or "").upper() == "DONE"
+                and str(item.get("visual_description") or "").strip()
+            ):
+                continue
+            if key not in story_visual_keys:
+                story_visual_keys.append(key)
+
     visual_enrichment = (
         enrich_story_visual_evidence(
             root,
             manifest,
-            list(capture.get("visited_item_keys") or []),
+            story_visual_keys,
         )
         if source_type == "STORY"
         else {
