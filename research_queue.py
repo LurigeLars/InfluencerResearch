@@ -148,7 +148,7 @@ def assess_analysis_content(item: dict, transcript: str) -> dict:
     if transcript_words >= MIN_TRANSCRIPT_WORDS or len(transcript) >= MIN_TRANSCRIPT_CHARS:
         status = "READY"
         reason = "TRANSCRIPT"
-    elif visible_text_words >= MIN_FALLBACK_TEXT_WORDS or len(visible_text) >= MIN_FALLBACK_TEXT_CHARS:
+    elif visible_text_words >= MIN_TRANSCRIPT_WORDS or len(visible_text) >= MIN_TRANSCRIPT_CHARS:
         status = "READY"
         reason = "VISIBLE_TEXT"
     elif browser_text_words >= MIN_FALLBACK_TEXT_WORDS or len(browser_text) >= MIN_FALLBACK_TEXT_CHARS:
