@@ -37,6 +37,28 @@ class StoryOllamaBackendTests(unittest.TestCase):
             self.assertEqual(result["provider"], "ollama")
             self.assertEqual(result["source"], "OLLAMA_STORY_SCREENSHOT_EVIDENCE")
 
+    def test_ollama_embedded_no_content_marker_is_removed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = Path(tmp) / "story.png"
+            image_path.write_bytes(b"png-bytes")
+            response = io.BytesIO(json.dumps({
+                "message": {"content": "Visible headline: NVIDIA AI agents\nNO_MEANINGFUL_VISUAL_EVIDENCE"}
+            }).encode("utf-8"))
+            with patch("transcription_backend.urllib_request.urlopen", return_value=response):
+                result = tb.extract_image_evidence_ollama(image_path)
+            self.assertEqual(result["text"], "Visible headline: NVIDIA AI agents")
+
+    def test_ollama_oversized_output_fails_closed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            image_path = Path(tmp) / "story.png"
+            image_path.write_bytes(b"png-bytes")
+            response = io.BytesIO(json.dumps({
+                "message": {"content": "x" * (tb.OLLAMA_VISUAL_MAX_CHARS + 1)}
+            }).encode("utf-8"))
+            with patch("transcription_backend.urllib_request.urlopen", return_value=response):
+                result = tb.extract_image_evidence_ollama(image_path)
+            self.assertEqual(result["text"], "")
+
     def test_ollama_no_content_marker_becomes_empty(self):
         with tempfile.TemporaryDirectory() as tmp:
             image_path = Path(tmp) / "story.png"
