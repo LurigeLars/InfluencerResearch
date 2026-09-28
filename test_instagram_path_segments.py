@@ -191,6 +191,56 @@ class InstagramPathSegmentTests(unittest.TestCase):
             )
 
 
+    def test_story_visual_failure_records_safe_code_and_status(self) -> None:
+        class FakeGeminiError(Exception):
+            code = 429
+            status = "RESOURCE_EXHAUSTED"
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            shot = root / "output" / "story.png"
+            shot.parent.mkdir(parents=True)
+            shot.write_bytes(b"png")
+            settings = root / "control" / "settings.json"
+            settings.parent.mkdir(parents=True)
+            settings.write_text("{}", encoding="utf-8")
+
+            key = "STORY:example:123"
+            manifest = {
+                "items": {
+                    key: {
+                        "source_type": "STORY",
+                        "creator": "example",
+                        "research_status": "PENDING",
+                        "screenshot_file": str(shot.relative_to(root)),
+                    }
+                }
+            }
+
+            with mock.patch(
+                "ephemeral_ingest.extract_image_evidence_gemini",
+                side_effect=FakeGeminiError("secret provider body"),
+            ):
+                result = enrich_story_visual_evidence(
+                    root,
+                    manifest,
+                    [key],
+                    max_attempts=1,
+                )
+
+            expected = (
+                "FakeGeminiError: Gemini visual evidence extraction failed "
+                "code=429 status=RESOURCE_EXHAUSTED"
+            )
+            self.assertEqual(
+                manifest["items"][key]["visual_description_error"],
+                expected,
+            )
+            self.assertEqual(result["errors"], [f"{key}: {expected}"])
+            self.assertNotIn("secret provider body", str(result))
+
+
+
     def test_existing_numeric_story_backfills_media_identity_without_rewriting_evidence(self) -> None:
         item = {
             "source_type": "STORY",
