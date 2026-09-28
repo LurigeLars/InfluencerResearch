@@ -389,6 +389,7 @@ def extract_image_evidence_ollama(
         "source": "OLLAMA_STORY_SCREENSHOT_EVIDENCE",
         "transport": "HOST_DOCKER_INTERNAL",
         "contract": OLLAMA_VISUAL_CONTRACT,
+        "num_ctx": max(2048, int(num_ctx)),
         "text": text,
     }
 
