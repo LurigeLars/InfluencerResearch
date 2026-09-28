@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
+from pathlib import Path
 from types import ModuleType
+from unittest import mock
 
 # This unit only exercises pure path/identity helpers. CI does not install the
 # browser runtime, so provide the import surface needed by ephemeral_ingest.
@@ -15,7 +18,7 @@ if not hasattr(playwright_sync, "sync_playwright"):
     playwright_sync.sync_playwright = lambda: None
 playwright_pkg.sync_api = playwright_sync
 
-from ephemeral_ingest import extract_story_identity, invalidate_legacy_unstable_story_evidence, normalize_creator_handle, retire_root_media_aliases_for_numeric_story
+from ephemeral_ingest import enrich_story_visual_evidence, extract_story_identity, invalidate_legacy_unstable_story_evidence, normalize_creator_handle, retire_root_media_aliases_for_numeric_story
 from instagram_ingest import safe_creator
 
 
@@ -138,6 +141,54 @@ class InstagramPathSegmentTests(unittest.TestCase):
             manifest["items"]["STORY:example:other"]["research_status"],
             "PENDING",
         )
+
+
+    def test_story_visual_enrichment_is_bounded_per_run(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            manifest = {"items": {}}
+            keys = []
+            for index in range(3):
+                shot = root / "output" / f"{index}.png"
+                shot.parent.mkdir(parents=True, exist_ok=True)
+                shot.write_bytes(b"png")
+                key = f"STORY:example:{index}"
+                keys.append(key)
+                manifest["items"][key] = {
+                    "source_type": "STORY",
+                    "creator": "example",
+                    "research_status": "PENDING",
+                    "screenshot_file": str(shot.relative_to(root)),
+                }
+
+            settings = root / "control" / "settings.json"
+            settings.parent.mkdir(parents=True)
+            settings.write_text("{}", encoding="utf-8")
+
+            with mock.patch(
+                "ephemeral_ingest.extract_image_evidence_gemini",
+                return_value={
+                    "text": "Readable Story evidence with enough factual detail.",
+                    "source": "GEMINI_STORY_SCREENSHOT_EVIDENCE",
+                    "provider": "gemini",
+                    "model": "gemini-3.8-flash",
+                },
+            ) as extract:
+                result = enrich_story_visual_evidence(
+                    root,
+                    manifest,
+                    keys,
+                    max_attempts=2,
+                )
+
+            self.assertEqual(result["attempted"], 2)
+            self.assertEqual(result["completed"], 2)
+            self.assertEqual(result["deferred"], 1)
+            self.assertEqual(result["max_attempts"], 2)
+            self.assertEqual(extract.call_count, 2)
+            self.assertIsNone(
+                manifest["items"][keys[2]].get("visual_description_status")
+            )
 
 
 if __name__ == "__main__":

@@ -10,6 +10,15 @@ import transcription_backend as tb
 
 
 class TranscriptionBackendTests(unittest.TestCase):
+    def test_gemini_http_options_are_bounded(self) -> None:
+        self.assertEqual(
+            tb.gemini_http_options(),
+            {
+                "timeout": 45_000,
+                "retry_options": {"attempts": 2},
+            },
+        )
+
     def test_runtime_secret_path_is_tmpfs_location(self) -> None:
         self.assertEqual(
             tb.GEMINI_SECRET_PATH,
