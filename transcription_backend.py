@@ -59,12 +59,37 @@ def read_gemini_api_key(path: Path | None = None) -> str | None:
     return value
 
 
-def _safe_error(exc: Exception) -> str:
+def safe_gemini_error(exc: Exception, *, operation: str) -> str:
+    """Return non-sensitive Gemini diagnostics.
+
+    Deliberately excludes exception text, response bodies, prompts, URLs, and
+    credentials. Only exception type plus provider code/status are surfaced.
+    """
     code = getattr(exc, "code", None)
     if code is None:
         code = getattr(exc, "status_code", None)
-    suffix = f" status={code}" if code is not None else ""
-    return f"{type(exc).__name__}: Gemini transcription failed{suffix}"
+
+    status = getattr(exc, "status", None)
+    if status is not None:
+        status = str(status).strip()
+        if not status or len(status) > 80 or not all(
+            ch.isalnum() or ch in {"_", "-", "."} for ch in status
+        ):
+            status = None
+
+    parts = [f"{type(exc).__name__}: Gemini {operation} failed"]
+    if code is not None:
+        try:
+            parts.append(f"code={int(code)}")
+        except (TypeError, ValueError):
+            pass
+    if status is not None:
+        parts.append(f"status={status}")
+    return " ".join(parts)
+
+
+def _safe_error(exc: Exception) -> str:
+    return safe_gemini_error(exc, operation="transcription")
 
 
 def _extract_audio(video_path: Path) -> Path:
