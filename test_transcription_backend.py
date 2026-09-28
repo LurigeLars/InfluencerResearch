@@ -41,6 +41,39 @@ class TranscriptionBackendTests(unittest.TestCase):
         self.assertNotIn("client.files.upload", block)
         self.assertNotIn("client.files.delete", block)
 
+    def test_safe_gemini_error_exposes_only_type_code_and_status(self) -> None:
+        class FakeGeminiError(Exception):
+            code = 429
+            status = "RESOURCE_EXHAUSTED"
+
+        exc = FakeGeminiError("SECRET response body with prompt text")
+        result = tb.safe_gemini_error(
+            exc,
+            operation="visual evidence extraction",
+        )
+        self.assertEqual(
+            result,
+            "FakeGeminiError: Gemini visual evidence extraction failed "
+            "code=429 status=RESOURCE_EXHAUSTED",
+        )
+        self.assertNotIn("SECRET", result)
+        self.assertNotIn("prompt", result)
+
+    def test_safe_gemini_error_rejects_unsafe_status_text(self) -> None:
+        class FakeGeminiError(Exception):
+            code = 400
+            status = "BAD STATUS includes sensitive text"
+
+        result = tb.safe_gemini_error(
+            FakeGeminiError("do not leak me"),
+            operation="visual evidence extraction",
+        )
+        self.assertEqual(
+            result,
+            "FakeGeminiError: Gemini visual evidence extraction failed code=400",
+        )
+        self.assertNotIn("sensitive", result)
+
     def test_runtime_secret_path_is_tmpfs_location(self) -> None:
         self.assertEqual(
             tb.GEMINI_SECRET_PATH,
