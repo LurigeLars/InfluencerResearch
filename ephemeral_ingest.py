@@ -21,6 +21,7 @@ from transcription_backend import (
     DEFAULT_OLLAMA_BASE_URL,
     DEFAULT_OLLAMA_VISUAL_MODEL,
     OLLAMA_VISUAL_TIMEOUT_SECONDS,
+    OLLAMA_VISUAL_MAX_CHARS,
     extract_image_evidence_gemini,
     extract_image_evidence_ollama,
     gemini_error_metadata,
@@ -858,6 +859,20 @@ def _story_local_ocr_needs_upgrade(item: dict) -> bool:
     )
 
 
+def _story_ollama_needs_upgrade(item: dict) -> bool:
+    text = str(item.get("visual_description") or "").strip()
+    return (
+        str(item.get("visual_description_status") or "").upper() == "DONE"
+        and str(item.get("visual_description_source") or "").upper()
+        == "OLLAMA_STORY_SCREENSHOT_EVIDENCE"
+        and bool(text)
+        and (
+            "NO_MEANINGFUL_VISUAL_EVIDENCE" in text
+            or len(text) > OLLAMA_VISUAL_MAX_CHARS
+        )
+    )
+
+
 def extract_story_text_local_ocr(screenshot_path: Path) -> dict:
     """Extract visible Story text locally with bounded Tesseract OCR."""
     proc = subprocess.run(
@@ -963,6 +978,7 @@ def enrich_story_visual_evidence(
             str(item.get("visual_description_status") or "").upper() == "DONE"
             and str(item.get("visual_description") or "").strip()
             and not _story_local_ocr_needs_upgrade(item)
+            and not _story_ollama_needs_upgrade(item)
         ):
             skipped += 1
             continue

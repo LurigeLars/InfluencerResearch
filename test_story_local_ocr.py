@@ -128,6 +128,34 @@ class StoryLocalOcrTests(unittest.TestCase):
             self.assertEqual(item["visual_description_provider"], "ollama")
             gemini.assert_not_called()
 
+    def test_existing_legacy_ollama_marker_is_reprocessed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self._manifest(root)
+            item = manifest["items"]["story-1"]
+            item.update({
+                "visual_description": "Useful evidence\nNO_MEANINGFUL_VISUAL_EVIDENCE",
+                "visual_description_status": "DONE",
+                "visual_description_source": "OLLAMA_STORY_SCREENSHOT_EVIDENCE",
+                "visual_description_provider": "ollama",
+            })
+            with patch("ephemeral_ingest.extract_story_text_local_ocr", return_value={
+                "text": "tiny",
+                "source": "LOCAL_OCR",
+                "provider": "tesseract",
+                "model": "eng+swe",
+            }), patch("ephemeral_ingest.extract_image_evidence_ollama", return_value={
+                "text": "Corrected concise visible Story evidence for downstream analysis",
+                "source": "OLLAMA_STORY_SCREENSHOT_EVIDENCE",
+                "provider": "ollama",
+                "model": "gemma3-12b-16k",
+            }), patch("ephemeral_ingest.extract_image_evidence_gemini") as gemini:
+                result = ei.enrich_story_visual_evidence(root, manifest, ["story-1"])
+
+            self.assertEqual(result["ollama_completed"], 1)
+            self.assertNotIn("NO_MEANINGFUL_VISUAL_EVIDENCE", item["visual_description"])
+            gemini.assert_not_called()
+
     def test_insufficient_ollama_falls_back_to_gemini(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
