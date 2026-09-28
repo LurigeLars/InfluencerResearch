@@ -77,10 +77,11 @@ class MCPContractTests(unittest.TestCase):
         self.assertNotIn('source.get("CAMOFOX_ADMIN_KEY")', source)
 
     def test_recent_check_status_exposes_compact_timings(self) -> None:
-        source = (BASE / "influencerresearch_mcp.py").read_text(encoding="utf-8")
+        source = (BASE / "research_status_summary.py").read_text(encoding="utf-8")
         self.assertIn('"timings"', source)
         self.assertIn('"analysis_readiness_complete"', source)
         self.assertIn('"story_visual_enrichment"', source)
+        self.assertIn('"error"', source)
 
     def test_job_launcher_uses_fixed_worker_command(self) -> None:
         source = (BASE / "influencerresearch_mcp.py").read_text(encoding="utf-8")
