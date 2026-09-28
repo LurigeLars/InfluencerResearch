@@ -825,6 +825,7 @@ def enrich_story_visual_evidence(
     skipped = 0
     deferred = 0
     provider_deferred = 0
+    health_deferred_recorded = 0
     errors: list[str] = []
     changed = False
     if circuit_state is None:
@@ -961,6 +962,7 @@ def enrich_story_visual_evidence(
                     cooldown_until=retry_after,
                     retry_after_source=retry_source,
                 )
+                health_deferred_recorded += 1
             else:
                 item["visual_description_status"] = "ERROR"
                 item["visual_description_error"] = safe_error
@@ -975,6 +977,12 @@ def enrich_story_visual_evidence(
 
             changed = True
             errors.append(f"{key}: {safe_error}")
+
+    if provider_deferred > health_deferred_recorded:
+        update_gemini_provider_health(
+            root,
+            deferred=provider_deferred - health_deferred_recorded,
+        )
 
     return {
         "attempted": attempted,
