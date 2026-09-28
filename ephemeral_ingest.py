@@ -831,12 +831,12 @@ def _story_ocr_text_sufficient(text: str) -> bool:
     if not _story_evidence_text_sufficient(text):
         return False
 
-    tokens = re.findall(r"\\S+", text)
+    tokens = re.findall(r"\S+", text)
     if not tokens:
         return False
     meaningful = [
         token for token in tokens
-        if re.search(r"[A-Za-zÅÄÖåäö]{2,}", token) or re.search(r"\\d", token)
+        if re.search(r"[A-Za-zÅÄÖåäö]{2,}", token) or re.search(r"\d", token)
     ]
     noise = [
         token for token in tokens
@@ -898,7 +898,7 @@ def extract_story_text_local_ocr(screenshot_path: Path) -> dict:
     if proc.returncode != 0:
         stderr = str(proc.stderr or "").strip()[-500:]
         raise RuntimeError(f"Tesseract OCR failed rc={proc.returncode}: {stderr}")
-    text = re.sub(r"[ \\t]+", " ", str(proc.stdout or "")).strip()
+    text = re.sub(r"[ \t]+", " ", str(proc.stdout or "")).strip()
     return {
         "text": text,
         "source": "LOCAL_OCR",
