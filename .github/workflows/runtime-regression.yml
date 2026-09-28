@@ -47,11 +47,13 @@ jobs:
           creator_monitor.py
           creator_registry.py
           creator_recent_check.py
+          ephemeral_ingest.py
           influencerresearch_mcp.py
       - name: Run runtime secret regression tests
         run: >-
           python -m unittest -v
           test_camofox_container_config
+          test_instagram_path_segments
           test_local_runtime_namespace
           test_mcp_contract
           test_research_queue_story
