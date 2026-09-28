@@ -13,24 +13,38 @@ DEFAULT_GEMINI_MODEL = "gemini-3.5-transcribe"
 DEFAULT_GEMINI_VISUAL_MODEL = "gemini-3.8-flash"
 GEMINI_HTTP_TIMEOUT_MS = 45_000
 GEMINI_RETRY_ATTEMPTS = 2
+STORY_GEMINI_HTTP_TIMEOUT_MS = 30_000
+STORY_GEMINI_RETRY_ATTEMPTS = 1
 ALLOWED_PROVIDERS = {"auto", "gemini", "faster-whisper"}
 _WHISPER_MODEL_CACHE: dict[tuple[str, str, str], Any] = {}
 
 
-def gemini_http_options() -> dict[str, Any]:
-    """Bound all Gemini HTTP operations, including file upload and model calls."""
+def gemini_http_options(
+    *,
+    timeout_ms: int = GEMINI_HTTP_TIMEOUT_MS,
+    retry_attempts: int = GEMINI_RETRY_ATTEMPTS,
+) -> dict[str, Any]:
+    """Bound Gemini HTTP operations."""
     return {
-        "timeout": GEMINI_HTTP_TIMEOUT_MS,
-        "retry_options": {"attempts": GEMINI_RETRY_ATTEMPTS},
+        "timeout": int(timeout_ms),
+        "retry_options": {"attempts": int(retry_attempts)},
     }
 
 
-def _gemini_client(api_key: str):
+def _gemini_client(
+    api_key: str,
+    *,
+    timeout_ms: int = GEMINI_HTTP_TIMEOUT_MS,
+    retry_attempts: int = GEMINI_RETRY_ATTEMPTS,
+):
     from google import genai
 
     return genai.Client(
         api_key=api_key,
-        http_options=gemini_http_options(),
+        http_options=gemini_http_options(
+            timeout_ms=timeout_ms,
+            retry_attempts=retry_attempts,
+        ),
     )
 
 
@@ -145,55 +159,63 @@ def extract_image_evidence_gemini(
 ) -> dict[str, Any]:
     """Convert a Story screenshot into compact factual text evidence.
 
-    The downstream MCP consumer cannot read a container-local screenshot path, so
-    this produces a textual representation of the visible Story content. It must
-    stay descriptive: preserve visible text/numbers and describe charts/graphics,
-    but do not infer an investment conclusion that is not directly shown.
+    Story screenshots are sent inline as bytes: one model request, no remote file
+    upload/delete lifecycle. This keeps the Story path low-pressure and bounded.
     """
     api_key = read_gemini_api_key(secret_path)
     if not api_key:
         raise RuntimeError("Gemini runtime secret is not available.")
 
-    client = _gemini_client(api_key)
-    uploaded = None
-    try:
-        uploaded = client.files.upload(file=str(image_path))
-        prompt = (
-            "Convert this Instagram Story screenshot into compact factual evidence "
-            "for downstream financial research. Ignore Instagram viewer chrome such "
-            "as username, age, progress bar, reply/share controls. Preserve all "
-            "meaningful visible text, tickers, prices, percentages, dates, labels, "
-            "chart axes and source names. Then describe any meaningful non-text "
-            "visual evidence such as a chart direction, highlighted region, table, "
-            "headline screenshot, or asset shown. Do not infer the creator's intent, "
-            "do not recommend a trade, and do not add facts that are not visibly "
-            "present. Return plain text only. If the Story contains no meaningful "
-            "content beyond viewer chrome, output exactly NO_MEANINGFUL_VISUAL_EVIDENCE."
-        )
-        interaction = client.interactions.create(
-            model=model,
-            input=[
-                {"type": "text", "text": prompt},
-                {
-                    "type": "image",
-                    "uri": uploaded.uri,
-                    "mime_type": uploaded.mime_type,
-                },
-            ],
-        )
-        text = (interaction.output_text or "").strip()
-        if text == "NO_MEANINGFUL_VISUAL_EVIDENCE":
-            text = ""
-        return {
-            "provider": "gemini",
-            "model": model,
-            "source": "GEMINI_STORY_SCREENSHOT_EVIDENCE",
-            "text": text,
-        }
-    finally:
-        if uploaded is not None:
-            with contextlib.suppress(Exception):
-                client.files.delete(name=uploaded.name)
+    from google.genai import types
+
+    suffix = image_path.suffix.lower()
+    mime_type = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+    }.get(suffix)
+    if not mime_type:
+        raise ValueError(f"Unsupported Story image type: {suffix or '<none>'}")
+
+    image_bytes = image_path.read_bytes()
+    if not image_bytes:
+        raise RuntimeError("Story screenshot is empty.")
+
+    client = _gemini_client(
+        api_key,
+        timeout_ms=STORY_GEMINI_HTTP_TIMEOUT_MS,
+        retry_attempts=STORY_GEMINI_RETRY_ATTEMPTS,
+    )
+    prompt = (
+        "Convert this Instagram Story screenshot into compact factual evidence "
+        "for downstream financial research. Ignore Instagram viewer chrome such "
+        "as username, age, progress bar, reply/share controls. Preserve all "
+        "meaningful visible text, tickers, prices, percentages, dates, labels, "
+        "chart axes and source names. Then describe any meaningful non-text "
+        "visual evidence such as a chart direction, highlighted region, table, "
+        "headline screenshot, or asset shown. Do not infer the creator's intent, "
+        "do not recommend a trade, and do not add facts that are not visibly "
+        "present. Return plain text only. If the Story contains no meaningful "
+        "content beyond viewer chrome, output exactly NO_MEANINGFUL_VISUAL_EVIDENCE."
+    )
+    response = client.models.generate_content(
+        model=model,
+        contents=[
+            prompt,
+            types.Part.from_bytes(data=image_bytes, mime_type=mime_type),
+        ],
+    )
+    text = (response.text or "").strip()
+    if text == "NO_MEANINGFUL_VISUAL_EVIDENCE":
+        text = ""
+    return {
+        "provider": "gemini",
+        "model": model,
+        "source": "GEMINI_STORY_SCREENSHOT_EVIDENCE",
+        "transport": "INLINE_BYTES",
+        "text": text,
+    }
 
 
 def extract_visible_text_gemini(
