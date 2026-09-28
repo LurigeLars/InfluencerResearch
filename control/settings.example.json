@@ -10,7 +10,7 @@
     "ollama_visual_model": "gemma3-12b-16k",
     "ollama_base_url": "http://host.docker.internal:11434",
     "ollama_visual_timeout_seconds": 90,
-    "ollama_visual_max_attempts": 4,
+    "ollama_visual_max_attempts": 2,
     "model_size": "small",
     "device": "cpu",
     "compute_type": "int8",
