@@ -11,8 +11,27 @@ from typing import Any
 GEMINI_SECRET_PATH = Path("/run/influencerresearch-secrets/gemini_api_key")
 DEFAULT_GEMINI_MODEL = "gemini-3.5-transcribe"
 DEFAULT_GEMINI_VISUAL_MODEL = "gemini-3.8-flash"
+GEMINI_HTTP_TIMEOUT_MS = 45_000
+GEMINI_RETRY_ATTEMPTS = 2
 ALLOWED_PROVIDERS = {"auto", "gemini", "faster-whisper"}
 _WHISPER_MODEL_CACHE: dict[tuple[str, str, str], Any] = {}
+
+
+def gemini_http_options() -> dict[str, Any]:
+    """Bound all Gemini HTTP operations, including file upload and model calls."""
+    return {
+        "timeout": GEMINI_HTTP_TIMEOUT_MS,
+        "retry_options": {"attempts": GEMINI_RETRY_ATTEMPTS},
+    }
+
+
+def _gemini_client(api_key: str):
+    from google import genai
+
+    return genai.Client(
+        api_key=api_key,
+        http_options=gemini_http_options(),
+    )
 
 
 def read_gemini_api_key(path: Path | None = None) -> str | None:
@@ -82,10 +101,8 @@ def transcribe_gemini(
     if not api_key:
         raise RuntimeError("Gemini runtime secret is not available.")
 
-    from google import genai
-
     audio_path = _extract_audio(video_path)
-    client = genai.Client(api_key=api_key)
+    client = _gemini_client(api_key)
     uploaded = None
     try:
         uploaded = client.files.upload(file=str(audio_path))
@@ -137,9 +154,7 @@ def extract_image_evidence_gemini(
     if not api_key:
         raise RuntimeError("Gemini runtime secret is not available.")
 
-    from google import genai
-
-    client = genai.Client(api_key=api_key)
+    client = _gemini_client(api_key)
     uploaded = None
     try:
         uploaded = client.files.upload(file=str(image_path))
@@ -201,9 +216,7 @@ def extract_visible_text_gemini(
     if processing not in {"static", "agentic"}:
         raise ValueError("processing must be static or agentic")
 
-    from google import genai
-
-    client = genai.Client(api_key=api_key)
+    client = _gemini_client(api_key)
     uploaded = None
     try:
         uploaded = client.files.upload(file=str(video_path))
