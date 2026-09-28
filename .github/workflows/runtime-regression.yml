@@ -45,6 +45,8 @@ jobs:
           tiktok_camofox_sync.py
           research_queue.py
           creator_monitor.py
+          creator_registry.py
+          creator_recent_check.py
       - name: Run runtime secret regression tests
         run: >-
           python -m unittest -v
@@ -57,3 +59,5 @@ jobs:
           test_transcription_backend
           test_creator_monitor
           test_creator_recent_analysis_targets
+          test_creator_registry_runtime_metadata
+          test_creator_recent_monitored_instagram
