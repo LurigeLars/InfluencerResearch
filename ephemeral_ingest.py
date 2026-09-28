@@ -964,6 +964,7 @@ def enrich_story_visual_evidence(
 
         # Local OCR is the cheap first pass. It runs even while Gemini is cooling
         # down so provider throttling does not block text-heavy Story evidence.
+        ocr_text = ""
         ocr_attempted += 1
         try:
             ocr_result = extract_story_text_local_ocr(screenshot_path)
@@ -997,7 +998,7 @@ def enrich_story_visual_evidence(
                     model=ollama_model,
                     base_url=ollama_base_url,
                     timeout_seconds=ollama_timeout_seconds,
-                    ocr_hint=ocr_text if "ocr_text" in locals() else None,
+                    ocr_hint=ocr_text or None,
                 )
                 ollama_text = str(ollama_result.get("text") or "").strip()
                 if _story_evidence_text_sufficient(ollama_text):
