@@ -28,6 +28,10 @@ STRICT_HIGHLIGHT_PATH_RE = re.compile(r"^/stories/highlights/\d+/?$")
 MAX_STORY_VISUAL_ENRICHMENTS_PER_RUN = 2
 STORY_GEMINI_RATE_LIMIT_COOLDOWN_SECONDS = 300
 STORY_GEMINI_PROVIDER_ERROR_COOLDOWN_SECONDS = 60
+STORY_OCR_TIMEOUT_SECONDS = 20
+STORY_OCR_LANGUAGES = "eng+swe"
+STORY_OCR_MIN_WORDS = 8
+STORY_OCR_MIN_CHARS = 48
 
 
 def canonical_instagram_ephemeral_url(value: str) -> str:
@@ -799,6 +803,42 @@ def _defer_story_visual(
         item.pop("visual_description_error", None)
 
 
+def _story_ocr_text_sufficient(text: str) -> bool:
+    text = str(text or "").strip()
+    return len(text.split()) >= STORY_OCR_MIN_WORDS or len(text) >= STORY_OCR_MIN_CHARS
+
+
+def extract_story_text_local_ocr(screenshot_path: Path) -> dict:
+    """Extract visible Story text locally with bounded Tesseract OCR."""
+    proc = subprocess.run(
+        [
+            "tesseract",
+            str(screenshot_path),
+            "stdout",
+            "-l",
+            STORY_OCR_LANGUAGES,
+            "--psm",
+            "6",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=STORY_OCR_TIMEOUT_SECONDS,
+        check=False,
+    )
+    if proc.returncode != 0:
+        stderr = str(proc.stderr or "").strip()[-500:]
+        raise RuntimeError(f"Tesseract OCR failed rc={proc.returncode}: {stderr}")
+    text = re.sub(r"[ \\t]+", " ", str(proc.stdout or "")).strip()
+    return {
+        "text": text,
+        "source": "LOCAL_OCR",
+        "provider": "tesseract",
+        "model": STORY_OCR_LANGUAGES,
+    }
+
+
 def enrich_story_visual_evidence(
     root: Path,
     manifest: dict,
@@ -824,6 +864,10 @@ def enrich_story_visual_evidence(
     ).strip()
     attempted = 0
     completed = 0
+    ocr_attempted = 0
+    ocr_completed = 0
+    ocr_insufficient = 0
+    ocr_errors: list[str] = []
     skipped = 0
     deferred = 0
     provider_deferred = 0
@@ -853,6 +897,37 @@ def enrich_story_visual_evidence(
             skipped += 1
             continue
 
+        screenshot_rel = str(item.get("screenshot_file") or "").strip()
+        screenshot_path = root / screenshot_rel if screenshot_rel else None
+        if screenshot_path is None or not screenshot_path.is_file():
+            errors.append(f"{key}: STORY_SCREENSHOT_MISSING")
+            continue
+
+        # Local OCR is the cheap first pass. It runs even while Gemini is cooling
+        # down so provider throttling does not block text-heavy Story evidence.
+        ocr_attempted += 1
+        try:
+            ocr_result = extract_story_text_local_ocr(screenshot_path)
+            ocr_text = str(ocr_result.get("text") or "").strip()
+            if _story_ocr_text_sufficient(ocr_text):
+                item["visual_description"] = ocr_text
+                item["visual_description_status"] = "DONE"
+                item["visual_description_source"] = ocr_result.get("source")
+                item["visual_description_provider"] = ocr_result.get("provider")
+                item["visual_description_model"] = ocr_result.get("model")
+                item["visual_description_generated_at"] = utc_now()
+                item.pop("visual_description_error", None)
+                item.pop("visual_description_deferred_reason", None)
+                item.pop("visual_description_retry_after", None)
+                changed = True
+                completed += 1
+                ocr_completed += 1
+                continue
+            ocr_insufficient += 1
+        except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+            # OCR failure is non-fatal; Gemini remains the richer fallback.
+            ocr_errors.append(f"{key}: {type(exc).__name__}: {exc}")
+
         existing_retry_after = _parse_retry_after(item.get("visual_description_retry_after"))
         if (
             str(item.get("visual_description_status") or "").upper() == "DEFERRED"
@@ -881,12 +956,6 @@ def enrich_story_visual_evidence(
             )
             changed = True
             deferred += 1
-            continue
-
-        screenshot_rel = str(item.get("screenshot_file") or "").strip()
-        screenshot_path = root / screenshot_rel if screenshot_rel else None
-        if screenshot_path is None or not screenshot_path.is_file():
-            errors.append(f"{key}: STORY_SCREENSHOT_MISSING")
             continue
 
         attempted += 1
@@ -989,6 +1058,10 @@ def enrich_story_visual_evidence(
     return {
         "attempted": attempted,
         "completed": completed,
+        "ocr_attempted": ocr_attempted,
+        "ocr_completed": ocr_completed,
+        "ocr_insufficient": ocr_insufficient,
+        "ocr_errors": ocr_errors,
         "skipped": skipped,
         "deferred": deferred,
         "provider_deferred": provider_deferred,
