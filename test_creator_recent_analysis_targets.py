@@ -3,7 +3,14 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import sys
 from pathlib import Path
+from types import ModuleType
+
+# This unit only exercises the queue-target projection. Stub browser-only modules
+# so CI does not need Playwright just to import creator_recent_check.
+sys.modules.setdefault("instagram_camofox_public_smoke", ModuleType("instagram_camofox_public_smoke"))
+sys.modules.setdefault("ephemeral_ingest", ModuleType("ephemeral_ingest"))
 
 import creator_recent_check as crc
 
