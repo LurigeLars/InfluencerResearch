@@ -1407,6 +1407,7 @@ def update_main_manifest(
     url: str,
     download: dict,
     transcription: dict,
+    visual_text: dict | None,
 ) -> dict:
     manifest_path = root / "state" / "manifest.json"
     manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
@@ -1455,8 +1456,48 @@ def update_main_manifest(
         "media_validation": download.get("validation"),
         "transcribed_at": transcription["transcribed_at"],
         "transcription_status": "DONE",
+        "transcript_source": transcription.get("source"),
+        "transcript_provider": transcription.get("provider"),
+        "transcript_model": transcription.get("model"),
         "transcript_txt": str(txt_path.relative_to(root)),
         "transcript_json": str(json_path.relative_to(root)),
+        "visible_text": (
+            str((visual_text or {}).get("text") or "").strip()
+            if visual_text is not None
+            else str(old.get("visible_text") or "").strip()
+        ),
+        "visual_text_status": (
+            "DONE"
+            if visual_text is not None and visual_text.get("ok") and str(visual_text.get("text") or "").strip()
+            else (
+                "NO_VISIBLE_TEXT"
+                if visual_text is not None and visual_text.get("ok")
+                else (
+                    "FAILED"
+                    if visual_text is not None
+                    else old.get("visual_text_status") or "NOT_NEEDED"
+                )
+            )
+        ),
+        "visual_text_source": (visual_text or {}).get("source"),
+        "visual_text_provider": (visual_text or {}).get("provider"),
+        "visual_text_model": (visual_text or {}).get("model"),
+        "visual_text_processing": (visual_text or {}).get("processing"),
+        "visual_text_txt": (
+            str(Path(visual_text["txt"]).relative_to(root))
+            if visual_text is not None and visual_text.get("txt")
+            else old.get("visual_text_txt")
+        ),
+        "visual_text_json": (
+            str(Path(visual_text["json"]).relative_to(root))
+            if visual_text is not None and visual_text.get("json")
+            else old.get("visual_text_json")
+        ),
+        "content_extraction_version": CONTENT_EXTRACTION_VERSION,
+        "content_extraction_exhausted": bool(
+            _text_is_analysis_ready(str(transcription.get("text") or ""))
+            or (visual_text is not None and visual_text.get("ok"))
+        ),
         "research_status": old.get("research_status") or "PENDING",
         "source_class": "INFLUENCER_DISCOVERY_SECONDARY",
     }
@@ -1480,6 +1521,21 @@ def run_research_queue(root: Path) -> dict:
         "stdout_tail": (result.stdout or "")[-3000:],
         "stderr_tail": (result.stderr or "")[-3000:],
     }
+
+
+def _manifest_item_extraction_complete(item: dict) -> bool:
+    if not isinstance(item, dict):
+        return False
+    if item.get("download_status") != "DONE" or item.get("transcription_status") != "DONE":
+        return False
+    if str(item.get("visual_text_status") or "").upper() == "FAILED":
+        return False
+    if str(item.get("research_status") or "").upper() == "INSUFFICIENT_CONTENT":
+        return (
+            bool(item.get("content_extraction_exhausted"))
+            and int(item.get("content_extraction_version") or 0) >= CONTENT_EXTRACTION_VERSION
+        )
+    return True
 
 
 def process_source(root: Path, source: dict, *, max_new_override: int | None = None, include_video_ids: set[str] | None = None, discovery_target_override: int | None = None) -> dict:
@@ -1572,17 +1628,15 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
     ]
     skipped_known = sum(
         1 for url in ordered_urls
-        if f"tt_{video_id_from_url(url)}" in main_items
-        and main_items[f"tt_{video_id_from_url(url)}"].get("download_status") == "DONE"
-        and main_items[f"tt_{video_id_from_url(url)}"].get("transcription_status") == "DONE"
+        if _manifest_item_extraction_complete(
+            main_items.get(f"tt_{video_id_from_url(url)}", {})
+        )
     )
     candidates = [
         url for url in ordered_urls
         if (include_video_ids is None or video_id_from_url(url) in include_video_ids)
-        and not (
-            f"tt_{video_id_from_url(url)}" in main_items
-            and main_items[f"tt_{video_id_from_url(url)}"].get("download_status") == "DONE"
-            and main_items[f"tt_{video_id_from_url(url)}"].get("transcription_status") == "DONE"
+        and not _manifest_item_extraction_complete(
+            main_items.get(f"tt_{video_id_from_url(url)}", {})
         )
     ]
     if max_new_downloads is not None:
