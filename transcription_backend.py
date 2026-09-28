@@ -5,6 +5,7 @@ import contextlib
 import json
 import math
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -21,6 +22,7 @@ DEFAULT_GEMINI_VISUAL_MODEL = "gemini-3.8-flash"
 DEFAULT_OLLAMA_VISUAL_MODEL = "gemma3-12b-16k"
 DEFAULT_OLLAMA_BASE_URL = "http://host.docker.internal:11434"
 OLLAMA_VISUAL_TIMEOUT_SECONDS = 90
+OLLAMA_VISUAL_MAX_CHARS = 2200
 GEMINI_HTTP_TIMEOUT_MS = 45_000
 GEMINI_RETRY_ATTEMPTS = 2
 STORY_GEMINI_HTTP_TIMEOUT_MS = 30_000
@@ -255,14 +257,17 @@ def extract_image_evidence_ollama(
         raise RuntimeError("Story screenshot is empty.")
 
     prompt = (
-        "Convert this Instagram Story screenshot into compact factual evidence for downstream "
-        "financial research. Ignore Instagram viewer chrome such as username, age, progress "
-        "bar, reply/share controls. Preserve meaningful visible text, tickers, prices, "
-        "percentages, dates, labels, chart axes and source names. Describe only meaningful "
-        "non-text visual evidence such as chart direction, highlighted regions, tables, "
-        "headlines or assets shown. Do not infer intent, do not recommend a trade, and do not "
-        "add facts that are not visibly present. If there is no meaningful content, output "
-        "exactly NO_MEANINGFUL_VISUAL_EVIDENCE."
+        "Extract conservative factual evidence from this Instagram Story screenshot. "
+        "Priority 1 is accurate visible text. Correct obvious OCR spacing/casing errors only "
+        "when the screenshot clearly supports the correction; never expand or guess missing "
+        "words, labels, acronyms, tickers or numbers. Ignore Instagram viewer chrome such as "
+        "username, age, progress bar, reply/share controls. Preserve meaningful tickers, "
+        "prices, percentages, dates, source names and legible chart labels. After the visible "
+        "text, you may add at most two short sentences describing only obvious non-text visual "
+        "evidence. Do not identify people, infer intent, recommend a trade, translate text, "
+        "or invent details from an unreadable chart/diagram. Keep the entire answer under "
+        "1800 characters. If there is no meaningful readable content, output exactly "
+        "NO_MEANINGFUL_VISUAL_EVIDENCE."
     )
     hint = str(ocr_hint or "").strip()
     if hint:
@@ -281,7 +286,7 @@ def extract_image_evidence_ollama(
         }],
         "stream": False,
         "keep_alive": "5m",
-        "options": {"temperature": 0, "num_predict": 900},
+        "options": {"temperature": 0, "num_predict": 400},
     }).encode("utf-8")
     req = urllib_request.Request(
         f"{base_url.rstrip('/')}/api/chat",
@@ -298,8 +303,23 @@ def extract_image_evidence_ollama(
         raise RuntimeError("Ollama visual extraction unavailable") from exc
 
     text = str(((payload.get("message") or {}).get("content")) or "").strip()
-    if text == "NO_MEANINGFUL_VISUAL_EVIDENCE":
+    marker = "NO_MEANINGFUL_VISUAL_EVIDENCE"
+    if marker in text:
+        text = text.replace(marker, "").strip()
+    if len(text) > OLLAMA_VISUAL_MAX_CHARS:
         text = ""
+    else:
+        # Exact repeated lines are a common local-model failure mode; dedupe them
+        # before handing evidence to downstream analysis.
+        lines = []
+        seen_lines: set[str] = set()
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            key = re.sub(r"\\s+", " ", line.casefold())
+            if line and key not in seen_lines:
+                seen_lines.add(key)
+                lines.append(line)
+        text = "\n".join(lines).strip()
     return {
         "provider": "ollama",
         "model": model,
