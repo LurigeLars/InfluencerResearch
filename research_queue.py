@@ -11,8 +11,12 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 
-SCREEN_VERSION = "0.4.1"
+SCREEN_VERSION = "0.4.2"
 ANALYSIS_OWNER = "EKONOMI"
+MIN_TRANSCRIPT_WORDS = 8
+MIN_TRANSCRIPT_CHARS = 48
+MIN_FALLBACK_TEXT_WORDS = 14
+MIN_FALLBACK_TEXT_CHARS = 90
 FINAL_DECISIONS = {
     "IGNORE",
     "RESEARCH",
@@ -121,6 +125,50 @@ def keyword_tags(text: str) -> list[str]:
     return tags
 
 
+
+def assess_analysis_content(item: dict, transcript: str) -> dict:
+    """Fail closed when the extracted evidence is too thin for model analysis."""
+    transcript = str(transcript or "").strip()
+    caption = str(item.get("caption") or "").strip()
+    browser_text = str(item.get("browser_text") or "").strip()
+
+    transcript_words = len(transcript.split())
+    caption_words = len(caption.split())
+    browser_text_words = len(browser_text.split())
+    has_visual_evidence = bool(
+        item.get("screenshot_file")
+        or (
+            str(item.get("visual_evidence_status") or "").upper() == "DONE"
+            and int(item.get("visual_frame_count") or 0) > 0
+        )
+    )
+
+    if transcript_words >= MIN_TRANSCRIPT_WORDS or len(transcript) >= MIN_TRANSCRIPT_CHARS:
+        status = "READY"
+        reason = "TRANSCRIPT"
+    elif browser_text_words >= MIN_FALLBACK_TEXT_WORDS or len(browser_text) >= MIN_FALLBACK_TEXT_CHARS:
+        status = "READY"
+        reason = "VISIBLE_TEXT"
+    elif caption_words >= MIN_FALLBACK_TEXT_WORDS or len(caption) >= MIN_FALLBACK_TEXT_CHARS:
+        status = "READY"
+        reason = "METADATA_TEXT"
+    elif has_visual_evidence:
+        status = "READY"
+        reason = "VISUAL_EVIDENCE"
+    else:
+        status = "INSUFFICIENT_CONTENT"
+        reason = "NO_ANALYZABLE_TEXT_OR_VISUAL_EVIDENCE"
+
+    return {
+        "status": status,
+        "reason": reason,
+        "transcript_word_count": transcript_words,
+        "caption_word_count": caption_words,
+        "browser_text_word_count": browser_text_words,
+        "has_visual_evidence": has_visual_evidence,
+    }
+
+
 def build_packet(
     root: Path,
     shortcode: str,
@@ -162,6 +210,8 @@ def build_packet(
         "creator_verification": item.get("creator_verification"),
         "analysis_owner": ANALYSIS_OWNER,
         "analysis_status": "PENDING_ANALYSIS",
+        "analysis_content_status": item.get("analysis_content_status"),
+        "analysis_content_reason": item.get("analysis_content_reason"),
         "evidence_lineage_id": evidence_lineage_id,
         "duplicate_of": duplicate_of,
         "duplicate_basis": duplicate_basis,
@@ -281,10 +331,13 @@ def main() -> int:
         if str(x).strip()
     }
 
-    # Collect every valid transcribed item first so deterministic repost clusters
-    # can be resolved before anything is queued.
+    # Collect only items with enough extracted evidence for actual analysis.
+    # Thin/empty transcripts remain ingested evidence, but fail closed instead of
+    # appearing as analysis-ready queue items.
     records: list[dict] = []
+    insufficient_content_items: list[dict] = []
     skipped_missing_transcript = 0
+    manifest_changed = False
     for shortcode, item in manifest.get("items", {}).items():
         if item.get("download_status") != "DONE":
             continue
@@ -304,15 +357,56 @@ def main() -> int:
             continue
 
         transcript_path = normalize_manifest_path(root, item.get("transcript_txt"))
+        transcript_missing = False
         if transcript_path is None or not transcript_path.exists():
             if is_visual_story:
                 transcript_path = None
                 transcript = str(item.get("browser_text") or "").strip()
             else:
                 skipped_missing_transcript += 1
-                continue
+                transcript_missing = True
+                transcript_path = None
+                transcript = ""
         else:
             transcript = read_text(transcript_path)
+
+        readiness = assess_analysis_content(item, transcript)
+        if transcript_missing and readiness["status"] == "INSUFFICIENT_CONTENT":
+            readiness["reason"] = "TRANSCRIPT_FILE_MISSING"
+
+        desired_content_meta = {
+            "analysis_content_status": readiness["status"],
+            "analysis_content_reason": readiness["reason"],
+            "transcript_word_count": readiness["transcript_word_count"],
+            "caption_word_count": readiness["caption_word_count"],
+            "browser_text_word_count": readiness["browser_text_word_count"],
+            "has_visual_evidence": readiness["has_visual_evidence"],
+        }
+        for key, value in desired_content_meta.items():
+            if item.get(key) != value:
+                item[key] = value
+                manifest_changed = True
+
+        if readiness["status"] == "INSUFFICIENT_CONTENT":
+            existing_decision = decisions.get("items", {}).get(shortcode, {})
+            if existing_decision.get("decision") not in FINAL_DECISIONS:
+                if item.get("research_status") != "INSUFFICIENT_CONTENT":
+                    item["research_status"] = "INSUFFICIENT_CONTENT"
+                    manifest_changed = True
+                if item.get("analysis_owner") != ANALYSIS_OWNER:
+                    item["analysis_owner"] = ANALYSIS_OWNER
+                    manifest_changed = True
+            insufficient_content_items.append({
+                "queue_id": shortcode,
+                "creator": item.get("creator"),
+                "source_platform": item.get("source_platform"),
+                "source_id": item.get("source_id"),
+                "source_url": item.get("url"),
+                "published_at": item.get("published_at"),
+                **readiness,
+            })
+            continue
+
         fp = transcript_fingerprint(transcript)
         url_key = canonicalize_url(item.get("url"))
         records.append({
@@ -372,7 +466,6 @@ def main() -> int:
     items = []
     skipped_finalized = 0
     skipped_duplicates = 0
-    manifest_changed = False
 
     for rec in records:
         shortcode = rec["shortcode"]
@@ -477,6 +570,8 @@ def main() -> int:
         "skipped_finalized": skipped_finalized,
         "skipped_duplicates": skipped_duplicates,
         "skipped_missing_transcript": skipped_missing_transcript,
+        "insufficient_content_count": len(insufficient_content_items),
+        "insufficient_content_items": insufficient_content_items,
         "must_include_requested": must_include,
         "must_include_eligible": must_include_eligible,
         "must_include_queued": must_include_queued,
@@ -502,6 +597,7 @@ def main() -> int:
         "skipped_finalized": skipped_finalized,
         "skipped_duplicates": skipped_duplicates,
         "skipped_missing_transcript": skipped_missing_transcript,
+        "insufficient_content_count": len(insufficient_content_items),
         "must_include_requested": must_include,
         "must_include_eligible": must_include_eligible,
         "must_include_queued": must_include_queued,
