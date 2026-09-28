@@ -11,7 +11,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 
-SCREEN_VERSION = "0.4.2"
+SCREEN_VERSION = "0.4.3"
 ANALYSIS_OWNER = "EKONOMI"
 MIN_TRANSCRIPT_WORDS = 8
 MIN_TRANSCRIPT_CHARS = 48
@@ -354,6 +354,31 @@ def main() -> int:
     skipped_missing_transcript = 0
     manifest_changed = False
     for shortcode, item in manifest.get("items", {}).items():
+        if str(item.get("research_status") or "").upper() == "INVALID":
+            continue
+
+        # Older Story captures used a whole-screenshot SHA when Instagram stayed
+        # on /stories/<creator>/ without exposing a numeric Story id. Timer/progress
+        # UI made that identity change on every scan. Retire those legacy artifacts
+        # rather than keeping volatile duplicates in the analysis queue.
+        is_legacy_unstable_story = (
+            str(item.get("source_platform") or "").upper() == "INSTAGRAM"
+            and str(item.get("source_subtype") or "").upper() == "STORY"
+            and str(item.get("source_id") or "").startswith("story:frame-")
+            and not item.get("story_identity_basis")
+        )
+        if is_legacy_unstable_story:
+            try:
+                source_path = urlsplit(str(item.get("url") or "")).path
+            except Exception:
+                source_path = ""
+            if re.fullmatch(r"/stories/[A-Za-z0-9._-]{1,64}/?", source_path):
+                item["research_status"] = "INVALID"
+                item["invalid_reason"] = "LEGACY_UNSTABLE_ROOT_STORY_IDENTITY"
+                item["invalidated_at"] = utc_now()
+                manifest_changed = True
+                continue
+
         if item.get("download_status") != "DONE":
             continue
         is_visual_story = (
