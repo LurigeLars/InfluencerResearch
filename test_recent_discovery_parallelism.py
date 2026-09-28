@@ -79,19 +79,20 @@ class RecentDiscoveryParallelismTests(unittest.TestCase):
                 "timings": [],
             }
 
-        with tempfile.TemporaryDirectory() as tmp, (
-            patch.object(crc.tts, "start_server") as start_server,
-            patch.object(crc, "discover_instagram", side_effect=fake_instagram),
-            patch.object(crc, "discover_tiktok", side_effect=fake_tiktok),
-            patch.object(crc, "discover_youtube", side_effect=fake_youtube),
-        ):
-            result = crc._run_discovery_batch(
-                Path(tmp),
-                selected,
-                datetime(2026, 9, 28, tzinfo=timezone.utc),
-                datetime(2026, 9, 29, tzinfo=timezone.utc),
-                15,
-            )
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.object(crc.tts, "start_server") as start_server,
+                patch.object(crc, "discover_instagram", side_effect=fake_instagram),
+                patch.object(crc, "discover_tiktok", side_effect=fake_tiktok),
+                patch.object(crc, "discover_youtube", side_effect=fake_youtube),
+            ):
+                result = crc._run_discovery_batch(
+                    Path(tmp),
+                    selected,
+                    datetime(2026, 9, 28, tzinfo=timezone.utc),
+                    datetime(2026, 9, 29, tzinfo=timezone.utc),
+                    15,
+                )
 
         discoveries, errors, source_map, timings, meta = result
         self.assertEqual(errors, [])
@@ -129,25 +130,26 @@ class RecentDiscoveryParallelismTests(unittest.TestCase):
             )
         ]
 
-        with tempfile.TemporaryDirectory() as tmp, (
-            patch.object(crc.tts, "start_server", side_effect=RuntimeError("fixture down")),
-            patch.object(crc, "discover_instagram") as instagram,
-            patch.object(crc, "discover_youtube", return_value={
-                "creator_key": "alpha",
-                "platform": "YOUTUBE",
-                "items": [],
-                "missing_publish_time_ids": [],
-                "window_complete": True,
-                "timings": [],
-            }) as youtube,
-        ):
-            discoveries, errors, _, _, meta = crc._run_discovery_batch(
-                Path(tmp),
-                selected,
-                datetime(2026, 9, 28, tzinfo=timezone.utc),
-                datetime(2026, 9, 29, tzinfo=timezone.utc),
-                15,
-            )
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.object(crc.tts, "start_server", side_effect=RuntimeError("fixture down")),
+                patch.object(crc, "discover_instagram") as instagram,
+                patch.object(crc, "discover_youtube", return_value={
+                    "creator_key": "alpha",
+                    "platform": "YOUTUBE",
+                    "items": [],
+                    "missing_publish_time_ids": [],
+                    "window_complete": True,
+                    "timings": [],
+                }) as youtube,
+            ):
+                discoveries, errors, _, _, meta = crc._run_discovery_batch(
+                    Path(tmp),
+                    selected,
+                    datetime(2026, 9, 28, tzinfo=timezone.utc),
+                    datetime(2026, 9, 29, tzinfo=timezone.utc),
+                    15,
+                )
 
         instagram.assert_not_called()
         youtube.assert_called_once()
