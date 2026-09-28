@@ -1,5 +1,16 @@
 # InfluencerResearch
 
+## Current deployment and security posture
+
+The maintained runtime is a bounded research-ingestion service, not a generic browser or command-execution platform.
+
+- The MCP runtime runs under an explicit non-root UID; the internal browser service and public gateway also run non-root.
+- Camofox/browser access is internal-only and is not exposed as a general-purpose public browser surface.
+- Instagram session material, Gemini credentials, and internal service keys are stored on the Windows host with DPAPI and injected into container tmpfs only at runtime.
+- The public gateway uses Cloudflare Access plus an explicit eight-tool allowlist; no arbitrary command tool is exposed.
+- Long-running research is serialized to one allowlisted research job at a time.
+- Machine-specific paths, creator data, identities, Cloudflare values, browser profiles, and credentials must remain outside Git.
+
 ## Repository status
 
 This is an original research-ingestion project, **not a fork of yt-dlp, Camofox/Camoufox, Playwright, or their upstream projects**. Those components are external dependencies used behind a deliberately small MCP surface.
