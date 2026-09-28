@@ -252,6 +252,55 @@ def _youtube_probe_missing(entries: list[dict]) -> tuple[dict[str, str], dict]:
         "batch_returncodes": returncodes,
     }
 
+def _youtube_surface_coverage_complete(
+    entries: list[dict],
+    enumeration_diag: dict,
+    probed: dict[str, str],
+    cutoff: datetime,
+) -> bool:
+    """Prove cutoff coverage independently for Videos, Shorts and Streams."""
+    surfaces = enumeration_diag.get("surfaces")
+    if not isinstance(surfaces, dict) or not surfaces:
+        known_times: list[datetime] = []
+        for entry in entries:
+            raw = entry.get("published_at") or probed.get(str(entry.get("id") or ""))
+            if raw:
+                try:
+                    known_times.append(parse_iso_utc(str(raw)))
+                except (TypeError, ValueError, OverflowError):
+                    pass
+        return _coverage_complete(
+            discovered_count=len(entries),
+            requested_limit=int(enumeration_diag.get("requested_limit") or len(entries) or 1),
+            known_times=known_times,
+            cutoff=cutoff,
+        )
+
+    times_by_surface: dict[str, list[datetime]] = defaultdict(list)
+    for entry in entries:
+        surface = str(entry.get("surface") or "").lower()
+        raw = entry.get("published_at") or probed.get(str(entry.get("id") or ""))
+        if not surface or not raw:
+            continue
+        try:
+            times_by_surface[surface].append(parse_iso_utc(str(raw)))
+        except (TypeError, ValueError, OverflowError):
+            continue
+
+    for surface, surface_diag in surfaces.items():
+        requested = int(surface_diag.get("requested_limit") or 0)
+        if requested <= 0:
+            continue
+        if int(surface_diag.get("returncode") or 0) != 0:
+            return False
+        found = int(surface_diag.get("entries_found") or 0)
+        if found < requested:
+            continue
+        if not any(value < cutoff for value in times_by_surface.get(str(surface).lower(), [])):
+            return False
+    return True
+
+
 def discover_youtube(profile: dict, source: dict, cutoff: datetime, end: datetime, discovery_limit: int) -> dict:
     target = max(1, int(discovery_limit))
     entries: list[dict] = []
@@ -292,11 +341,11 @@ def discover_youtube(profile: dict, source: dict, cutoff: datetime, end: datetim
                 except (TypeError, ValueError, OverflowError):
                     continue
 
-        window_complete = _coverage_complete(
-            discovered_count=len(entries),
-            requested_limit=target,
-            known_times=known_times,
-            cutoff=cutoff,
+        window_complete = _youtube_surface_coverage_complete(
+            entries,
+            diag,
+            probed,
+            cutoff,
         )
         attempts.append({
             "requested_limit": target,

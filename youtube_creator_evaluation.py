@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -222,16 +223,36 @@ def exact_video_entries(channel_url: str, video_ids: list[str], *, required_attr
     }
 
 
-def enumerate_channel(channel_url: str, *, limit: int) -> tuple[list[dict], dict]:
+def _enumerate_channel_surface(
+    channel_url: str,
+    *,
+    surface: str,
+    limit: int,
+) -> tuple[list[dict], dict]:
+    """Enumerate one YouTube channel surface with a strict local item cap."""
+    if surface not in {"videos", "shorts", "streams"}:
+        raise ValueError("BAD_YOUTUBE_SURFACE")
     channel_url = canonical_youtube_channel_url(channel_url)
+    requested = max(0, int(limit))
+    if requested <= 0:
+        return [], {
+            "surface": surface,
+            "ok": True,
+            "returncode": 0,
+            "requested_limit": 0,
+            "entries_found": 0,
+            "diagnostic_tail": "",
+        }
+
+    surface_url = f"{channel_url}/{surface}"
     cmd = [
         sys.executable, "-m", "yt_dlp",
         "--ignore-config",
         "--flat-playlist",
-        "--playlist-end", str(max(limit, 1)),
+        "--playlist-end", str(requested),
         "--dump-json",
         "--",
-        channel_url,
+        surface_url,
     ]
     try:
         # URL is strict-canonical YouTube and '--' terminates yt-dlp option parsing.
@@ -239,7 +260,14 @@ def enumerate_channel(channel_url: str, *, limit: int) -> tuple[list[dict], dict
         # lgtm[py/command-line-injection]
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=120, shell=False)
     except subprocess.TimeoutExpired as exc:
-        return [], {"ok": False, "returncode": 124, "diagnostic_tail": str(exc)[-2000:]}
+        return [], {
+            "surface": surface,
+            "ok": False,
+            "returncode": 124,
+            "requested_limit": requested,
+            "entries_found": 0,
+            "diagnostic_tail": str(exc)[-2000:],
+        }
 
     entries: list[dict] = []
     seen: set[str] = set()
@@ -260,16 +288,119 @@ def enumerate_channel(channel_url: str, *, limit: int) -> tuple[list[dict], dict
             "url": f"https://www.youtube.com/watch?v={vid}",
             "title": str(obj.get("title") or "").strip(),
             "published_at": published_iso(obj),
+            "surface": surface.upper(),
         })
+        if len(entries) >= requested:
+            break
 
     diag = (p.stderr or "").strip()
     return entries, {
-        "ok": p.returncode == 0 and bool(entries),
-        "returncode": p.returncode,
+        "surface": surface,
+        "ok": p.returncode == 0,
+        "returncode": int(p.returncode),
+        "requested_limit": requested,
         "entries_found": len(entries),
         "diagnostic_tail": diag[-2500:],
     }
 
+
+def enumerate_channel(channel_url: str, *, limit: int) -> tuple[list[dict], dict]:
+    """Enumerate Videos/Shorts/Streams under one global discovery budget.
+
+    yt-dlp applies --playlist-end independently to nested channel tabs when pointed
+    at a channel root. That made limit=15 return up to 45 entries. Split the global
+    budget across explicit surfaces instead and merge them round-robin.
+    """
+    channel_url = canonical_youtube_channel_url(channel_url)
+    global_limit = max(1, int(limit))
+    surfaces = ("videos", "shorts", "streams")
+    base, remainder = divmod(global_limit, len(surfaces))
+    surface_limits = {
+        surface: base + (1 if index < remainder else 0)
+        for index, surface in enumerate(surfaces)
+    }
+
+    active = [
+        (surface, surface_limits[surface])
+        for surface in surfaces
+        if surface_limits[surface] > 0
+    ]
+    if len(active) == 1:
+        surface_results = [
+            _enumerate_channel_surface(
+                channel_url,
+                surface=active[0][0],
+                limit=active[0][1],
+            )
+        ]
+    else:
+        with ThreadPoolExecutor(
+            max_workers=len(active),
+            thread_name_prefix="youtube-surface",
+        ) as executor:
+            futures = [
+                executor.submit(
+                    _enumerate_channel_surface,
+                    channel_url,
+                    surface=surface,
+                    limit=surface_limit,
+                )
+                for surface, surface_limit in active
+            ]
+            surface_results = [future.result() for future in futures]
+
+    entries_by_surface = {
+        diag["surface"]: entries
+        for entries, diag in surface_results
+    }
+    diagnostics = {
+        diag["surface"]: diag
+        for _, diag in surface_results
+    }
+
+    merged: list[dict] = []
+    seen: set[str] = set()
+    max_depth = max((len(entries) for entries in entries_by_surface.values()), default=0)
+    for index in range(max_depth):
+        for surface in surfaces:
+            entries = entries_by_surface.get(surface, [])
+            if index >= len(entries):
+                continue
+            entry = entries[index]
+            vid = str(entry.get("id") or "")
+            if not vid or vid in seen:
+                continue
+            seen.add(vid)
+            merged.append(entry)
+            if len(merged) >= global_limit:
+                break
+        if len(merged) >= global_limit:
+            break
+
+    diag = {
+        "ok": bool(merged) and all(
+            int(item.get("returncode") or 0) == 0
+            for item in diagnostics.values()
+        ),
+        "returncode": next(
+            (
+                int(item.get("returncode") or 0)
+                for item in diagnostics.values()
+                if int(item.get("returncode") or 0) != 0
+            ),
+            0,
+        ),
+        "requested_limit": global_limit,
+        "entries_found": len(merged),
+        "surface_limits": surface_limits,
+        "surfaces": diagnostics,
+        "diagnostic_tail": "\n--- surface ---\n".join(
+            str(item.get("diagnostic_tail") or "")
+            for item in diagnostics.values()
+            if str(item.get("diagnostic_tail") or "").strip()
+        )[-2500:],
+    }
+    return merged, diag
 
 def _node_runtime_arg() -> tuple[list[str], dict]:
     node = shutil.which("node") or shutil.which("node.exe")
