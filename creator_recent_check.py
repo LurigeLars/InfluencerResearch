@@ -951,6 +951,8 @@ def _ingest_instagram_stories(
     if max_new <= 0:
         return {"promoted": [], "capture": None, "queue": None, "warnings": []}
 
+    ingest_clock = time.perf_counter()
+    run_clock = time.perf_counter()
     run = ephemeral.run_one(
         root=root,
         mode="stories",
@@ -961,10 +963,19 @@ def _ingest_instagram_stories(
         gemini_circuit=gemini_circuit,
         ollama_budget_state=ollama_budget_state,
     )
+    run_one_ms = (time.perf_counter() - run_clock) * 1000
+
+    promote_clock = time.perf_counter()
     bridge = _promote_story_items(root, profile, handle, cutoff, max_new)
+    promote_ms = (time.perf_counter() - promote_clock) * 1000
     promoted = list(bridge.get("promoted") or [])
     available = list(bridge.get("available") or [])
-    queue = tts.run_research_queue(root) if bridge.get("manifest_changed") else None
+    queue_ms = 0.0
+    queue = None
+    if bridge.get("manifest_changed"):
+        queue_clock = time.perf_counter()
+        queue = tts.run_research_queue(root)
+        queue_ms = (time.perf_counter() - queue_clock) * 1000
 
     warnings: list[str] = []
     capture = run.get("capture") or {}
@@ -997,6 +1008,13 @@ def _ingest_instagram_stories(
         "conflicts": list(bridge.get("conflicts") or []),
         "capture": capture,
         "visual_enrichment": run.get("visual_enrichment") or {},
+        "runtime_timings": {
+            "run_one_ms": round(run_one_ms, 1),
+            "promote_ms": round(promote_ms, 1),
+            "queue_ms": round(queue_ms, 1),
+            "total_ms": round((time.perf_counter() - ingest_clock) * 1000, 1),
+            "run_one": dict(run.get("timings") or {}),
+        },
         "queue": queue,
         "warnings": warnings,
         "state": run.get("state"),
@@ -1578,6 +1596,17 @@ def _main_impl() -> int:
         )[:20]
 
         visual_by_creator: list[dict] = []
+        story_runtime_totals = {
+            "run_one_ms": 0.0,
+            "promote_ms": 0.0,
+            "queue_ms": 0.0,
+            "total_ms": 0.0,
+            "browser_capture_ms": 0.0,
+            "ytdlp_ms": 0.0,
+            "context_close_ms": 0.0,
+            "visual_enrichment_ms": 0.0,
+            "transcription_ms": 0.0,
+        }
         visual_totals = {
             "ocr_attempted": 0,
             "ocr_completed": 0,
@@ -1596,6 +1625,8 @@ def _main_impl() -> int:
         for story_result in story_results:
             visual = story_result.get("visual_enrichment") or {}
             vt = visual.get("timings") or {}
+            runtime = story_result.get("runtime_timings") or {}
+            run_one_runtime = runtime.get("run_one") or {}
             row = {
                 "creator_key": story_result.get("creator_key"),
                 "ocr_attempted": int(visual.get("ocr_attempted") or 0),
@@ -1610,6 +1641,17 @@ def _main_impl() -> int:
                 "deferred": int(visual.get("deferred") or 0),
                 "provider_event_count": len(visual.get("provider_events") or []),
                 "error_count": len(visual.get("errors") or []),
+                "runtime_timings": {
+                    "run_one_ms": round(float(runtime.get("run_one_ms") or 0.0), 1),
+                    "promote_ms": round(float(runtime.get("promote_ms") or 0.0), 1),
+                    "queue_ms": round(float(runtime.get("queue_ms") or 0.0), 1),
+                    "total_ms": round(float(runtime.get("total_ms") or 0.0), 1),
+                    "browser_capture_ms": round(float(run_one_runtime.get("browser_capture_ms") or 0.0), 1),
+                    "ytdlp_ms": round(float(run_one_runtime.get("ytdlp_ms") or 0.0), 1),
+                    "context_close_ms": round(float(run_one_runtime.get("context_close_ms") or 0.0), 1),
+                    "visual_enrichment_ms": round(float(run_one_runtime.get("visual_enrichment_ms") or 0.0), 1),
+                    "transcription_ms": round(float(run_one_runtime.get("transcription_ms") or 0.0), 1),
+                },
                 "timings": {
                     "ocr_total_ms": round(float(vt.get("ocr_total_ms") or 0.0), 1),
                     "ollama_total_ms": round(float(vt.get("ollama_total_ms") or 0.0), 1),
@@ -1617,6 +1659,12 @@ def _main_impl() -> int:
                 },
             }
             visual_by_creator.append(row)
+            for key, value in row["runtime_timings"].items():
+                if key in story_runtime_totals:
+                    story_runtime_totals[key] = round(
+                        float(story_runtime_totals[key]) + float(value),
+                        1,
+                    )
             for key in (
                 "ocr_attempted", "ocr_completed", "ollama_attempted", "ollama_completed",
                 "ollama_cached_insufficient", "gemini_attempted", "completed", "deferred",
@@ -1632,6 +1680,7 @@ def _main_impl() -> int:
             "by_creator": visual_by_creator,
             "totals": visual_totals,
             "ollama_budget": dict(story_ollama_budget),
+            "runtime_totals": story_runtime_totals,
         }
 
         status = {
