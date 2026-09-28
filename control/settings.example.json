@@ -5,6 +5,7 @@
     "enabled": true,
     "provider": "auto",
     "gemini_model": "gemini-3.5-transcribe",
+    "gemini_visual_model": "gemini-3.8-flash",
     "model_size": "small",
     "device": "cpu",
     "compute_type": "int8",
