@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from ephemeral_ingest import normalize_creator_handle
+from ephemeral_ingest import extract_story_identity, invalidate_legacy_unstable_story_evidence, normalize_creator_handle
 from instagram_ingest import safe_creator
 
 
@@ -26,6 +26,63 @@ class InstagramPathSegmentTests(unittest.TestCase):
                     safe_creator(value)
                 with self.assertRaises(ValueError):
                     normalize_creator_handle(value)
+
+
+    def test_root_story_uses_stable_media_path_not_screenshot_hash(self) -> None:
+        first = extract_story_identity(
+            "https://www.instagram.com/stories/example/",
+            b"first volatile screenshot",
+            "https://scontent.example.net/v/t51.2885-15/abc123.jpg?token=one",
+        )
+        second = extract_story_identity(
+            "https://www.instagram.com/stories/example/",
+            b"second volatile screenshot",
+            "https://scontent.example.net/v/t51.2885-15/abc123.jpg?token=two",
+        )
+        self.assertEqual(first, second)
+        self.assertTrue(str(first[0]).startswith("media-"))
+        self.assertIsNone(first[1])
+        self.assertEqual(first[2], "VISIBLE_MEDIA_URL_PATH")
+
+    def test_story_url_id_remains_primary_identity(self) -> None:
+        identity = extract_story_identity(
+            "https://www.instagram.com/stories/example/3995836448797052519/",
+            b"screenshot",
+            "https://scontent.example.net/media.jpg",
+        )
+        self.assertEqual(
+            identity,
+            ("3995836448797052519", "3995836448797052519", "STORY_URL_ID"),
+        )
+
+    def test_unresolved_story_root_fails_closed(self) -> None:
+        identity = extract_story_identity(
+            "https://www.instagram.com/stories/example/",
+            b"volatile screenshot",
+            None,
+        )
+        self.assertEqual(identity, (None, None, "UNRESOLVED_STORY_ROOT"))
+
+    def test_legacy_root_frame_is_invalidated(self) -> None:
+        manifest = {
+            "items": {
+                "STORY:example:frame-old": {
+                    "source_type": "STORY",
+                    "creator": "example",
+                    "evidence_id": "frame-old",
+                    "story_id": None,
+                    "source_url": "https://www.instagram.com/stories/example/",
+                    "research_status": "PENDING",
+                }
+            }
+        }
+        self.assertEqual(invalidate_legacy_unstable_story_evidence(manifest), 1)
+        item = manifest["items"]["STORY:example:frame-old"]
+        self.assertEqual(item["research_status"], "INVALID")
+        self.assertEqual(
+            item["invalid_reason"],
+            "LEGACY_UNSTABLE_ROOT_STORY_IDENTITY",
+        )
 
 
 if __name__ == "__main__":
