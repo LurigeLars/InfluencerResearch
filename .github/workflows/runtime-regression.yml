@@ -58,6 +58,8 @@ jobs:
           test_mcp_contract
           test_research_queue_story
           test_research_queue_content_sufficiency
+          test_story_local_ocr
+          test_story_ollama_backend
           test_tiktok_content_fallback
           test_transcription_backend
           test_creator_monitor

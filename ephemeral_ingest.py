@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -22,6 +23,7 @@ from transcription_backend import (
     DEFAULT_OLLAMA_VISUAL_MODEL,
     OLLAMA_VISUAL_TIMEOUT_SECONDS,
     OLLAMA_VISUAL_MAX_CHARS,
+    OLLAMA_VISUAL_CONTRACT,
     extract_image_evidence_gemini,
     extract_image_evidence_ollama,
     gemini_error_metadata,
@@ -829,12 +831,12 @@ def _story_ocr_text_sufficient(text: str) -> bool:
     if not _story_evidence_text_sufficient(text):
         return False
 
-    tokens = re.findall(r"\\S+", text)
+    tokens = re.findall(r"\S+", text)
     if not tokens:
         return False
     meaningful = [
         token for token in tokens
-        if re.search(r"[A-Za-zÅÄÖåäö]{2,}", token) or re.search(r"\\d", token)
+        if re.search(r"[A-Za-zÅÄÖåäö]{2,}", token) or re.search(r"\d", token)
     ]
     noise = [
         token for token in tokens
@@ -867,7 +869,8 @@ def _story_ollama_needs_upgrade(item: dict) -> bool:
         == "OLLAMA_STORY_SCREENSHOT_EVIDENCE"
         and bool(text)
         and (
-            "NO_MEANINGFUL_VISUAL_EVIDENCE" in text
+            str(item.get("visual_description_contract") or "") != OLLAMA_VISUAL_CONTRACT
+            or "NO_MEANINGFUL_VISUAL_EVIDENCE" in text
             or len(text) > OLLAMA_VISUAL_MAX_CHARS
         )
     )
@@ -895,7 +898,7 @@ def extract_story_text_local_ocr(screenshot_path: Path) -> dict:
     if proc.returncode != 0:
         stderr = str(proc.stderr or "").strip()[-500:]
         raise RuntimeError(f"Tesseract OCR failed rc={proc.returncode}: {stderr}")
-    text = re.sub(r"[ \\t]+", " ", str(proc.stdout or "")).strip()
+    text = re.sub(r"[ \t]+", " ", str(proc.stdout or "")).strip()
     return {
         "text": text,
         "source": "LOCAL_OCR",
@@ -952,6 +955,10 @@ def enrich_story_visual_evidence(
     ollama_completed = 0
     ollama_insufficient = 0
     ollama_errors: list[str] = []
+    provider_events: list[str] = []
+    ocr_duration_ms = 0.0
+    ollama_duration_ms = 0.0
+    gemini_duration_ms = 0.0
     skipped = 0
     deferred = 0
     provider_deferred = 0
@@ -993,6 +1000,7 @@ def enrich_story_visual_evidence(
         # down so provider throttling does not block text-heavy Story evidence.
         ocr_text = ""
         ocr_attempted += 1
+        ocr_clock = time.perf_counter()
         try:
             ocr_result = extract_story_text_local_ocr(screenshot_path)
             ocr_text = str(ocr_result.get("text") or "").strip()
@@ -1002,6 +1010,7 @@ def enrich_story_visual_evidence(
                 item["visual_description_source"] = ocr_result.get("source")
                 item["visual_description_provider"] = ocr_result.get("provider")
                 item["visual_description_model"] = ocr_result.get("model")
+                item.pop("visual_description_contract", None)
                 item["visual_description_generated_at"] = utc_now()
                 item.pop("visual_description_error", None)
                 item.pop("visual_description_deferred_reason", None)
@@ -1012,13 +1021,16 @@ def enrich_story_visual_evidence(
                 continue
             ocr_insufficient += 1
         except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
-            # OCR failure is non-fatal; Gemini remains the richer fallback.
+            # OCR failure is non-fatal; richer local/remote fallbacks remain available.
             ocr_errors.append(f"{key}: {type(exc).__name__}: {exc}")
+        finally:
+            ocr_duration_ms += (time.perf_counter() - ocr_clock) * 1000
 
         # Ollama is the local multimodal second pass. It can correct noisy OCR and
         # interpret charts/screenshots without consuming Gemini quota.
         if ollama_enabled and ollama_attempted < max_ollama_attempts:
             ollama_attempted += 1
+            ollama_clock = time.perf_counter()
             try:
                 ollama_result = extract_image_evidence_ollama(
                     screenshot_path,
@@ -1034,6 +1046,7 @@ def enrich_story_visual_evidence(
                     item["visual_description_source"] = ollama_result.get("source")
                     item["visual_description_provider"] = ollama_result.get("provider")
                     item["visual_description_model"] = ollama_result.get("model")
+                    item["visual_description_contract"] = ollama_result.get("contract")
                     item["visual_description_generated_at"] = utc_now()
                     item.pop("visual_description_error", None)
                     item.pop("visual_description_deferred_reason", None)
@@ -1046,6 +1059,8 @@ def enrich_story_visual_evidence(
             except Exception as exc:
                 # Local model failure must never block the Gemini fallback.
                 ollama_errors.append(f"{key}: {type(exc).__name__}: {exc}")
+            finally:
+                ollama_duration_ms += (time.perf_counter() - ollama_clock) * 1000
 
         existing_retry_after = _parse_retry_after(item.get("visual_description_retry_after"))
         if (
@@ -1078,6 +1093,7 @@ def enrich_story_visual_evidence(
             continue
 
         attempted += 1
+        gemini_clock = time.perf_counter()
         try:
             result = extract_image_evidence_gemini(
                 screenshot_path,
@@ -1089,6 +1105,7 @@ def enrich_story_visual_evidence(
             item["visual_description_source"] = result.get("source")
             item["visual_description_provider"] = result.get("provider")
             item["visual_description_model"] = result.get("model")
+            item.pop("visual_description_contract", None)
             item["visual_description_generated_at"] = utc_now()
             item.pop("visual_description_error", None)
             item.pop("visual_description_deferred_reason", None)
@@ -1166,7 +1183,12 @@ def enrich_story_visual_evidence(
                 )
 
             changed = True
-            errors.append(f"{key}: {safe_error}")
+            if transient:
+                provider_events.append(f"{key}: {safe_error}")
+            else:
+                errors.append(f"{key}: {safe_error}")
+        finally:
+            gemini_duration_ms += (time.perf_counter() - gemini_clock) * 1000
 
     if provider_deferred > health_deferred_recorded:
         update_gemini_provider_health(
@@ -1187,6 +1209,12 @@ def enrich_story_visual_evidence(
         "ollama_errors": ollama_errors,
         "ollama_model": ollama_model,
         "ollama_max_attempts": max_ollama_attempts,
+        "provider_events": provider_events,
+        "timings": {
+            "ocr_total_ms": round(ocr_duration_ms, 1),
+            "ollama_total_ms": round(ollama_duration_ms, 1),
+            "gemini_total_ms": round(gemini_duration_ms, 1),
+        },
         "skipped": skipped,
         "deferred": deferred,
         "provider_deferred": provider_deferred,

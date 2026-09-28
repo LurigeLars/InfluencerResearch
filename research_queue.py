@@ -11,7 +11,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 
-SCREEN_VERSION = "0.4.5"
+SCREEN_VERSION = "0.4.6"
 ANALYSIS_OWNER = "EKONOMI"
 MIN_TRANSCRIPT_WORDS = 8
 MIN_TRANSCRIPT_CHARS = 48
@@ -132,7 +132,10 @@ def assess_analysis_content(item: dict, transcript: str) -> dict:
     caption = str(item.get("caption") or "").strip()
     browser_text = str(item.get("browser_text") or "").strip()
     visible_text = str(item.get("visible_text") or "").strip()
-    visual_description = str(item.get("visual_description") or "").strip()
+    visual_status = str(item.get("visual_description_status") or "").upper()
+    raw_visual_description = str(item.get("visual_description") or "").strip()
+    # Never admit stale visual text while the current extraction is deferred/error.
+    visual_description = raw_visual_description if visual_status == "DONE" else ""
 
     transcript_words = len(transcript.split())
     caption_words = len(caption.split())
@@ -163,7 +166,6 @@ def assess_analysis_content(item: dict, transcript: str) -> dict:
         status = "READY"
         reason = "METADATA_TEXT"
     else:
-        visual_status = str(item.get("visual_description_status") or "").upper()
         if visual_status == "DEFERRED":
             status = "DEFERRED_EXTRACTION"
             reason = str(
@@ -209,7 +211,9 @@ def build_packet(
     browser_text = str(item.get("browser_text") or "").strip()
     caption = str(item.get("caption") or "").strip()
     visible_text = str(item.get("visible_text") or "").strip()
-    visual_description = str(item.get("visual_description") or "").strip()
+    visual_status = str(item.get("visual_description_status") or "").upper()
+    raw_visual_description = str(item.get("visual_description") or "").strip()
+    visual_description = raw_visual_description if visual_status == "DONE" else ""
     evidence_parts = [
         x
         for x in (transcript, visual_description, visible_text, browser_text, caption)
