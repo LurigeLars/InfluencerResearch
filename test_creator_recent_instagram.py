@@ -135,6 +135,12 @@ class RecentInstagramTests(unittest.TestCase):
                         "observed_at": "2026-09-27T10:00:00+00:00",
                         "screenshot_file": str(shot.relative_to(root)),
                         "browser_text": "A market observation",
+                        "visual_description": "Visible market text",
+                        "visual_description_status": "DONE",
+                        "visual_description_source": "OLLAMA_STORY_SCREENSHOT_EVIDENCE",
+                        "visual_description_provider": "ollama",
+                        "visual_description_model": "gemma3-12b-16k",
+                        "visual_description_contract": "VISIBLE_TEXT_V2",
                     }
                 },
             }
@@ -170,6 +176,7 @@ class RecentInstagramTests(unittest.TestCase):
             self.assertEqual(item["source_id"], "story:123")
             self.assertEqual(item["published_at_basis"], "ACTIVE_STORY_OBSERVED_AT")
             self.assertEqual(item["visual_evidence_status"], "DONE")
+            self.assertEqual(item["visual_description_contract"], "VISIBLE_TEXT_V2")
 
 
     def test_existing_story_from_superseded_creator_is_reused_and_reattributed(self) -> None:
