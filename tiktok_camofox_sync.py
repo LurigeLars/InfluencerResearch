@@ -25,9 +25,13 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import camofox_container as camofox_container_config
+from transcription_backend import extract_visible_text_gemini, transcribe_video
 
 
-APP_VERSION = "0.8.8"
+APP_VERSION = "0.8.9"
+CONTENT_EXTRACTION_VERSION = 1
+MIN_ANALYSIS_TRANSCRIPT_WORDS = 8
+MIN_ANALYSIS_TRANSCRIPT_CHARS = 48
 CAMOFOX_FALLBACK_EXPECTED_NODE_VERSION = "v22.23.2"
 CAMOFOX_FALLBACK_EXPECTED_CAMOFOX_VERSION = "1.17.0"
 CAMOFOX_FALLBACK_EXPECTED_CAMOUFOX_JS_VERSION = "0.11.5"
@@ -1215,6 +1219,14 @@ def download_one(url: str, video_dir: Path) -> dict:
         }
 
 
+def _text_is_analysis_ready(value: str) -> bool:
+    text = str(value or "").strip()
+    return (
+        len(text.split()) >= MIN_ANALYSIS_TRANSCRIPT_WORDS
+        or len(text) >= MIN_ANALYSIS_TRANSCRIPT_CHARS
+    )
+
+
 def transcribe(
     root: Path,
     creator_key: str,
@@ -1227,47 +1239,106 @@ def transcribe(
     txt_path = transcript_dir / f"{media_path.stem}.txt"
     json_path = transcript_dir / f"{media_path.stem}.json"
 
-    if txt_path.exists() and json_path.exists():
-        return {
-            "ok": True,
-            "source": "existing_transcript",
-            "txt": txt_path,
-            "json": json_path,
-            "transcribed_at": datetime.fromtimestamp(
-                txt_path.stat().st_mtime, timezone.utc
-            ).isoformat(),
-        }
+    # Keep a useful existing transcript, but retry historical empty/thin transcripts
+    # through the shared Gemini -> Faster-Whisper backend.
+    if txt_path.exists() && json_path.exists():
+        existing_text = txt_path.read_text(encoding="utf-8", errors="replace").strip()
+        if _text_is_analysis_ready(existing_text):
+            return {
+                "ok": True,
+                "source": "existing_transcript",
+                "text": existing_text,
+                "txt": txt_path,
+                "json": json_path,
+                "transcribed_at": datetime.fromtimestamp(
+                    txt_path.stat().st_mtime, timezone.utc
+                ).isoformat(),
+            }
 
     valid, validation = validate_media(media_path)
     if not valid:
         return {"ok": False, "error": f"invalid_media:{validation}"}
 
-    if model_holder.get("model") is None:
-        os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
-        from faster_whisper import WhisperModel
-        model_holder["model"] = WhisperModel("small", device="cpu", compute_type="int8")
-
-    model = model_holder["model"]
-    segments, info = model.transcribe(
-        str(media_path),
-        beam_size=5,
-        vad_filter=True,
-    )
-
-    rows = []
-    text_parts = []
-    for seg in segments:
-        text = (seg.text or "").strip()
-        if text:
-            text_parts.append(text)
-        rows.append({
-            "start": round(float(seg.start), 3),
-            "end": round(float(seg.end), 3),
-            "text": text,
-        })
-
+    _ = model_holder  # retained for backward-compatible call sites
+    settings = load_json(root / "control" / "settings.json", {})
+    tcfg = settings.get("transcription", {}) if isinstance(settings, dict) else {}
+    result = transcribe_video(media_path, tcfg)
+    full_text = str(result.get("text") or "").strip()
     when = utc_now()
-    txt_path.write_text(" ".join(text_parts).strip() + "\n", encoding="utf-8")
+    txt_path.write_text(full_text + ("\n" if full_text else ""), encoding="utf-8")
+
+    metadata = {
+        "schema_version": 1,
+        "app_version": APP_VERSION,
+        "source_platform": "TIKTOK",
+        "creator": creator_key,
+        "video_id": media_path.stem,
+        "generated_at": when,
+        "provider": result.get("provider"),
+        "model": result.get("model"),
+        "language": result.get("language"),
+        "language_probability": result.get("language_probability"),
+        "duration": result.get("duration"),
+        "segments": result.get("segments", []),
+    }
+    if result.get("fallback_from"):
+        metadata["fallback_from"] = result.get("fallback_from")
+        metadata["fallback_error"] = result.get("fallback_error")
+    atomic_json(json_path, metadata)
+    return {
+        "ok": True,
+        "source": str(result.get("provider") or "unknown"),
+        "text": full_text,
+        "provider": result.get("provider"),
+        "model": result.get("model"),
+        "txt": txt_path,
+        "json": json_path,
+        "transcribed_at": when,
+    }
+
+
+def extract_visible_text(
+    root: Path,
+    creator_key: str,
+    media_path: Path,
+) -> dict:
+    visual_dir = root / "output" / creator_key / "tiktok" / "visual_text"
+    visual_dir.mkdir(parents=True, exist_ok=True)
+    txt_path = visual_dir / f"{media_path.stem}.txt"
+    json_path = visual_dir / f"{media_path.stem}.json"
+
+    if txt_path.exists() and json_path.exists():
+        existing_text = txt_path.read_text(encoding="utf-8", errors="replace").strip()
+        try:
+            existing_meta = json.loads(json_path.read_text(encoding="utf-8"))
+        except Exception:
+            existing_meta = {}
+        return {
+            "ok": True,
+            "source": "existing_visual_text",
+            "text": existing_text,
+            "provider": existing_meta.get("provider"),
+            "model": existing_meta.get("model"),
+            "processing": existing_meta.get("processing"),
+            "txt": txt_path,
+            "json": json_path,
+            "generated_at": existing_meta.get("generated_at"),
+        }
+
+    settings = load_json(root / "control" / "settings.json", {})
+    tcfg = settings.get("transcription", {}) if isinstance(settings, dict) else {}
+    visual_model = str(tcfg.get("gemini_visual_model") or "gemini-3.8-flash").strip()
+    if not visual_model:
+        raise ValueError("gemini_visual_model must not be empty")
+
+    result = extract_visible_text_gemini(
+        media_path,
+        model=visual_model,
+        processing="static",
+    )
+    full_text = str(result.get("text") or "").strip()
+    when = utc_now()
+    txt_path.write_text(full_text + ("\n" if full_text else ""), encoding="utf-8")
     atomic_json(json_path, {
         "schema_version": 1,
         "app_version": APP_VERSION,
@@ -1275,17 +1346,22 @@ def transcribe(
         "creator": creator_key,
         "video_id": media_path.stem,
         "generated_at": when,
-        "language": getattr(info, "language", None),
-        "language_probability": getattr(info, "language_probability", None),
-        "duration": getattr(info, "duration", None),
-        "segments": rows,
+        "provider": result.get("provider"),
+        "model": result.get("model"),
+        "source": result.get("source"),
+        "processing": result.get("processing"),
+        "visible_text": full_text,
     })
     return {
         "ok": True,
-        "source": "whisper",
+        "source": result.get("source"),
+        "text": full_text,
+        "provider": result.get("provider"),
+        "model": result.get("model"),
+        "processing": result.get("processing"),
         "txt": txt_path,
         "json": json_path,
-        "transcribed_at": when,
+        "generated_at": when,
     }
 
 
