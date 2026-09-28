@@ -930,6 +930,7 @@ def _ingest_instagram_stories(
         ),
         "conflicts": list(bridge.get("conflicts") or []),
         "capture": capture,
+        "visual_enrichment": run.get("visual_enrichment") or {},
         "queue": queue,
         "warnings": warnings,
         "state": run.get("state"),
