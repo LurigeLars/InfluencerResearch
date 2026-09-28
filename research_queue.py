@@ -263,6 +263,7 @@ def build_packet(
         "visual_description_source": item.get("visual_description_source"),
         "visual_description_provider": item.get("visual_description_provider"),
         "visual_description_model": item.get("visual_description_model"),
+        "visual_description_contract": item.get("visual_description_contract"),
         "visual_text_status": item.get("visual_text_status"),
         "visual_text_source": item.get("visual_text_source"),
         "visual_text_provider": item.get("visual_text_provider"),
