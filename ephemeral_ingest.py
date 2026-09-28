@@ -1481,6 +1481,7 @@ def run_one(
                 str(item.get("visual_description_status") or "").upper() == "DONE"
                 and str(item.get("visual_description") or "").strip()
                 and not _story_local_ocr_needs_upgrade(item)
+                and not _story_ollama_needs_upgrade(item)
             ):
                 continue
             if key not in story_visual_keys:
