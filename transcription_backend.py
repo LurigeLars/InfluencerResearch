@@ -319,9 +319,9 @@ def extract_image_evidence_ollama(
             line = raw_line.strip()
             if not line:
                 continue
-            line = re.sub(r"^(?:[-*•]+|\\d+[.)])\\s*", "", line)
+            line = re.sub(r"^(?:[-*•]+|\d+[.)])\s*", "", line)
             line = re.sub(
-                r"^\\*{0,2}(?:visible text|textual evidence|headline|platform name)\\*{0,2}\\s*:\\s*",
+                r"^\*{0,2}(?:visible text|textual evidence|headline|platform name)\*{0,2}\s*:\s*",
                 "",
                 line,
                 flags=re.IGNORECASE,
@@ -341,12 +341,12 @@ def extract_image_evidence_ollama(
             ):
                 continue
             line = re.sub(
-                r"\\s*\\((?:swedish|english)\\s+for\\s+[\"“].*?[\"”]\\)\\s*$",
+                r"\s*\((?:swedish|english)\s+for\s+[\"“].*?[\"”]\)\s*$",
                 "",
                 line,
                 flags=re.IGNORECASE,
             ).strip()
-            key = re.sub(r"\\s+", " ", line.casefold())
+            key = re.sub(r"\s+", " ", line.casefold())
             if line and key not in seen_lines:
                 seen_lines.add(key)
                 lines.append(line)
