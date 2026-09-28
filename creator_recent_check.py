@@ -24,7 +24,10 @@ SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
 YOUTUBE_METADATA_PROBE_WORKERS = 4
-# Live testing on the 2-vCPU/2-GB CamoFox container showed that 3 concurrent\n# browser discoveries can restart the browser and invalidate active tabs. Keep\n# this at 2 unless the runtime capacity or admission model changes.\nDISCOVERY_BROWSER_WORKERS = 2
+# Live testing on the 2-vCPU/2-GB CamoFox container showed that 3 concurrent
+# browser discoveries can restart the browser and invalidate active tabs. Keep
+# this at 2 unless the runtime capacity or admission model changes.
+DISCOVERY_BROWSER_WORKERS = 2
 DISCOVERY_NETWORK_WORKERS = 4
 MAX_ANALYSIS_EVIDENCE_CHARS = 6000
 STOCKHOLM_TZ = ZoneInfo("Europe/Stockholm")
