@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import tempfile
 import unittest
 from pathlib import Path
