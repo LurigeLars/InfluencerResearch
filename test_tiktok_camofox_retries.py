@@ -49,6 +49,56 @@ class CamoFoxRetryTests(unittest.TestCase):
 
         self.assertEqual(request.call_count, 1)
 
+    def test_exact_catalog_ids_skip_redundant_discovery(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            video_id = "7690974941457534222"
+            catalog_path = root / "state" / "tiktok" / "nicholascrown_catalog.json"
+            sync.atomic_json(catalog_path, {
+                "schema_version": 1,
+                "profile_url": "https://www.tiktok.com/@nicholas_crown",
+                "order": [video_id],
+                "items": {
+                    video_id: {
+                        "video_id": video_id,
+                        "url": f"https://www.tiktok.com/@nicholas_crown/video/{video_id}",
+                    }
+                },
+            })
+            source = {
+                "creator_key": "nicholascrown",
+                "handle": "nicholas_crown",
+                "profile_url": "https://www.tiktok.com/@nicholas_crown",
+                "enabled": True,
+                "discovery_step": 3,
+                "max_catalog": 10,
+                "max_new_downloads": 1,
+            }
+            with (
+                mock.patch.object(sync, "request_json") as request,
+                mock.patch.object(sync, "collect_video_urls") as collect,
+                mock.patch.object(sync, "download_one", return_value={
+                    "video_id": video_id,
+                    "url": f"https://www.tiktok.com/@nicholas_crown/video/{video_id}",
+                    "ok": False,
+                    "diagnostic_tail": "fixture stop after discovery",
+                }) as download,
+            ):
+                result = sync.process_source(
+                    root,
+                    source,
+                    max_new_override=1,
+                    include_video_ids={video_id},
+                    discovery_target_override=3,
+                )
+
+        self.assertTrue(result["discovery_skipped_for_exact_ids"])
+        self.assertEqual(result["discovery"]["source"], "existing_catalog_exact_ids")
+        self.assertEqual(result["discovery"]["found"], 1)
+        request.assert_not_called()
+        collect.assert_not_called()
+        download.assert_called_once()
+
     def test_creator_session_cleanup_runs_when_discovery_fails(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
