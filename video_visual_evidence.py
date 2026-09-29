@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VISUAL_REVIEW_POLICY_VERSION = 1
+VISUAL_REVIEW_POLICY_VERSION = 2
 VISUAL_OCR_MAX_FRAMES = 24
 VISUAL_REPRESENTATIVE_FRAMES = 12
 VISUAL_OCR_TIMEOUT_SECONDS = 8
@@ -129,10 +129,10 @@ def _sample_visual_records(records: list[dict], limit: int = VISUAL_OCR_MAX_FRAM
     return sorted(selected[:limit], key=lambda row: float(row.get("timestamp_s") or 0.0))
 
 
-def _ocr_visual_frame(path: Path) -> str:
+def _run_tesseract_visual_frame(path: Path, psm: int) -> str:
     try:
         proc = subprocess.run(
-            ["tesseract", str(path), "stdout", "-l", "eng", "--psm", "11"],
+            ["tesseract", str(path), "stdout", "-l", "eng", "--psm", str(psm)],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -144,7 +144,17 @@ def _ocr_visual_frame(path: Path) -> str:
         return ""
     if proc.returncode != 0:
         return ""
-    return re.sub(r"[ \t]+", " ", str(proc.stdout or "")).strip()
+    return re.sub(r"[ \\t]+", " ", str(proc.stdout or "")).strip()
+
+
+def _ocr_visual_frame(path: Path) -> str:
+    # Sparse-text mode works well for charts and dashboards. Social-video captions
+    # can instead present as one coherent block, so retry with a block layout only
+    # when the sparse pass found nothing.
+    text = _run_tesseract_visual_frame(path, 11)
+    if text:
+        return text
+    return _run_tesseract_visual_frame(path, 6)
 
 
 def score_visual_frame_text(text: str) -> tuple[float, list[str]]:
