@@ -538,7 +538,7 @@ def probe_public_session(
                 }
             )
 
-            if all_reels:
+            if all_reels or round_index >= 2:
                 break
 
             request_json(
@@ -627,6 +627,7 @@ def probe_public_session(
                 "reel_time_cache_hits": reel_time_cache_hits,
                 "reel_time_network_probes": reel_time_network_probes,
                 "reel_time_probe_ms": round(reel_time_probe_ms, 1),
+                "discovery_rounds": len(rounds),
                 "total_ms": round((time.perf_counter() - probe_started) * 1000, 1),
             },
         }
