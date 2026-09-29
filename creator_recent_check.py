@@ -35,7 +35,7 @@ def _bounded_env_int(
     return max(minimum, min(maximum, value))
 
 
-RECENT_CHECK_VERSION = "0.2.16"
+RECENT_CHECK_VERSION = "0.2.17"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
@@ -442,14 +442,42 @@ def _instagram_handle(source: dict) -> str:
     return handle
 
 
-def _instagram_known_reel_times(root: Path | None) -> dict[str, str]:
+INSTAGRAM_DISCOVERY_CACHE_MAX = 500
+
+
+def _instagram_discovery_catalog_path(root: Path, creator_key: str) -> Path:
+    return root / "state" / "instagram" / f"{creator_key}_catalog.json"
+
+
+def _instagram_known_reel_times(
+    root: Path | None,
+    creator_key: str,
+) -> dict[str, str]:
     if root is None:
         return {}
+
+    out: dict[str, str] = {}
+    catalog = load_json(
+        _instagram_discovery_catalog_path(root, creator_key),
+        {"schema_version": 1, "items": {}},
+    )
+    for source_id, item in (catalog.get("items") or {}).items():
+        if not isinstance(item, dict):
+            continue
+        published_at = str(item.get("published_at") or "").strip()
+        if not source_id or not published_at:
+            continue
+        try:
+            parse_iso_utc(published_at)
+        except Exception:
+            continue
+        out[str(source_id)] = published_at
+
+    # The canonical manifest is authoritative and overwrites discovery-cache data.
     manifest = load_json(
         root / "state" / "manifest.json",
         {"schema_version": 1, "items": {}},
     )
-    out: dict[str, str] = {}
     for key, item in (manifest.get("items") or {}).items():
         if not isinstance(item, dict):
             continue
@@ -469,6 +497,70 @@ def _instagram_known_reel_times(root: Path | None) -> dict[str, str]:
     return out
 
 
+def _update_instagram_discovery_catalog(
+    root: Path | None,
+    creator_key: str,
+    entries: list[dict],
+) -> int:
+    if root is None:
+        return 0
+
+    path = _instagram_discovery_catalog_path(root, creator_key)
+    catalog = load_json(
+        path,
+        {
+            "schema_version": 1,
+            "creator_key": creator_key,
+            "items": {},
+        },
+    )
+    items = catalog.get("items")
+    if not isinstance(items, dict):
+        items = {}
+
+    observed_at = now_iso()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        try:
+            reel_url = instagram.canonical_reel_url(str(entry.get("url") or ""))
+            source_id = instagram.reel_shortcode(reel_url)
+            published = parse_iso_utc(str(entry.get("published_at") or ""))
+        except Exception:
+            continue
+        items[source_id] = {
+            "url": reel_url,
+            "published_at": published.isoformat(),
+            "observed_at": observed_at,
+            "published_at_source": entry.get("published_at_source"),
+        }
+
+    def sort_key(row: tuple[str, object]) -> datetime:
+        item = row[1] if isinstance(row[1], dict) else {}
+        try:
+            return parse_iso_utc(str(item.get("published_at") or ""))
+        except Exception:
+            return datetime.min.replace(tzinfo=timezone.utc)
+
+    bounded = dict(
+        sorted(
+            items.items(),
+            key=sort_key,
+            reverse=True,
+        )[:INSTAGRAM_DISCOVERY_CACHE_MAX]
+    )
+    atomic_json(
+        path,
+        {
+            "schema_version": 1,
+            "creator_key": creator_key,
+            "updated_at": observed_at,
+            "items": bounded,
+        },
+    )
+    return len(bounded)
+
+
 def discover_instagram(
     profile: dict,
     source: dict,
@@ -481,13 +573,21 @@ def discover_instagram(
 ) -> dict:
     target = min(20, max(1, int(discovery_limit)))
     handle = _instagram_handle(source)
-    cached_times = _instagram_known_reel_times(root)
+    cached_times = _instagram_known_reel_times(
+        root,
+        str(profile["creator_key"]),
+    )
     probe = instagram.discover_reels_authenticated(
         handle,
         max_scan=target,
         known_reel_times=cached_times,
     )
     entries = list(probe.get("reel_items") or [])
+    timestamp_cache_size = _update_instagram_discovery_catalog(
+        root,
+        str(profile["creator_key"]),
+        entries,
+    )
     known_times: list[datetime] = []
     items: list[dict] = []
     missing_time: list[str] = []
@@ -556,6 +656,7 @@ def discover_instagram(
             "blocked": blocked,
             "media_auth_gated": media_auth_gated,
             "error": probe.get("error"),
+            "timestamp_cache_size": timestamp_cache_size,
             "timings": probe.get("timings") or {},
         },
     }
