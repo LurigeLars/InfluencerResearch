@@ -69,6 +69,70 @@ class RecentInstagramTests(unittest.TestCase):
             "example",
             run_index=1,
             inspect_reel_times=True,
+            known_reel_times={},
+        )
+
+    def test_instagram_discovery_reuses_cached_publish_times(self) -> None:
+        end = datetime(2026, 9, 29, 18, 0, tzinfo=timezone.utc)
+        cutoff = end - timedelta(days=1)
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            state = root / "state"
+            state.mkdir(parents=True)
+            (state / "manifest.json").write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "items": {
+                        "RECENT123": {
+                            "source_platform": "INSTAGRAM",
+                            "source_id": "RECENT123",
+                            "published_at": "2026-09-29T15:10:53+00:00",
+                            "download_status": "DONE",
+                            "transcription_status": "DONE",
+                        },
+                        "ig_story_999": {
+                            "source_platform": "INSTAGRAM",
+                            "source_subtype": "STORY",
+                            "source_id": "story:999",
+                            "published_at": "2026-09-29T16:00:00+00:00",
+                        },
+                    },
+                }),
+                encoding="utf-8",
+            )
+            probe = {
+                "ok": True,
+                "reel_count": 1,
+                "blocked": False,
+                "media_auth_gated": False,
+                "reel_items": [{
+                    "url": "https://www.instagram.com/reel/RECENT123/",
+                    "published_at": "2026-09-29T15:10:53+00:00",
+                    "error": None,
+                }],
+                "timings": {"reel_time_cache_hits": 1},
+            }
+            with mock.patch.object(
+                crc.instagram_smoke,
+                "probe_public_session",
+                return_value=probe,
+            ) as run:
+                result = crc.discover_instagram(
+                    {"creator_key": "creator"},
+                    {"profile_url": "https://www.instagram.com/example/"},
+                    cutoff,
+                    end,
+                    15,
+                    root=root,
+                )
+
+        self.assertEqual(result["items"][0]["source_id"], "RECENT123")
+        run.assert_called_once_with(
+            "https://www.instagram.com/example/",
+            "example",
+            run_index=1,
+            inspect_reel_times=True,
+            known_reel_times={"RECENT123": "2026-09-29T15:10:53+00:00"},
         )
 
     def test_story_finalize_reuses_prefetched_capture(self) -> None:
