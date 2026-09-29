@@ -356,6 +356,53 @@ class InstagramPathSegmentTests(unittest.TestCase):
                 "x",
             )
 
+    def test_story_gemini_adaptive_backoff_grows_and_caps_without_retry_after(self) -> None:
+        health = {}
+        observed = []
+        for _ in range(6):
+            cooldown, streak = ephemeral.story_gemini_adaptive_cooldown_seconds(
+                health,
+                base_seconds=60,
+            )
+            observed.append(cooldown)
+            health["consecutive_transient_failures"] = streak
+
+        self.assertEqual(observed, [60, 120, 240, 480, 900, 900])
+
+    def test_story_gemini_provider_retry_after_remains_authoritative(self) -> None:
+        cooldown, streak = ephemeral.story_gemini_adaptive_cooldown_seconds(
+            {"consecutive_transient_failures": 7},
+            base_seconds=300,
+            provider_retry_seconds=42,
+        )
+        self.assertEqual(cooldown, 42)
+        self.assertEqual(streak, 8)
+
+    def test_story_gemini_success_resets_transient_failure_streak(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            first = ephemeral.update_gemini_provider_health(
+                root,
+                calls=1,
+                deferred=1,
+                error_meta={"code": 503, "status": "UNAVAILABLE"},
+                cooldown_until=ephemeral.datetime.now(ephemeral.timezone.utc)
+                + ephemeral.timedelta(seconds=60),
+                retry_after_source="ADAPTIVE_BACKOFF",
+                transient_failure=True,
+                cooldown_seconds=60,
+            )
+            self.assertEqual(first["consecutive_transient_failures"], 1)
+            self.assertEqual(first["last_cooldown_seconds"], 60)
+
+            second = ephemeral.update_gemini_provider_health(
+                root,
+                calls=1,
+                successes=1,
+            )
+            self.assertEqual(second["consecutive_transient_failures"], 0)
+            self.assertEqual(second["last_cooldown_seconds"], 0)
+
     def test_story_visual_failure_records_safe_code_and_status(self) -> None:
         class FakeGeminiError(Exception):
             code = 429
