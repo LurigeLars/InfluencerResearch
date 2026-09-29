@@ -336,6 +336,67 @@ def flatten_video_links(obj: Any, handle: str) -> list[str]:
     return out
 
 
+def _wait_for_tiktok_profile_ready(
+    tab_id: str,
+    *,
+    user_id: str,
+    max_wait_seconds: float = 3.0,
+    poll_seconds: float = 0.25,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    deadline = started + max(0.0, max_wait_seconds)
+    attempts = 0
+    last_error = None
+    last_value: dict[str, Any] | None = None
+    expression = """(() => ({
+      readyState: document.readyState,
+      bodyTextLength: (document.body?.innerText || '').length,
+      videoLinkCount: document.querySelectorAll('a[href*="/video/"]').length,
+      href: location.href
+    }))()"""
+    while True:
+        attempts += 1
+        try:
+            response = request_json(
+                "POST",
+                f"/tabs/{urllib.parse.quote(tab_id)}/evaluate",
+                {"userId": user_id, "expression": expression},
+                timeout=20,
+            )
+            value = response.get("result") if isinstance(response, dict) else None
+            if isinstance(value, dict):
+                last_value = value
+                ready_state = str(value.get("readyState") or "").casefold()
+                ready = (
+                    int(value.get("videoLinkCount") or 0) > 0
+                    or (
+                        ready_state in {"interactive", "complete"}
+                        and int(value.get("bodyTextLength") or 0) > 200
+                    )
+                )
+                if ready:
+                    return {
+                        "ready": True,
+                        "attempts": attempts,
+                        "wait_ms": round((time.perf_counter() - started) * 1000, 1),
+                        "last_value": last_value,
+                        "last_error": last_error,
+                    }
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"[:1000]
+
+        remaining = deadline - time.perf_counter()
+        if remaining <= 0:
+            return {
+                "ready": False,
+                "attempts": attempts,
+                "wait_ms": round((time.perf_counter() - started) * 1000, 1),
+                "last_value": last_value,
+                "last_error": last_error,
+            }
+        time.sleep(min(poll_seconds, remaining))
+
+
 def collect_video_urls(
     tab_id: str,
     *,
@@ -1647,16 +1708,21 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
         session_key = f"{creator_key}-feed"
         tab_id = None
         try:
+            tab_started = time.perf_counter()
             tab = request_json("POST", "/tabs", {
                 "userId": user_id,
                 "sessionKey": session_key,
                 "url": profile_url,
                 "trace": False,
             }, timeout=60)
+            tab_create_ms = round((time.perf_counter() - tab_started) * 1000, 1)
             if not isinstance(tab, dict) or not tab.get("tabId"):
                 raise RuntimeError(f"Unexpected CamoFox create-tab response: {tab}")
             tab_id = str(tab["tabId"])
-            time.sleep(3)
+            readiness = _wait_for_tiktok_profile_ready(
+                tab_id,
+                user_id=user_id,
+            )
 
             discovered, discovery_diag = collect_video_urls(
                 tab_id,
@@ -1664,6 +1730,15 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
                 handle=handle,
                 target=discovery_target,
             )
+            discovery_diag["tab_create_ms"] = tab_create_ms
+            discovery_diag["profile_ready_wait_ms"] = round(
+                float(readiness.get("wait_ms") or 0.0),
+                1,
+            )
+            discovery_diag["profile_ready_attempts"] = int(
+                readiness.get("attempts") or 0
+            )
+            discovery_diag["profile_ready"] = bool(readiness.get("ready"))
             catalog = merge_catalog(catalog, discovered, profile_url=profile_url)
             atomic_json(catalog_path, catalog)
         finally:
