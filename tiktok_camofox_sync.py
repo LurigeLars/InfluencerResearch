@@ -348,12 +348,18 @@ def _wait_for_tiktok_profile_ready(
     attempts = 0
     last_error = None
     last_value: dict[str, Any] | None = None
-    expression = """(() => ({
-      readyState: document.readyState,
-      bodyTextLength: (document.body?.innerText || '').length,
-      videoLinkCount: document.querySelectorAll('a[href*="/video/"]').length,
-      href: location.href
-    }))()"""
+    expression = """(() => {
+      const videoLinks = Array.from(
+        document.querySelectorAll('a[href*="/video/"]')
+      ).map(a => a.href).filter(Boolean).slice(0, 250);
+      return {
+        readyState: document.readyState,
+        bodyTextLength: (document.body?.innerText || '').length,
+        videoLinkCount: videoLinks.length,
+        videoLinks,
+        href: location.href
+      };
+    })()"""
     while True:
         attempts += 1
         try:
@@ -404,12 +410,34 @@ def collect_video_urls(
     handle: str,
     target: int,
     max_scrolls: int = 120,
+    initial_urls: list[str] | None = None,
 ) -> tuple[list[str], dict]:
     found: list[str] = []
     seen: set[str] = set()
+    for url in initial_urls or []:
+        clean = str(url or "").split("?")[0].rstrip("/")
+        match = TIKTOK_VIDEO_URL_RE.fullmatch(clean)
+        if not match:
+            continue
+        if match.group("handle").casefold() != handle.casefold():
+            continue
+        if clean not in seen:
+            seen.add(clean)
+            found.append(clean)
     stagnant = 0
     rounds = 0
     links_endpoint_errors = 0
+
+    if len(found) >= target:
+        return found[:target], {
+            "target": target,
+            "found": len(found[:target]),
+            "rounds": 0,
+            "stagnant_rounds_at_end": 0,
+            "links_endpoint_errors": 0,
+            "initial_url_count": len(found),
+            "source": "readiness_dom",
+        }
 
     for round_idx in range(max_scrolls + 1):
         rounds += 1
@@ -465,6 +493,11 @@ def collect_video_urls(
         "rounds": rounds,
         "stagnant_rounds_at_end": stagnant,
         "links_endpoint_errors": links_endpoint_errors,
+        "initial_url_count": len([
+            url for url in (initial_urls or [])
+            if isinstance(url, str)
+        ]),
+        "source": "browser_scan",
     }
 
 
@@ -1724,11 +1757,22 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
                 user_id=user_id,
             )
 
+            readiness_value = (
+                readiness.get("last_value")
+                if isinstance(readiness.get("last_value"), dict)
+                else {}
+            )
+            readiness_urls = [
+                str(url)
+                for url in (readiness_value.get("videoLinks") or [])
+                if str(url).strip()
+            ]
             discovered, discovery_diag = collect_video_urls(
                 tab_id,
                 user_id=user_id,
                 handle=handle,
                 target=discovery_target,
+                initial_urls=readiness_urls,
             )
             discovery_diag["tab_create_ms"] = tab_create_ms
             discovery_diag["profile_ready_wait_ms"] = round(
@@ -1739,6 +1783,7 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
                 readiness.get("attempts") or 0
             )
             discovery_diag["profile_ready"] = bool(readiness.get("ready"))
+            discovery_diag["readiness_seed_count"] = len(readiness_urls)
             catalog = merge_catalog(catalog, discovered, profile_url=profile_url)
             atomic_json(catalog_path, catalog)
         finally:
