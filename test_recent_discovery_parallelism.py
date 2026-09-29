@@ -119,6 +119,54 @@ class RecentDiscoveryParallelismTests(unittest.TestCase):
             5,
         )
 
+    def test_story_capture_overlaps_discovery(self):
+        story_started = threading.Event()
+        discovery_started = threading.Event()
+
+        selected = [
+            (
+                {"creator_key": "alpha"},
+                [{"platform": "INSTAGRAM", "profile_url": "https://www.instagram.com/alpha/"}],
+            )
+        ]
+
+        def fake_story_batch(*args, **kwargs):
+            story_started.set()
+            self.assertTrue(discovery_started.wait(timeout=1.0))
+            time.sleep(0.02)
+            return {
+                "results": [],
+                "creator_count": 1,
+                "wall_duration_ms": 20.0,
+            }
+
+        def fake_discovery(*args, **kwargs):
+            discovery_started.set()
+            self.assertTrue(story_started.wait(timeout=1.0))
+            time.sleep(0.02)
+            return ([], [], {}, [], {"wall_duration_ms": 20.0})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.object(crc, "_run_story_capture_batch", side_effect=fake_story_batch),
+                patch.object(crc, "_run_discovery_batch", side_effect=fake_discovery),
+            ):
+                discovery, story = crc._run_discovery_with_story_prefetch(
+                    Path(tmp),
+                    selected,
+                    datetime(2026, 9, 28, tzinfo=timezone.utc),
+                    datetime(2026, 9, 29, tzinfo=timezone.utc),
+                    15,
+                    10,
+                    gemini_circuit={},
+                    ollama_budget_state={"attempted": 0},
+                )
+
+        self.assertEqual(discovery[0], [])
+        self.assertEqual(story["creator_count"], 1)
+        self.assertGreaterEqual(story["overlap_saved_estimate_ms"], 10.0)
+        self.assertLess(story["join_wait_ms"], 50.0)
+
     def test_browser_bootstrap_failure_does_not_block_youtube(self):
         selected = [
             (
