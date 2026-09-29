@@ -19,7 +19,7 @@ import tiktok_camofox_sync as tts
 import instagram_camofox_public_smoke as instagram_smoke
 import ephemeral_ingest as ephemeral
 
-RECENT_CHECK_VERSION = "0.2.9"
+RECENT_CHECK_VERSION = "0.2.10"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
@@ -997,6 +997,7 @@ def _ingest_instagram_stories(
         "conflicts": list(bridge.get("conflicts") or []),
         "capture": capture,
         "visual_enrichment": run.get("visual_enrichment") or {},
+        "pipeline_timings": run.get("timings") or {},
         "queue": queue,
         "warnings": warnings,
         "state": run.get("state"),
@@ -1596,6 +1597,7 @@ def _main_impl() -> int:
         for story_result in story_results:
             visual = story_result.get("visual_enrichment") or {}
             vt = visual.get("timings") or {}
+            pt = story_result.get("pipeline_timings") or {}
             row = {
                 "creator_key": story_result.get("creator_key"),
                 "ocr_attempted": int(visual.get("ocr_attempted") or 0),
@@ -1614,6 +1616,18 @@ def _main_impl() -> int:
                     "ocr_total_ms": round(float(vt.get("ocr_total_ms") or 0.0), 1),
                     "ollama_total_ms": round(float(vt.get("ollama_total_ms") or 0.0), 1),
                     "gemini_total_ms": round(float(vt.get("gemini_total_ms") or 0.0), 1),
+                    "pipeline_total_ms": round(float(pt.get("total_ms") or 0.0), 1),
+                    "browser_total_ms": round(float(pt.get("browser_total_ms") or 0.0), 1),
+                    "capture_ms": round(float(pt.get("capture_ms") or 0.0), 1),
+                    "ytdlp_ms": round(float(pt.get("ytdlp_ms") or 0.0), 1),
+                    "visual_enrichment_ms": round(
+                        float(pt.get("visual_enrichment_ms") or 0.0),
+                        1,
+                    ),
+                    "transcription_ms": round(
+                        float(pt.get("transcription_ms") or 0.0),
+                        1,
+                    ),
                 },
             }
             visual_by_creator.append(row)
