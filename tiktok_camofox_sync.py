@@ -26,9 +26,10 @@ from typing import Any
 
 import camofox_container as camofox_container_config
 from transcription_backend import extract_visible_text_gemini, transcribe_video
+from video_visual_evidence import VISUAL_REVIEW_POLICY_VERSION, capture_local_video_visual_evidence
 
 
-APP_VERSION = "0.8.9"
+APP_VERSION = "0.8.10"
 CONTENT_EXTRACTION_VERSION = 1
 MIN_ANALYSIS_TRANSCRIPT_WORDS = 8
 MIN_ANALYSIS_TRANSCRIPT_CHARS = 48
@@ -1408,6 +1409,7 @@ def update_main_manifest(
     download: dict,
     transcription: dict,
     visual_text: dict | None,
+    visual_evidence: dict | None,
 ) -> dict:
     manifest_path = root / "state" / "manifest.json"
     manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
@@ -1438,6 +1440,13 @@ def update_main_manifest(
         if incoming_published_at is not None
         else old.get("published_at")
     )
+    visual_bundle = (
+        visual_evidence.get("agent_visual_bundle")
+        if isinstance(visual_evidence, dict) and isinstance(visual_evidence.get("agent_visual_bundle"), dict)
+        else (old.get("agent_visual_bundle") if isinstance(old.get("agent_visual_bundle"), dict) else None)
+    )
+    visual_attempted = visual_evidence is not None
+    visual_ok = bool(isinstance(visual_evidence, dict) and visual_evidence.get("ok"))
 
     manifest["items"][key] = {
         **old,
@@ -1461,6 +1470,34 @@ def update_main_manifest(
         "transcript_model": transcription.get("model"),
         "transcript_txt": str(txt_path.relative_to(root)),
         "transcript_json": str(json_path.relative_to(root)),
+        "visual_review_policy_version": (
+            VISUAL_REVIEW_POLICY_VERSION if visual_attempted else int(old.get("visual_review_policy_version") or 0)
+        ),
+        "visual_evidence_status": (
+            "DONE" if visual_ok else ("ERROR" if visual_attempted else old.get("visual_evidence_status"))
+        ),
+        "visual_evidence_error": (
+            None if visual_ok else ((visual_evidence or {}).get("error") if visual_attempted else old.get("visual_evidence_error"))
+        ),
+        "visual_evidence_index": (
+            str(Path(visual_evidence["index"]).relative_to(root))
+            if visual_ok and visual_evidence.get("index")
+            else old.get("visual_evidence_index")
+        ),
+        "visual_frame_count": (
+            int((visual_evidence or {}).get("retained_frames") or 0)
+            if visual_ok else int(old.get("visual_frame_count") or 0)
+        ),
+        "visual_capture_strategy": (
+            (visual_evidence or {}).get("capture_strategy") if visual_ok else old.get("visual_capture_strategy")
+        ),
+        "agent_visual_bundle": visual_bundle,
+        "analysis_mode_recommended": (
+            visual_bundle.get("analysis_mode_recommended") if visual_bundle else "TRANSCRIPT_ONLY"
+        ),
+        "visual_review_recommended": bool(visual_bundle and visual_bundle.get("visual_review_recommended")),
+        "visual_review_reason": list(visual_bundle.get("visual_review_reason") or []) if visual_bundle else [],
+        "creator_visual_prior": visual_bundle.get("creator_visual_prior") if visual_bundle else "NEUTRAL",
         "visible_text": (
             str((visual_text or {}).get("text") or "").strip()
             if visual_text is not None
@@ -1527,6 +1564,8 @@ def _manifest_item_extraction_complete(item: dict) -> bool:
     if not isinstance(item, dict):
         return False
     if item.get("download_status") != "DONE" or item.get("transcription_status") != "DONE":
+        return False
+    if int(item.get("visual_review_policy_version") or 0) < VISUAL_REVIEW_POLICY_VERSION:
         return False
     if str(item.get("visual_text_status") or "").upper() == "FAILED":
         return False
@@ -1691,6 +1730,20 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
 
         visual_text = None
         transcript_text = str(transcription.get("text") or "").strip()
+        try:
+            visual_evidence = capture_local_video_visual_evidence(
+                root,
+                creator_key,
+                "TIKTOK",
+                vid,
+                Path(download["media_file"]),
+                transcript_text=transcript_text,
+            )
+        except Exception as exc:
+            visual_evidence = {
+                "ok": False,
+                "error": f"{type(exc).__name__}:visual_evidence_unavailable",
+            }
         if not _text_is_analysis_ready(transcript_text):
             try:
                 visual_text = extract_visible_text(
@@ -1713,6 +1766,7 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
             download=download,
             transcription=transcription,
             visual_text=visual_text,
+            visual_evidence=visual_evidence,
         )
 
         if visual_text is not None and not visual_text.get("ok"):
@@ -1732,6 +1786,10 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
             "transcript_txt": record["transcript_txt"],
             "visual_text_status": record.get("visual_text_status"),
             "visual_text_txt": record.get("visual_text_txt"),
+            "analysis_mode_recommended": record.get("analysis_mode_recommended"),
+            "visual_review_recommended": record.get("visual_review_recommended"),
+            "visual_review_reason": record.get("visual_review_reason"),
+            "visual_evidence_status": record.get("visual_evidence_status"),
         })
 
     return {
