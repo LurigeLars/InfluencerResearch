@@ -1383,7 +1383,15 @@ def _run_discovery_batch(
         if platform in {"INSTAGRAM", "TIKTOK"} and isinstance(discovery, dict):
             browser_diag = discovery.get("discovery") or {}
             if platform == "INSTAGRAM":
-                browser_diag = browser_diag.get("timings") or {}
+                instagram_discovery_diag = browser_diag
+                browser_diag = dict(browser_diag.get("timings") or {})
+                browser_diag.update({
+                    "reel_count": int(instagram_discovery_diag.get("reel_count") or 0),
+                    "blocked": bool(instagram_discovery_diag.get("blocked")),
+                    "media_auth_gated": bool(
+                        instagram_discovery_diag.get("media_auth_gated")
+                    ),
+                })
 
         discovery_timing = {
             "stage": "DISCOVERY",
@@ -1413,6 +1421,14 @@ def _run_discovery_batch(
                     "reel_time_probe_ms": round(
                         float(browser_diag.get("reel_time_probe_ms") or 0.0),
                         1,
+                    ),
+                    "discovery_rounds": int(
+                        browser_diag.get("discovery_rounds") or 0
+                    ),
+                    "reel_count": int(browser_diag.get("reel_count") or 0),
+                    "blocked": bool(browser_diag.get("blocked")),
+                    "media_auth_gated": bool(
+                        browser_diag.get("media_auth_gated")
                     ),
                 })
 
