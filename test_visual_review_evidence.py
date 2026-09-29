@@ -53,6 +53,37 @@ class VisualReviewClassifierTests(unittest.TestCase):
                 )
         self.assertFalse(bundle["visual_review_recommended"])
 
+    def test_existing_visual_index_backfills_agent_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            evidence_dir = root / "output" / "nicholascrown" / "youtube" / "frames" / "demo"
+            evidence_dir.mkdir(parents=True)
+            frame = evidence_dir / "fps_00001.jpg"
+            frame.write_bytes(b"fake-jpeg")
+            index = {
+                "summary": {"retained_frames": 1, "capture_strategy": "existing"},
+                "frames": [{
+                    "timestamp_s": 1.0,
+                    "reason": "ONE_FPS",
+                    "file": str(frame.relative_to(root)),
+                    "size_bytes": frame.stat().st_size,
+                }],
+            }
+            (evidence_dir / "visual_index.json").write_text(json.dumps(index), encoding="utf-8")
+            with mock.patch.object(yte, "_ffmpeg_exe", return_value="ffmpeg"), mock.patch.object(
+                yte, "build_agent_visual_bundle",
+                return_value={"available": True, "visual_review_recommended": True},
+            ):
+                result = yte.capture_visual_evidence(
+                    root,
+                    "nicholascrown",
+                    "https://www.youtube.com/watch?v=demo",
+                    "demo",
+                )
+            updated = json.loads((evidence_dir / "visual_index.json").read_text(encoding="utf-8"))
+        self.assertTrue(result["agent_visual_bundle"]["available"])
+        self.assertTrue(updated["agent_visual_bundle"]["visual_review_recommended"])
+
     def test_trading_fraternity_has_high_creator_prior(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
