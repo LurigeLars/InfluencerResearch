@@ -54,7 +54,7 @@ class RecentInstagramTests(unittest.TestCase):
                 },
             ],
         }
-        with mock.patch.object(smoke, "probe_public_session", return_value=probe) as run:
+        with mock.patch.object(crc.instagram_smoke, "probe_public_session", return_value=probe) as run:
             result = crc.discover_instagram(
                 {"creator_key": "creator"},
                 {"profile_url": "https://www.instagram.com/example/"},
