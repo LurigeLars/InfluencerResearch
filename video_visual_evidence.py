@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VISUAL_REVIEW_POLICY_VERSION = 2
+VISUAL_REVIEW_POLICY_VERSION = 3
 VISUAL_OCR_MAX_FRAMES = 24
 VISUAL_REPRESENTATIVE_FRAMES = 12
 VISUAL_OCR_TIMEOUT_SECONDS = 8
@@ -157,7 +157,30 @@ def _ocr_visual_frame(path: Path) -> str:
     return _run_tesseract_visual_frame(path, 6)
 
 
-def score_visual_frame_text(text: str) -> tuple[float, list[str]]:
+def _visual_text_tokens(value: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", str(value or "").casefold())
+
+
+def _has_transcript_caption_overlap(ocr_text: str, transcript_text: str) -> bool:
+    ocr_tokens = _visual_text_tokens(ocr_text)
+    transcript_tokens = _visual_text_tokens(transcript_text)
+    if len(ocr_tokens) < 3 or len(transcript_tokens) < 3:
+        return False
+    transcript_trigrams = {
+        tuple(transcript_tokens[idx:idx + 3])
+        for idx in range(len(transcript_tokens) - 2)
+    }
+    return any(
+        tuple(ocr_tokens[idx:idx + 3]) in transcript_trigrams
+        for idx in range(len(ocr_tokens) - 2)
+    )
+
+
+def score_visual_frame_text(
+    text: str,
+    *,
+    transcript_text: str = "",
+) -> tuple[float, list[str]]:
     normalized = str(text or "").strip()
     lower = normalized.casefold()
     if not normalized:
@@ -166,6 +189,15 @@ def score_visual_frame_text(text: str) -> tuple[float, list[str]]:
     term_hits = sum(1 for term in CHART_TERMS if term in lower)
     numeric_hits = len(re.findall(r"(?:[$€£]?\d+(?:[.,]\d+)?%?)", normalized))
     ticker_hits = len(re.findall(r"\b[A-Z]{2,6}\b", normalized))
+
+    # Burned-in social captions often repeat the transcript verbatim. Do not let
+    # those words masquerade as chart evidence unless the frame also contains
+    # stronger structured market data such as several numbers or tickers.
+    caption_overlap = _has_transcript_caption_overlap(normalized, transcript_text)
+    structured_signal = numeric_hits >= 3 or ticker_hits >= 2
+    if caption_overlap and not structured_signal:
+        return 0.0, ["TRANSCRIPT_CAPTION_OVERLAP"]
+
     score = min(10.0, term_hits * 1.8 + min(numeric_hits, 8) * 0.35 + min(ticker_hits, 6) * 0.25)
     if term_hits:
         reasons.append("CHART_TERMS")
@@ -255,7 +287,7 @@ def build_agent_visual_bundle(
 
     def inspect(row: dict) -> dict:
         text = _ocr_visual_frame(Path(row["file"]))
-        score, reasons = score_visual_frame_text(text)
+        score, reasons = score_visual_frame_text(text, transcript_text=transcript_text)
         return {**row, "ocr_text": text[:1200], "visual_score": score, "visual_signals": reasons}
 
     if sampled:
