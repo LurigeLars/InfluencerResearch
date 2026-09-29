@@ -27,10 +27,16 @@ class TranscriptionBackendTests(unittest.TestCase):
                 retry_attempts=tb.STORY_GEMINI_RETRY_ATTEMPTS,
             ),
             {
-                "timeout": 30_000,
+                "timeout": 12_000,
                 "retry_options": {"attempts": 1},
             },
         )
+
+    def test_story_gemini_timeout_bounds(self) -> None:
+        self.assertEqual(tb.bounded_story_gemini_timeout_ms(), 12_000)
+        self.assertEqual(tb.bounded_story_gemini_timeout_ms(7_500), 7_500)
+        self.assertEqual(tb.bounded_story_gemini_timeout_ms(1_000), 5_000)
+        self.assertEqual(tb.bounded_story_gemini_timeout_ms(90_000), 30_000)
 
     def test_story_image_path_uses_inline_bytes_not_files_api(self) -> None:
         source = Path(tb.__file__).read_text(encoding="utf-8")

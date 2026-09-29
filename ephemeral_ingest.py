@@ -25,6 +25,7 @@ from transcription_backend import (
     OLLAMA_VISUAL_MAX_CHARS,
     OLLAMA_VISUAL_NUM_CTX,
     OLLAMA_VISUAL_CONTRACT,
+    STORY_GEMINI_HTTP_TIMEOUT_MS,
     extract_image_evidence_gemini,
     extract_image_evidence_ollama,
     gemini_error_metadata,
@@ -1044,6 +1045,19 @@ def enrich_story_visual_evidence(
         tcfg.get("gemini_visual_model", DEFAULT_GEMINI_VISUAL_MODEL)
         or DEFAULT_GEMINI_VISUAL_MODEL
     ).strip()
+    gemini_story_timeout_ms = max(
+        5_000,
+        min(
+            30_000,
+            int(
+                tcfg.get(
+                    "gemini_story_visual_timeout_ms",
+                    STORY_GEMINI_HTTP_TIMEOUT_MS,
+                )
+                or STORY_GEMINI_HTTP_TIMEOUT_MS
+            ),
+        ),
+    )
     ollama_enabled = bool(tcfg.get("ollama_visual_enabled", True))
     ollama_model = str(
         tcfg.get("ollama_visual_model", DEFAULT_OLLAMA_VISUAL_MODEL)
@@ -1257,6 +1271,7 @@ def enrich_story_visual_evidence(
             result = extract_image_evidence_gemini(
                 screenshot_path,
                 model=model,
+                timeout_ms=gemini_story_timeout_ms,
             )
             text = str(result.get("text") or "").strip()
             item["visual_description"] = text
@@ -1384,6 +1399,7 @@ def enrich_story_visual_evidence(
         "errors": errors,
         "changed": changed,
         "model": model,
+        "gemini_story_timeout_ms": gemini_story_timeout_ms,
         "provider_circuit_breaker": {
             "open": circuit_reason is not None,
             "reason": circuit_reason,
