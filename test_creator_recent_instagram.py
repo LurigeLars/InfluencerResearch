@@ -219,6 +219,117 @@ class RecentInstagramTests(unittest.TestCase):
             known_reel_times={"RECENT123": "2026-09-29T15:10:53+00:00"},
         )
 
+    def test_instagram_discovery_uses_persisted_timestamp_catalog(self) -> None:
+        end = datetime(2026, 9, 29, 18, 0, tzinfo=timezone.utc)
+        cutoff = end - timedelta(days=1)
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            catalog_dir = root / "state" / "instagram"
+            catalog_dir.mkdir(parents=True)
+            (catalog_dir / "creator_catalog.json").write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "creator_key": "creator",
+                    "items": {
+                        "CACHED123": {
+                            "url": "https://www.instagram.com/reel/CACHED123/",
+                            "published_at": "2026-09-29T12:00:00+00:00",
+                        }
+                    },
+                }),
+                encoding="utf-8",
+            )
+            probe = {
+                "ok": True,
+                "authenticated": True,
+                "reel_count": 1,
+                "blocked": False,
+                "media_auth_gated": False,
+                "reel_items": [{
+                    "url": "https://www.instagram.com/reel/CACHED123/",
+                    "published_at": "2026-09-29T12:00:00+00:00",
+                    "published_at_source": "LOCAL_TIMESTAMP_CACHE",
+                    "error": None,
+                }],
+                "timings": {"reel_time_cache_hits": 1},
+            }
+            with mock.patch.object(
+                crc.instagram,
+                "discover_reels_authenticated",
+                return_value=probe,
+            ) as run:
+                result = crc.discover_instagram(
+                    {"creator_key": "creator"},
+                    {"profile_url": "https://www.instagram.com/example/"},
+                    cutoff,
+                    end,
+                    15,
+                    root=root,
+                )
+
+        self.assertTrue(result["window_complete"])
+        run.assert_called_once_with(
+            "example",
+            max_scan=15,
+            known_reel_times={"CACHED123": "2026-09-29T12:00:00+00:00"},
+        )
+
+    def test_instagram_discovery_persists_uningested_reel_timestamps(self) -> None:
+        end = datetime(2026, 9, 29, 18, 0, tzinfo=timezone.utc)
+        cutoff = end - timedelta(days=1)
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            probe = {
+                "ok": True,
+                "authenticated": True,
+                "reel_count": 2,
+                "blocked": False,
+                "media_auth_gated": False,
+                "reel_items": [
+                    {
+                        "url": "https://www.instagram.com/reel/RECENT123/",
+                        "published_at": "2026-09-29T15:00:00+00:00",
+                        "published_at_source": "AUTHENTICATED_REEL_TIME_ELEMENT",
+                        "error": None,
+                    },
+                    {
+                        "url": "https://www.instagram.com/reel/OLDER456/",
+                        "published_at": "2026-09-20T15:00:00+00:00",
+                        "published_at_source": "AUTHENTICATED_REEL_TIME_ELEMENT",
+                        "error": None,
+                    },
+                ],
+                "timings": {"reel_time_network_probes": 2},
+            }
+            with mock.patch.object(
+                crc.instagram,
+                "discover_reels_authenticated",
+                return_value=probe,
+            ):
+                crc.discover_instagram(
+                    {"creator_key": "creator"},
+                    {"profile_url": "https://www.instagram.com/example/"},
+                    cutoff,
+                    end,
+                    15,
+                    root=root,
+                )
+
+            catalog = json.loads(
+                (root / "state" / "instagram" / "creator_catalog.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertEqual(
+            set(catalog["items"]),
+            {"RECENT123", "OLDER456"},
+        )
+        self.assertEqual(
+            catalog["items"]["OLDER456"]["published_at"],
+            "2026-09-20T15:00:00+00:00",
+        )
+
     def test_public_probe_uses_cached_reel_time_without_navigation(self) -> None:
         module_path = Path(__file__).with_name("instagram_camofox_public_smoke.py")
         spec = importlib.util.spec_from_file_location(
