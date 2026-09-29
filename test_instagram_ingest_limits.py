@@ -153,6 +153,19 @@ class InstagramIngestLimitTests(unittest.TestCase):
         context.close.assert_called_once()
         browser.close.assert_called_once()
 
+    def test_instagram_error_page_is_marked_unavailable(self) -> None:
+        body = mock.Mock()
+        body.inner_text.return_value = "Sorry, something went wrong"
+        page = mock.Mock()
+        page.url = "https://www.instagram.com/example/reels/"
+        page.locator.return_value = body
+
+        state = ig._instagram_page_access_state(page, "example")
+
+        self.assertTrue(state["unavailable"])
+        self.assertFalse(state["media_auth_gated"])
+        self.assertFalse(state["blocked"])
+
     def test_authenticated_discovery_fails_closed_without_session(self) -> None:
         class FakePlaywrightContext:
             def __enter__(self):
