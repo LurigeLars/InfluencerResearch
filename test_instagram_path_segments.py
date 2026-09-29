@@ -144,6 +144,90 @@ class InstagramPathSegmentTests(unittest.TestCase):
         )
 
 
+    def test_story_capture_skips_redundant_wait_after_observed_advance(self) -> None:
+        class FakeKeyboard:
+            def __init__(self, page):
+                self.page = page
+
+            def press(self, key):
+                self.page.presses.append(key)
+                if self.page.url.endswith("/111/"):
+                    self.page.url = "https://www.instagram.com/stories/example/222/"
+                else:
+                    self.page.url = "https://www.instagram.com/example/"
+
+        class FakePage:
+            def __init__(self):
+                self.url = "https://www.instagram.com/stories/example/111/"
+                self.waits = []
+                self.presses = []
+                self.keyboard = FakeKeyboard(self)
+
+            def wait_for_timeout(self, value):
+                self.waits.append(value)
+
+            def screenshot(self, full_page=False):
+                return b"frame-111" if self.url.endswith("/111/") else b"frame-222"
+
+        page = FakePage()
+        manifest = {"items": {}}
+
+        def media_url(current_page):
+            if current_page.url.endswith("/111/"):
+                return "https://scontent.example.net/media/111.jpg?token=one"
+            if current_page.url.endswith("/222/"):
+                return "https://scontent.example.net/media/222.jpg?token=two"
+            return None
+
+        with tempfile.TemporaryDirectory() as td:
+            with (
+                mock.patch.object(
+                    ephemeral,
+                    "instagram_story_error_present",
+                    return_value=False,
+                ),
+                mock.patch.object(
+                    ephemeral,
+                    "story_view_confirmation_present",
+                    return_value=False,
+                ),
+                mock.patch.object(
+                    ephemeral,
+                    "dismiss_story_view_confirmation",
+                    return_value=False,
+                ),
+                mock.patch.object(
+                    ephemeral,
+                    "visible_story_media_url",
+                    side_effect=media_url,
+                ),
+                mock.patch.object(
+                    ephemeral,
+                    "safe_body_text",
+                    return_value="story",
+                ),
+            ):
+                result = ephemeral.capture_story_frames(
+                    page=page,
+                    root=Path(td),
+                    manifest=manifest,
+                    creator="example",
+                    start_url="https://www.instagram.com/stories/example/",
+                    source_type="STORY",
+                    highlight_label=None,
+                    max_items=5,
+                    preopened=True,
+                )
+
+        self.assertEqual(result["visited_frames"], 2)
+        self.assertEqual(result["captured_new"], 2)
+        self.assertEqual(result["story_advance_ready_count"], 2)
+        self.assertEqual(result["story_advance_timeout_count"], 0)
+        self.assertEqual(page.presses, ["ArrowRight", "ArrowRight"])
+        # Only the first frame needs the legacy 900 ms settle wait. Once the
+        # next Story identity is observed, the next iteration starts immediately.
+        self.assertEqual(page.waits, [900])
+
     def test_story_media_download_cache_reuses_identical_set_and_recovers_missing_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
