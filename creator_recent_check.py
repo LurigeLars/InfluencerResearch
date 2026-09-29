@@ -521,12 +521,21 @@ def discover_instagram(
                 "profile_url": source["profile_url"],
             })
 
-    window_complete = _coverage_complete(
+    natural_window_complete = _coverage_complete(
         discovered_count=len(entries),
         requested_limit=target,
         known_times=known_times,
         cutoff=cutoff,
     )
+    blocked = bool(probe.get("blocked"))
+    media_auth_gated = bool(probe.get("media_auth_gated"))
+    coverage_limited_reason = None
+    if blocked:
+        coverage_limited_reason = "HARD_BLOCK"
+    elif media_auth_gated and len(entries) < target:
+        coverage_limited_reason = "MEDIA_AUTH_GATE"
+    window_complete = natural_window_complete and coverage_limited_reason is None
+
     return {
         "creator_key": profile["creator_key"],
         "platform": "INSTAGRAM",
@@ -536,12 +545,13 @@ def discover_instagram(
         "discovery_limit_used": target,
         "window_complete": window_complete,
         "coverage_limit_reached": False,
+        "coverage_limited_reason": coverage_limited_reason,
         "missing_publish_time_ids": missing_time,
         "discovery": {
             "ok": bool(probe.get("ok")),
             "reel_count": int(probe.get("reel_count") or 0),
-            "blocked": bool(probe.get("blocked")),
-            "media_auth_gated": bool(probe.get("media_auth_gated")),
+            "blocked": blocked,
+            "media_auth_gated": media_auth_gated,
             "timings": probe.get("timings") or {},
         },
     }
@@ -1850,7 +1860,11 @@ def _main_impl() -> int:
             })
 
         incomplete_windows = [
-            {"creator_key": d["creator_key"], "platform": d["platform"]}
+            {
+                "creator_key": d["creator_key"],
+                "platform": d["platform"],
+                "reason": d.get("coverage_limited_reason"),
+            }
             for d in discoveries if not d.get("window_complete")
         ]
         if incomplete_windows:

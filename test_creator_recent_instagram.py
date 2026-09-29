@@ -73,6 +73,60 @@ class RecentInstagramTests(unittest.TestCase):
             known_reel_times={},
         )
 
+    def test_media_auth_gate_with_short_result_is_not_complete_coverage(self) -> None:
+        end = datetime(2026, 9, 29, 18, 0, tzinfo=timezone.utc)
+        cutoff = end - timedelta(days=1)
+        probe = {
+            "ok": True,
+            "reel_count": 0,
+            "blocked": False,
+            "media_auth_gated": True,
+            "reel_items": [],
+            "timings": {},
+        }
+        with mock.patch.object(
+            crc.instagram_smoke,
+            "probe_public_session",
+            return_value=probe,
+        ):
+            result = crc.discover_instagram(
+                {"creator_key": "creator"},
+                {"profile_url": "https://www.instagram.com/example/"},
+                cutoff,
+                end,
+                15,
+            )
+
+        self.assertFalse(result["window_complete"])
+        self.assertEqual(result["coverage_limited_reason"], "MEDIA_AUTH_GATE")
+
+    def test_hard_block_is_not_complete_coverage(self) -> None:
+        end = datetime(2026, 9, 29, 18, 0, tzinfo=timezone.utc)
+        cutoff = end - timedelta(days=1)
+        probe = {
+            "ok": False,
+            "reel_count": 0,
+            "blocked": True,
+            "media_auth_gated": False,
+            "reel_items": [],
+            "timings": {},
+        }
+        with mock.patch.object(
+            crc.instagram_smoke,
+            "probe_public_session",
+            return_value=probe,
+        ):
+            result = crc.discover_instagram(
+                {"creator_key": "creator"},
+                {"profile_url": "https://www.instagram.com/example/"},
+                cutoff,
+                end,
+                15,
+            )
+
+        self.assertFalse(result["window_complete"])
+        self.assertEqual(result["coverage_limited_reason"], "HARD_BLOCK")
+
     def test_instagram_discovery_reuses_cached_publish_times(self) -> None:
         end = datetime(2026, 9, 29, 18, 0, tzinfo=timezone.utc)
         cutoff = end - timedelta(days=1)
