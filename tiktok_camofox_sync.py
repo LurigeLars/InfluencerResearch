@@ -340,6 +340,7 @@ def _wait_for_tiktok_profile_ready(
     tab_id: str,
     *,
     user_id: str,
+    target: int = 1,
     max_wait_seconds: float = 3.0,
     poll_seconds: float = 0.25,
 ) -> dict[str, Any]:
@@ -373,16 +374,12 @@ def _wait_for_tiktok_profile_ready(
             if isinstance(value, dict):
                 last_value = value
                 ready_state = str(value.get("readyState") or "").casefold()
-                ready = (
-                    int(value.get("videoLinkCount") or 0) > 0
-                    or (
-                        ready_state in {"interactive", "complete"}
-                        and int(value.get("bodyTextLength") or 0) > 200
-                    )
-                )
-                if ready:
+                link_count = int(value.get("videoLinkCount") or 0)
+                target_reached = link_count >= max(1, int(target))
+                if target_reached:
                     return {
                         "ready": True,
+                        "target_reached": True,
                         "attempts": attempts,
                         "wait_ms": round((time.perf_counter() - started) * 1000, 1),
                         "last_value": last_value,
@@ -394,7 +391,11 @@ def _wait_for_tiktok_profile_ready(
         remaining = deadline - time.perf_counter()
         if remaining <= 0:
             return {
-                "ready": False,
+                "ready": bool(
+                    isinstance(last_value, dict)
+                    and int(last_value.get("videoLinkCount") or 0) > 0
+                ),
+                "target_reached": False,
                 "attempts": attempts,
                 "wait_ms": round((time.perf_counter() - started) * 1000, 1),
                 "last_value": last_value,
@@ -428,6 +429,11 @@ def collect_video_urls(
     stagnant = 0
     rounds = 0
     links_endpoint_errors = 0
+    links_calls = 0
+    snapshot_calls = 0
+    links_ms = 0.0
+    snapshot_ms = 0.0
+    scroll_ms = 0.0
 
     if len(found) >= target:
         return found[:target], {
@@ -436,6 +442,11 @@ def collect_video_urls(
             "rounds": 0,
             "stagnant_rounds_at_end": 0,
             "links_endpoint_errors": 0,
+            "links_calls": 0,
+            "snapshot_calls": 0,
+            "links_ms": 0.0,
+            "snapshot_ms": 0.0,
+            "scroll_ms": 0.0,
             "initial_url_count": initial_url_count,
             "source": "readiness_dom",
         }
@@ -444,24 +455,40 @@ def collect_video_urls(
         rounds += 1
         before = len(found)
 
-        snap = request_json(
-            "GET",
-            f"/tabs/{urllib.parse.quote(tab_id)}/snapshot?"
-            + urllib.parse.urlencode({"userId": user_id, "format": "text"}),
-            timeout=30,
-        )
-        candidates = flatten_video_links(snap, handle)
-
+        candidates: list[str] = []
         try:
+            links_started = time.perf_counter()
             links = request_json(
                 "GET",
                 f"/tabs/{urllib.parse.quote(tab_id)}/links?"
                 + urllib.parse.urlencode({"userId": user_id, "limit": 250}),
                 timeout=20,
             )
+            links_ms += (time.perf_counter() - links_started) * 1000
+            links_calls += 1
             candidates.extend(flatten_video_links(links, handle))
         except Exception:
             links_endpoint_errors += 1
+
+        for url in candidates:
+            clean = url.split("?")[0].rstrip("/")
+            if clean not in seen:
+                seen.add(clean)
+                found.append(clean)
+
+        if len(found) >= target:
+            break
+
+        snapshot_started = time.perf_counter()
+        snap = request_json(
+            "GET",
+            f"/tabs/{urllib.parse.quote(tab_id)}/snapshot?"
+            + urllib.parse.urlencode({"userId": user_id, "format": "text"}),
+            timeout=30,
+        )
+        snapshot_ms += (time.perf_counter() - snapshot_started) * 1000
+        snapshot_calls += 1
+        candidates = flatten_video_links(snap, handle)
 
         for url in candidates:
             clean = url.split("?")[0].rstrip("/")
@@ -480,12 +507,14 @@ def collect_video_urls(
         if stagnant >= 5:
             break
 
+        scroll_started = time.perf_counter()
         request_json(
             "POST",
             f"/tabs/{urllib.parse.quote(tab_id)}/scroll",
             {"userId": user_id, "direction": "down", "amount": 1200},
             timeout=20,
         )
+        scroll_ms += (time.perf_counter() - scroll_started) * 1000
         time.sleep(1.0)
 
     return found[:target], {
@@ -494,6 +523,11 @@ def collect_video_urls(
         "rounds": rounds,
         "stagnant_rounds_at_end": stagnant,
         "links_endpoint_errors": links_endpoint_errors,
+        "links_calls": links_calls,
+        "snapshot_calls": snapshot_calls,
+        "links_ms": round(links_ms, 1),
+        "snapshot_ms": round(snapshot_ms, 1),
+        "scroll_ms": round(scroll_ms, 1),
         "initial_url_count": initial_url_count,
         "source": "browser_scan",
     }
@@ -1753,6 +1787,7 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
             readiness = _wait_for_tiktok_profile_ready(
                 tab_id,
                 user_id=user_id,
+                target=discovery_target,
             )
 
             readiness_value = (
@@ -1781,6 +1816,9 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
                 readiness.get("attempts") or 0
             )
             discovery_diag["profile_ready"] = bool(readiness.get("ready"))
+            discovery_diag["profile_ready_target_reached"] = bool(
+                readiness.get("target_reached")
+            )
             discovery_diag["readiness_seed_count"] = len(readiness_urls)
             catalog = merge_catalog(catalog, discovered, profile_url=profile_url)
             atomic_json(catalog_path, catalog)
