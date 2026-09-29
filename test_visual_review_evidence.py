@@ -57,6 +57,47 @@ class VisualReviewClassifierTests(unittest.TestCase):
         self.assertEqual(run.call_count, 1)
         self.assertIn("11", run.call_args.args[0])
 
+    def test_transcript_caption_terms_do_not_count_as_chart_signal(self) -> None:
+        score, reasons = vve.score_visual_frame_text(
+            "Gube futures contract called Heating Oilis aetually",
+            transcript_text="The futures contract called heating oil is actually ultra low sulfur diesel.",
+        )
+        self.assertEqual(score, 0.0)
+        self.assertEqual(reasons, ["TRANSCRIPT_CAPTION_OVERLAP"])
+
+    def test_structured_market_data_survives_transcript_overlap_filter(self) -> None:
+        score, reasons = vve.score_visual_frame_text(
+            "QQQ support resistance 500 495 1.8%",
+            transcript_text="QQQ support resistance is important here.",
+        )
+        self.assertGreaterEqual(score, 2.0)
+        self.assertIn("NUMERIC_DENSITY", reasons)
+
+    def test_shared_bundle_does_not_escalate_from_burned_in_captions(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            records = self._records(root)
+            transcript = "The futures contract called heating oil is actually ultra low sulfur diesel."
+            with mock.patch.object(
+                vve,
+                "_ocr_visual_frame",
+                return_value="The futures contract called Heating Oil is actually",
+            ), mock.patch.object(vve, "_make_contact_sheet", return_value=None):
+                bundle = vve.build_agent_visual_bundle(
+                    root,
+                    "nicholascrown",
+                    records,
+                    "ffmpeg",
+                    root,
+                    transcript_text=transcript,
+                )
+        self.assertFalse(bundle["visual_review_recommended"])
+        self.assertEqual(bundle["chart_signal_frame_count"], 0)
+        self.assertTrue(all(
+            row["visual_signals"] == ["TRANSCRIPT_CAPTION_OVERLAP"]
+            for row in bundle["representative_frames"]
+        ))
+
     def test_nicholas_crown_escalates_per_video_when_frames_are_chart_heavy(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
