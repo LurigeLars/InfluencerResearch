@@ -31,6 +31,7 @@ class MCPContractTests(unittest.TestCase):
                 "creator_evaluate",
                 "creator_monitor",
                 "creator_recent_check",
+                "analysis_evidence_get",
                 "research_status",
                 "research_stop",
             ],
