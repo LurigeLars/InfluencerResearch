@@ -199,8 +199,8 @@ class RecentInstagramTests(unittest.TestCase):
                 "timings": {"reel_time_cache_hits": 1},
             }
             with mock.patch.object(
-                crc.instagram_smoke,
-                "probe_public_session",
+                crc.instagram,
+                "discover_reels_authenticated",
                 return_value=probe,
             ) as run:
                 result = crc.discover_instagram(
