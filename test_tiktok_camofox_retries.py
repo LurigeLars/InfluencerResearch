@@ -73,13 +73,56 @@ class CamoFoxRetryTests(unittest.TestCase):
             result = sync._wait_for_tiktok_profile_ready(
                 "tab-1",
                 user_id="user-1",
+                target=3,
             )
 
         self.assertTrue(result["ready"])
+        self.assertTrue(result["target_reached"])
         self.assertEqual(result["attempts"], 1)
         self.assertEqual(len(result["last_value"]["videoLinks"]), 3)
         request.assert_called_once()
         sleep.assert_not_called()
+
+    def test_profile_readiness_waits_for_requested_link_target(self) -> None:
+        responses = [
+            {
+                "result": {
+                    "readyState": "complete",
+                    "bodyTextLength": 1200,
+                    "videoLinkCount": 0,
+                    "videoLinks": [],
+                    "href": "https://www.tiktok.com/@nicholas_crown",
+                }
+            },
+            {
+                "result": {
+                    "readyState": "complete",
+                    "bodyTextLength": 1200,
+                    "videoLinkCount": 15,
+                    "videoLinks": [
+                        f"https://www.tiktok.com/@nicholas_crown/video/{i}"
+                        for i in range(15)
+                    ],
+                    "href": "https://www.tiktok.com/@nicholas_crown",
+                }
+            },
+        ]
+        with (
+            mock.patch.object(sync, "request_json", side_effect=responses) as request,
+            mock.patch.object(sync.time, "sleep") as sleep,
+        ):
+            result = sync._wait_for_tiktok_profile_ready(
+                "tab-1",
+                user_id="user-1",
+                target=15,
+            )
+
+        self.assertTrue(result["ready"])
+        self.assertTrue(result["target_reached"])
+        self.assertEqual(result["attempts"], 2)
+        self.assertEqual(len(result["last_value"]["videoLinks"]), 15)
+        self.assertEqual(request.call_count, 2)
+        sleep.assert_called_once()
 
     def test_collect_video_urls_uses_readiness_seed_without_browser_rescan(self) -> None:
         initial = [
@@ -101,6 +144,36 @@ class CamoFoxRetryTests(unittest.TestCase):
         self.assertEqual(diag["source"], "readiness_dom")
         self.assertEqual(diag["initial_url_count"], 3)
         request.assert_not_called()
+
+    def test_collect_video_urls_skips_snapshot_when_links_endpoint_reaches_target(self) -> None:
+        links = {
+            "links": [
+                f"https://www.tiktok.com/@nicholas_crown/video/{i}"
+                for i in range(15)
+            ]
+        }
+        calls = []
+
+        def fake_request(method: str, path: str, body=None, timeout=30):
+            calls.append((method, path))
+            if "/links?" in path:
+                return links
+            raise AssertionError(f"unexpected request: {method} {path}")
+
+        with mock.patch.object(sync, "request_json", side_effect=fake_request):
+            found, diag = sync.collect_video_urls(
+                "tab-1",
+                user_id="user-1",
+                handle="nicholas_crown",
+                target=15,
+            )
+
+        self.assertEqual(len(found), 15)
+        self.assertEqual(diag["links_calls"], 1)
+        self.assertEqual(diag["snapshot_calls"], 0)
+        self.assertEqual(diag["rounds"], 1)
+        self.assertEqual(diag["source"], "browser_scan")
+        self.assertFalse(any("/snapshot?" in path for _, path in calls))
 
     def test_collect_video_urls_filters_foreign_readiness_links(self) -> None:
         initial = [
