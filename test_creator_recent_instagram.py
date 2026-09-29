@@ -135,6 +135,76 @@ class RecentInstagramTests(unittest.TestCase):
             known_reel_times={"RECENT123": "2026-09-29T15:10:53+00:00"},
         )
 
+    def test_public_probe_uses_cached_reel_time_without_navigation(self) -> None:
+        reel_url = "https://www.instagram.com/reel/RECENT123/"
+        initial_dom = {
+            "reel_links": [reel_url],
+            "media_links": [reel_url],
+            "cookie_consent_visible": False,
+            "media_auth_gate_visible": False,
+            "handle_visible": True,
+            "body_text_length": 1000,
+        }
+        classified = {
+            "handle_visible": True,
+            "reels": [reel_url],
+            "block_hits": [],
+            "auth_prompt_hits": [],
+            "language_dialog_visible": False,
+            "language_dialog_hits": [],
+            "snapshot_excerpt": "",
+        }
+        calls = []
+
+        def fake_request(method, path, body=None, timeout=30):
+            calls.append((method, path))
+            if method == "POST" and path == "/tabs":
+                return {"tabId": "tab-1"}
+            if method == "GET" and "/snapshot?" in path:
+                return {}
+            if method == "GET" and "/links?" in path:
+                return {}
+            return {"ok": True}
+
+        with (
+            mock.patch.object(
+                crc.instagram_smoke,
+                "_wait_for_profile_ready",
+                return_value={
+                    "ready": True,
+                    "attempts": 1,
+                    "wait_ms": 12.0,
+                    "dom": initial_dom,
+                    "last_error": None,
+                },
+            ),
+            mock.patch.object(
+                crc.instagram_smoke,
+                "classify_snapshot",
+                return_value=classified,
+            ),
+            mock.patch.object(
+                crc.instagram_smoke,
+                "request_json",
+                side_effect=fake_request,
+            ),
+        ):
+            result = crc.instagram_smoke.probe_public_session(
+                "https://www.instagram.com/example/",
+                "example",
+                1,
+                inspect_reel_times=True,
+                known_reel_times={"RECENT123": "2026-09-29T15:10:53+00:00"},
+            )
+
+        self.assertEqual(
+            result["reel_items"][0]["published_at_source"],
+            "LOCAL_MANIFEST_CACHE",
+        )
+        self.assertEqual(result["timings"]["reel_time_cache_hits"], 1)
+        self.assertEqual(result["timings"]["reel_time_network_probes"], 0)
+        self.assertFalse(any("/navigate" in path for _, path in calls))
+
     def test_story_finalize_reuses_prefetched_capture(self) -> None:
         prefetched = {
             "capture": {"reason": "OK"},
