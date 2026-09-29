@@ -11,7 +11,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 
-SCREEN_VERSION = "0.4.6"
+SCREEN_VERSION = "0.4.7"
 ANALYSIS_OWNER = "EKONOMI"
 MIN_TRANSCRIPT_WORDS = 8
 MIN_TRANSCRIPT_CHARS = 48
@@ -214,6 +214,21 @@ def build_packet(
     visual_status = str(item.get("visual_description_status") or "").upper()
     raw_visual_description = str(item.get("visual_description") or "").strip()
     visual_description = raw_visual_description if visual_status == "DONE" else ""
+    visual_bundle = item.get("agent_visual_bundle") if isinstance(item.get("agent_visual_bundle"), dict) else {}
+    visual_review_recommended = bool(
+        item.get("visual_review_recommended")
+        or visual_bundle.get("visual_review_recommended")
+    )
+    analysis_mode_recommended = str(
+        item.get("analysis_mode_recommended")
+        or visual_bundle.get("analysis_mode_recommended")
+        or ("TRANSCRIPT_PLUS_VISUAL_REVIEW" if visual_review_recommended else "TRANSCRIPT_ONLY")
+    )
+    visual_review_reason = list(
+        item.get("visual_review_reason")
+        or visual_bundle.get("visual_review_reason")
+        or []
+    )
     evidence_parts = [
         x
         for x in (transcript, visual_description, visible_text, browser_text, caption)
@@ -247,6 +262,10 @@ def build_packet(
         "analysis_status": "PENDING_ANALYSIS",
         "analysis_content_status": item.get("analysis_content_status"),
         "analysis_content_reason": item.get("analysis_content_reason"),
+        "analysis_mode_recommended": analysis_mode_recommended,
+        "visual_review_recommended": visual_review_recommended,
+        "visual_review_reason": visual_review_reason,
+        "agent_visual_bundle": visual_bundle or None,
         "evidence_lineage_id": evidence_lineage_id,
         "duplicate_of": duplicate_of,
         "duplicate_basis": duplicate_basis,
@@ -327,6 +346,8 @@ def build_packet(
                 "Avanza MCP owns ingestion, provenance, deterministic dedupe, schema/validation and technical overlap review.",
                 "Cross-platform reposts are one evidence lineage, not independent confirmations.",
                 "For YouTube items, use transcript plus retained timestamped visual evidence when available; visual frames are supporting evidence, not execution truth.",
+                "If visual_review_recommended=true, inspect representative visual evidence before concluding; TRANSCRIPT alone is not sufficient for that item.",
+                "visual_review_recommended is decided per video. Creator history may bias priority but must never prevent an unflagged creator's chart-heavy video from escalating to visual review.",
                 "If semantic duplication is plausible but not deterministically provable, use duplicate_basis=POSSIBLE_SEMANTIC_DUPLICATE and let Ekonomi decide.",
                 "A TEST_CANDIDATE or BACKLOG_CANDIDATE does not change system state; material implementation requires a new HANDOFF-XXX.",
             ],
