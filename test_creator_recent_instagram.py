@@ -216,6 +216,80 @@ class RecentInstagramTests(unittest.TestCase):
         self.assertEqual(result["timings"]["reel_time_network_probes"], 0)
         self.assertFalse(any("/navigate" in path for _, path in calls))
 
+    def test_public_probe_does_not_scroll_after_final_empty_round(self) -> None:
+        module_path = Path(__file__).with_name("instagram_camofox_public_smoke.py")
+        spec = importlib.util.spec_from_file_location(
+            "instagram_camofox_public_smoke_final_round_test",
+            module_path,
+        )
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        smoke = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(smoke)
+
+        initial_dom = {
+            "reel_links": [],
+            "media_links": [],
+            "cookie_consent_visible": False,
+            "media_auth_gate_visible": False,
+            "handle_visible": True,
+            "body_text_length": 1000,
+        }
+        classified = {
+            "handle_visible": True,
+            "reels": [],
+            "block_hits": [],
+            "auth_prompt_hits": [],
+            "language_dialog_visible": False,
+            "language_dialog_hits": [],
+            "snapshot_excerpt": "",
+        }
+        calls = []
+
+        def fake_request(method, path, body=None, timeout=30):
+            calls.append((method, path))
+            if method == "POST" and path == "/tabs":
+                return {"tabId": "tab-1"}
+            if method == "GET" and "/snapshot?" in path:
+                return {}
+            if method == "GET" and "/links?" in path:
+                return {}
+            return {"ok": True}
+
+        with (
+            mock.patch.object(
+                smoke,
+                "_wait_for_profile_ready",
+                return_value={
+                    "ready": True,
+                    "attempts": 1,
+                    "wait_ms": 10.0,
+                    "dom": initial_dom,
+                    "last_error": None,
+                },
+            ),
+            mock.patch.object(smoke, "dom_probe", return_value=initial_dom),
+            mock.patch.object(smoke, "classify_snapshot", return_value=classified),
+            mock.patch.object(smoke, "request_json", side_effect=fake_request),
+            mock.patch.object(smoke.time, "sleep") as sleep,
+        ):
+            result = smoke.probe_public_session(
+                "https://www.instagram.com/example/",
+                "example",
+                1,
+                inspect_reel_times=True,
+            )
+
+        scrolls = [
+            path
+            for method, path in calls
+            if method == "POST" and path.endswith("/scroll")
+        ]
+        self.assertEqual(len(scrolls), 2)
+        self.assertEqual(result["timings"]["discovery_rounds"], 3)
+        self.assertEqual(result["reel_count"], 0)
+        self.assertEqual(sleep.call_count, 2)
+
     def test_instagram_profile_readiness_exits_without_blind_sleep(self) -> None:
         module_path = Path(__file__).with_name("instagram_camofox_public_smoke.py")
         spec = importlib.util.spec_from_file_location(
