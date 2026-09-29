@@ -141,7 +141,7 @@ services:
     shm_size: 1536m
     mem_limit: 3g
     cpus: 3.0
-    pids_limit: 256
+    pids_limit: 384
     restart: unless-stopped
     healthcheck:
       test:
