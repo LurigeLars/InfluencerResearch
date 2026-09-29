@@ -71,6 +71,47 @@ class RecentInstagramTests(unittest.TestCase):
             inspect_reel_times=True,
         )
 
+    def test_story_finalize_reuses_prefetched_capture(self) -> None:
+        prefetched = {
+            "capture": {"reason": "OK"},
+            "visual_enrichment": {"errors": []},
+            "timings": {"total_ms": 123.0},
+            "state": "DONE",
+            "errors": [],
+        }
+        bridge = {
+            "promoted": [],
+            "available": [],
+            "reused_existing_count": 0,
+            "reattributed_count": 0,
+            "identity_aliases_retired_count": 0,
+            "conflicts": [],
+            "manifest_changed": False,
+        }
+
+        with tempfile.TemporaryDirectory() as td:
+            with (
+                mock.patch.object(crc, "_capture_instagram_story_run") as capture,
+                mock.patch.object(crc, "_promote_story_items", return_value=bridge),
+                mock.patch.object(crc.tts, "run_research_queue") as queue,
+            ):
+                result = crc._ingest_instagram_stories(
+                    Path(td),
+                    {"creator_key": "creator"},
+                    {
+                        "platform": "INSTAGRAM",
+                        "profile_url": "https://www.instagram.com/example/",
+                    },
+                    datetime(2026, 9, 29, tzinfo=timezone.utc),
+                    5,
+                    precomputed_run=prefetched,
+                )
+
+        capture.assert_not_called()
+        queue.assert_not_called()
+        self.assertEqual(result["state"], "DONE")
+        self.assertEqual(result["pipeline_timings"]["total_ms"], 123.0)
+
     def test_instagram_ingest_is_bounded_to_selected_shortcodes(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
