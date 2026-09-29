@@ -1577,7 +1577,22 @@ def _manifest_item_extraction_complete(item: dict) -> bool:
     return True
 
 
+def _catalog_covers_video_ids(catalog: dict, video_ids: set[str] | None) -> bool:
+    ids = {str(x) for x in (video_ids or set()) if str(x)}
+    if not ids:
+        return False
+    items = catalog.get("items") if isinstance(catalog.get("items"), dict) else {}
+    order = {str(x) for x in (catalog.get("order") or []) if str(x)}
+    return all(
+        vid in order
+        and isinstance(items.get(vid), dict)
+        and bool(str(items[vid].get("url") or "").strip())
+        for vid in ids
+    )
+
+
 def process_source(root: Path, source: dict, *, max_new_override: int | None = None, include_video_ids: set[str] | None = None, discovery_target_override: int | None = None) -> dict:
+    process_started = time.perf_counter()
     creator_key = str(source["creator_key"])
     handle = str(source["handle"]).lstrip("@")
     profile_url = str(source.get("profile_url") or f"https://www.tiktok.com/@{handle}")
@@ -1615,47 +1630,61 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
         # ever-growing historical catalog on every monitor cycle is unnecessary.
         discovery_target = min(max_catalog, max(1, int(discovery_target_override)))
 
-    user_id = f"instagramresearch-tiktok-{creator_key}"
-    session_key = f"{creator_key}-feed"
-    tab_id = None
+    exact_ids = {str(x) for x in (include_video_ids or set()) if str(x)}
+    discovery_skipped_for_exact_ids = _catalog_covers_video_ids(catalog, exact_ids)
+    discovery_started = time.perf_counter()
 
-    try:
-        tab = request_json("POST", "/tabs", {
-            "userId": user_id,
-            "sessionKey": session_key,
-            "url": profile_url,
-            "trace": False,
-        }, timeout=60)
-        if not isinstance(tab, dict) or not tab.get("tabId"):
-            raise RuntimeError(f"Unexpected CamoFox create-tab response: {tab}")
-        tab_id = str(tab["tabId"])
-        time.sleep(3)
+    if discovery_skipped_for_exact_ids:
+        discovery_diag = {
+            "ok": True,
+            "source": "existing_catalog_exact_ids",
+            "found": len(exact_ids),
+            "requested": len(exact_ids),
+            "skipped": True,
+        }
+    else:
+        user_id = f"instagramresearch-tiktok-{creator_key}"
+        session_key = f"{creator_key}-feed"
+        tab_id = None
+        try:
+            tab = request_json("POST", "/tabs", {
+                "userId": user_id,
+                "sessionKey": session_key,
+                "url": profile_url,
+                "trace": False,
+            }, timeout=60)
+            if not isinstance(tab, dict) or not tab.get("tabId"):
+                raise RuntimeError(f"Unexpected CamoFox create-tab response: {tab}")
+            tab_id = str(tab["tabId"])
+            time.sleep(3)
 
-        discovered, discovery_diag = collect_video_urls(
-            tab_id,
-            user_id=user_id,
-            handle=handle,
-            target=discovery_target,
-        )
-        catalog = merge_catalog(catalog, discovered, profile_url=profile_url)
-        atomic_json(catalog_path, catalog)
-    finally:
-        if tab_id:
+            discovered, discovery_diag = collect_video_urls(
+                tab_id,
+                user_id=user_id,
+                handle=handle,
+                target=discovery_target,
+            )
+            catalog = merge_catalog(catalog, discovered, profile_url=profile_url)
+            atomic_json(catalog_path, catalog)
+        finally:
+            if tab_id:
+                with contextlib.suppress(Exception):
+                    request_json(
+                        "DELETE",
+                        f"/tabs/{urllib.parse.quote(tab_id)}?"
+                        + urllib.parse.urlencode({"userId": user_id}),
+                        timeout=10,
+                    )
+            # Each creator sync owns a short-lived CamoFox session. Close it
+            # explicitly so capacity does not depend on the background reaper.
             with contextlib.suppress(Exception):
                 request_json(
                     "DELETE",
-                    f"/tabs/{urllib.parse.quote(tab_id)}?"
-                    + urllib.parse.urlencode({"userId": user_id}),
+                    f"/sessions/{urllib.parse.quote(user_id)}",
                     timeout=10,
                 )
-        # Each creator sync owns a short-lived CamoFox session. Close it
-        # explicitly so capacity does not depend on the background reaper.
-        with contextlib.suppress(Exception):
-            request_json(
-                "DELETE",
-                f"/sessions/{urllib.parse.quote(user_id)}",
-                timeout=10,
-            )
+
+    discovery_ms = round((time.perf_counter() - discovery_started) * 1000, 1)
 
     main_manifest = load_json(root / "state" / "manifest.json", {"schema_version": 1, "items": {}})
     main_items = main_manifest.get("items", {})
@@ -1686,11 +1715,23 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
     completed = []
     failures = []
     downloaded_network = 0
+    stage_totals = {
+        "download": 0.0,
+        "transcription": 0.0,
+        "visual_evidence": 0.0,
+        "visual_text": 0.0,
+        "manifest": 0.0,
+    }
 
     for url in candidates:
+        video_started = time.perf_counter()
         vid = video_id_from_url(url)
+        item_timings: dict[str, float] = {}
 
+        stage_started = time.perf_counter()
         download = download_one(url, video_dir)
+        item_timings["download"] = round((time.perf_counter() - stage_started) * 1000, 1)
+        stage_totals["download"] += item_timings["download"]
         if download.get("source") == "network" and download.get("ok"):
             downloaded_network += 1
 
@@ -1700,9 +1741,11 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
                 "url": url,
                 "stage": "download",
                 "detail": download.get("diagnostic_tail") or download.get("validation"),
+                "timings_ms": item_timings,
             })
             continue
 
+        stage_started = time.perf_counter()
         try:
             transcription = transcribe(
                 root,
@@ -1711,13 +1754,18 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
                 model_holder=model_holder,
             )
         except Exception as exc:
+            item_timings["transcription"] = round((time.perf_counter() - stage_started) * 1000, 1)
+            stage_totals["transcription"] += item_timings["transcription"]
             failures.append({
                 "video_id": vid,
                 "url": url,
                 "stage": "transcription",
                 "detail": f"{type(exc).__name__}: {exc}",
+                "timings_ms": item_timings,
             })
             continue
+        item_timings["transcription"] = round((time.perf_counter() - stage_started) * 1000, 1)
+        stage_totals["transcription"] += item_timings["transcription"]
 
         if not transcription.get("ok"):
             failures.append({
@@ -1725,11 +1773,13 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
                 "url": url,
                 "stage": "transcription",
                 "detail": transcription.get("error"),
+                "timings_ms": item_timings,
             })
             continue
 
         visual_text = None
         transcript_text = str(transcription.get("text") or "").strip()
+        stage_started = time.perf_counter()
         try:
             visual_evidence = capture_local_video_visual_evidence(
                 root,
@@ -1744,7 +1794,11 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
                 "ok": False,
                 "error": f"{type(exc).__name__}:visual_evidence_unavailable",
             }
+        item_timings["visual_evidence"] = round((time.perf_counter() - stage_started) * 1000, 1)
+        stage_totals["visual_evidence"] += item_timings["visual_evidence"]
+
         if not _text_is_analysis_ready(transcript_text):
+            stage_started = time.perf_counter()
             try:
                 visual_text = extract_visible_text(
                     root,
@@ -1758,7 +1812,10 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
                     "text": "",
                     "error": f"{type(exc).__name__}: {exc}",
                 }
+            item_timings["visual_text"] = round((time.perf_counter() - stage_started) * 1000, 1)
+            stage_totals["visual_text"] += item_timings["visual_text"]
 
+        stage_started = time.perf_counter()
         record = update_main_manifest(
             root,
             creator_key=creator_key,
@@ -1768,6 +1825,9 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
             visual_text=visual_text,
             visual_evidence=visual_evidence,
         )
+        item_timings["manifest"] = round((time.perf_counter() - stage_started) * 1000, 1)
+        stage_totals["manifest"] += item_timings["manifest"]
+        item_timings["total"] = round((time.perf_counter() - video_started) * 1000, 1)
 
         if visual_text is not None and not visual_text.get("ok"):
             failures.append({
@@ -1775,6 +1835,7 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
                 "url": url,
                 "stage": "visual_text",
                 "detail": visual_text.get("error"),
+                "timings_ms": item_timings,
             })
             continue
 
@@ -1790,8 +1851,16 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
             "visual_review_recommended": record.get("visual_review_recommended"),
             "visual_review_reason": record.get("visual_review_reason"),
             "visual_evidence_status": record.get("visual_evidence_status"),
+            "visual_evidence_source": visual_evidence.get("source") if isinstance(visual_evidence, dict) else None,
+            "visual_evidence_timings_ms": visual_evidence.get("timings_ms") if isinstance(visual_evidence, dict) else None,
+            "timings_ms": item_timings,
         })
 
+    timings_ms = {
+        "discovery": discovery_ms,
+        **{key: round(value, 1) for key, value in stage_totals.items()},
+        "total": round((time.perf_counter() - process_started) * 1000, 1),
+    }
     return {
         "creator_key": creator_key,
         "handle": handle,
@@ -1800,6 +1869,7 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
         "discovery_target": discovery_target,
         "catalog_after": len(catalog.get("items", {})),
         "discovery": discovery_diag,
+        "discovery_skipped_for_exact_ids": discovery_skipped_for_exact_ids,
         "skipped_known": skipped_known,
         "candidate_new": len(candidates),
         "max_new_downloads_effective": max_new_downloads,
@@ -1807,8 +1877,8 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
         "downloaded_network": downloaded_network,
         "failures": failures,
         "completed": completed,
+        "timings_ms": timings_ms,
     }
-
 
 def main() -> int:
     parser = argparse.ArgumentParser()
