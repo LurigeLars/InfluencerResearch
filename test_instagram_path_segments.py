@@ -179,40 +179,45 @@ class InstagramPathSegmentTests(unittest.TestCase):
                 return "https://scontent.example.net/media/222.jpg?token=two"
             return None
 
-        with tempfile.TemporaryDirectory() as td, (
-            mock.patch.object(
-                ephemeral,
-                "instagram_story_error_present",
-                return_value=False,
-            ),
-            mock.patch.object(
-                ephemeral,
-                "story_view_confirmation_present",
-                return_value=False,
-            ),
-            mock.patch.object(
-                ephemeral,
-                "dismiss_story_view_confirmation",
-                return_value=False,
-            ),
-            mock.patch.object(
-                ephemeral,
-                "visible_story_media_url",
-                side_effect=media_url,
-            ),
-            mock.patch.object(ephemeral, "safe_body_text", return_value="story"),
-        ):
-            result = ephemeral.capture_story_frames(
-                page=page,
-                root=Path(td),
-                manifest=manifest,
-                creator="example",
-                start_url="https://www.instagram.com/stories/example/",
-                source_type="STORY",
-                highlight_label=None,
-                max_items=5,
-                preopened=True,
-            )
+        with tempfile.TemporaryDirectory() as td:
+            with (
+                mock.patch.object(
+                    ephemeral,
+                    "instagram_story_error_present",
+                    return_value=False,
+                ),
+                mock.patch.object(
+                    ephemeral,
+                    "story_view_confirmation_present",
+                    return_value=False,
+                ),
+                mock.patch.object(
+                    ephemeral,
+                    "dismiss_story_view_confirmation",
+                    return_value=False,
+                ),
+                mock.patch.object(
+                    ephemeral,
+                    "visible_story_media_url",
+                    side_effect=media_url,
+                ),
+                mock.patch.object(
+                    ephemeral,
+                    "safe_body_text",
+                    return_value="story",
+                ),
+            ):
+                result = ephemeral.capture_story_frames(
+                    page=page,
+                    root=Path(td),
+                    manifest=manifest,
+                    creator="example",
+                    start_url="https://www.instagram.com/stories/example/",
+                    source_type="STORY",
+                    highlight_label=None,
+                    max_items=5,
+                    preopened=True,
+                )
 
         self.assertEqual(result["visited_frames"], 2)
         self.assertEqual(result["captured_new"], 2)
