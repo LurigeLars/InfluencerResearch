@@ -449,6 +449,32 @@ def verify_adapter_negative_paths():
     }
 
 
+class ManifestDoneIdsTests(unittest.TestCase):
+    def test_instagram_requires_current_visual_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            atomic(root / "state" / "manifest.json", {
+                "items": {
+                    "current": {
+                        "source_platform": "INSTAGRAM",
+                        "source_id": "current",
+                        "download_status": "DONE",
+                        "transcription_status": "DONE",
+                        "visual_review_policy_version": cm.VISUAL_REVIEW_POLICY_VERSION,
+                    },
+                    "stale": {
+                        "source_platform": "INSTAGRAM",
+                        "source_id": "stale",
+                        "download_status": "DONE",
+                        "transcription_status": "DONE",
+                        "visual_review_policy_version": cm.VISUAL_REVIEW_POLICY_VERSION - 1,
+                    },
+                }
+            })
+            done = cm.manifest_done_ids(root, "INSTAGRAM")
+        self.assertEqual(done, {"current"})
+
+
 class CreatorMonitorContractTests(unittest.TestCase):
     def test_tiktok_cutoff_partition(self) -> None:
         result = verify_tiktok_cutoff_partition()

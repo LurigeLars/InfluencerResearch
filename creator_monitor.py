@@ -12,6 +12,7 @@ from pathlib import Path
 from creator_registry import get_creator, load_registry, select_monitor_sources
 import youtube_creator_evaluation as yte
 import tiktok_camofox_sync as tts
+from video_visual_evidence import VISUAL_REVIEW_POLICY_VERSION
 
 MONITOR_VERSION = "0.1.5"
 MAX_SEEN_IDS = 1000
@@ -60,7 +61,11 @@ def manifest_done_ids(root: Path, platform: str) -> set[str]:
         for key, item in (manifest.get("items") or {}).items():
             if not isinstance(item, dict) or str(item.get("source_platform") or "").upper() != "INSTAGRAM":
                 continue
-            if item.get("download_status") == "DONE" and item.get("transcription_status") == "DONE":
+            if (
+                item.get("download_status") == "DONE"
+                and item.get("transcription_status") == "DONE"
+                and int(item.get("visual_review_policy_version") or 0) >= VISUAL_REVIEW_POLICY_VERSION
+            ):
                 out.add(str(item.get("source_id") or key))
         return out
 
