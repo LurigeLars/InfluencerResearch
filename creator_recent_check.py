@@ -2071,6 +2071,19 @@ def _main_impl() -> int:
                     "pipeline_total_ms": round(float(pt.get("total_ms") or 0.0), 1),
                     "browser_total_ms": round(float(pt.get("browser_total_ms") or 0.0), 1),
                     "capture_ms": round(float(pt.get("capture_ms") or 0.0), 1),
+                    "story_advance_wait_ms": round(
+                        float(pt.get("story_advance_wait_ms") or 0.0),
+                        1,
+                    ),
+                    "story_advance_attempts": int(
+                        pt.get("story_advance_attempts") or 0
+                    ),
+                    "story_advance_ready_count": int(
+                        pt.get("story_advance_ready_count") or 0
+                    ),
+                    "story_advance_timeout_count": int(
+                        pt.get("story_advance_timeout_count") or 0
+                    ),
                     "ytdlp_ms": round(float(pt.get("ytdlp_ms") or 0.0), 1),
                     "visual_enrichment_ms": round(
                         float(pt.get("visual_enrichment_ms") or 0.0),
