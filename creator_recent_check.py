@@ -1802,6 +1802,33 @@ def _main_impl() -> int:
             reverse=True,
         )[:20]
 
+        ingestion_pipeline = []
+        for row in ingestion_results:
+            pipeline = row.get("pipeline_timings_ms") or {}
+            if not isinstance(pipeline, dict) or not pipeline:
+                continue
+            ingestion_pipeline.append({
+                "creator_key": row.get("creator_key"),
+                "platform": row.get("platform"),
+                "requested": int(row.get("requested") or 0),
+                "completed_count": len(row.get("completed_ids") or []),
+                "discovery_skipped_for_exact_ids": bool(
+                    row.get("discovery_skipped_for_exact_ids")
+                ),
+                "timings_ms": {
+                    key: round(float(pipeline.get(key) or 0.0), 1)
+                    for key in (
+                        "discovery",
+                        "download",
+                        "transcription",
+                        "visual_evidence",
+                        "visual_text",
+                        "manifest",
+                        "total",
+                    )
+                },
+            })
+
         visual_by_creator: list[dict] = []
         visual_totals = {
             "ocr_attempted": 0,
@@ -1953,6 +1980,7 @@ def _main_impl() -> int:
                 },
                 "stage_totals_ms": stage_totals_ms,
                 "slowest_operations": slowest_operations,
+                "ingestion_pipeline": ingestion_pipeline,
             },
             "auto_ingest": True,
             "auto_analysis_contract": {
