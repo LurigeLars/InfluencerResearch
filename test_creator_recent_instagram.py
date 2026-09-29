@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import tempfile
 import unittest
@@ -53,7 +54,7 @@ class RecentInstagramTests(unittest.TestCase):
                 },
             ],
         }
-        with mock.patch.object(crc.instagram_smoke, "probe_public_session", return_value=probe) as run:
+        with mock.patch.object(smoke, "probe_public_session", return_value=probe) as run:
             result = crc.discover_instagram(
                 {"creator_key": "creator"},
                 {"profile_url": "https://www.instagram.com/example/"},
@@ -113,7 +114,7 @@ class RecentInstagramTests(unittest.TestCase):
                 "timings": {"reel_time_cache_hits": 1},
             }
             with mock.patch.object(
-                crc.instagram_smoke,
+                smoke,
                 "probe_public_session",
                 return_value=probe,
             ) as run:
@@ -136,6 +137,16 @@ class RecentInstagramTests(unittest.TestCase):
         )
 
     def test_public_probe_uses_cached_reel_time_without_navigation(self) -> None:
+        module_path = Path(__file__).with_name("instagram_camofox_public_smoke.py")
+        spec = importlib.util.spec_from_file_location(
+            "instagram_camofox_public_smoke_perf_test",
+            module_path,
+        )
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        smoke = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(smoke)
+
         reel_url = "https://www.instagram.com/reel/RECENT123/"
         initial_dom = {
             "reel_links": [reel_url],
@@ -168,7 +179,7 @@ class RecentInstagramTests(unittest.TestCase):
 
         with (
             mock.patch.object(
-                crc.instagram_smoke,
+                smoke,
                 "_wait_for_profile_ready",
                 return_value={
                     "ready": True,
@@ -179,17 +190,17 @@ class RecentInstagramTests(unittest.TestCase):
                 },
             ),
             mock.patch.object(
-                crc.instagram_smoke,
+                smoke,
                 "classify_snapshot",
                 return_value=classified,
             ),
             mock.patch.object(
-                crc.instagram_smoke,
+                smoke,
                 "request_json",
                 side_effect=fake_request,
             ),
         ):
-            result = crc.instagram_smoke.probe_public_session(
+            result = smoke.probe_public_session(
                 "https://www.instagram.com/example/",
                 "example",
                 1,
