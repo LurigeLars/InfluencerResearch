@@ -1409,7 +1409,7 @@ def update_main_manifest(
     download: dict,
     transcription: dict,
     visual_text: dict | None,
-    visual_evidence: dict | None,
+    visual_evidence: dict | None = None,
 ) -> dict:
     manifest_path = root / "state" / "manifest.json"
     manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
@@ -1565,8 +1565,6 @@ def _manifest_item_extraction_complete(item: dict) -> bool:
         return False
     if item.get("download_status") != "DONE" or item.get("transcription_status") != "DONE":
         return False
-    if int(item.get("visual_review_policy_version") or 0) < VISUAL_REVIEW_POLICY_VERSION:
-        return False
     if str(item.get("visual_text_status") or "").upper() == "FAILED":
         return False
     if str(item.get("research_status") or "").upper() == "INSUFFICIENT_CONTENT":
@@ -1574,6 +1572,8 @@ def _manifest_item_extraction_complete(item: dict) -> bool:
             bool(item.get("content_extraction_exhausted"))
             and int(item.get("content_extraction_version") or 0) >= CONTENT_EXTRACTION_VERSION
         )
+    if int(item.get("visual_review_policy_version") or 0) < VISUAL_REVIEW_POLICY_VERSION:
+        return False
     return True
 
 
