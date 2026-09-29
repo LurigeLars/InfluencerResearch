@@ -216,6 +216,39 @@ class RecentInstagramTests(unittest.TestCase):
         self.assertEqual(result["timings"]["reel_time_network_probes"], 0)
         self.assertFalse(any("/navigate" in path for _, path in calls))
 
+    def test_instagram_profile_readiness_exits_without_blind_sleep(self) -> None:
+        module_path = Path(__file__).with_name("instagram_camofox_public_smoke.py")
+        spec = importlib.util.spec_from_file_location(
+            "instagram_camofox_public_smoke_ready_test",
+            module_path,
+        )
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        smoke = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(smoke)
+
+        with (
+            mock.patch.object(
+                smoke,
+                "dom_probe",
+                return_value={
+                    "reel_links": ["https://www.instagram.com/reel/RECENT123/"],
+                    "media_links": ["https://www.instagram.com/reel/RECENT123/"],
+                    "cookie_consent_visible": False,
+                    "media_auth_gate_visible": False,
+                    "handle_visible": True,
+                    "body_text_length": 1200,
+                },
+            ) as probe,
+            mock.patch.object(smoke.time, "sleep") as sleep,
+        ):
+            result = smoke._wait_for_profile_ready("tab-1", "user-1", "example")
+
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["attempts"], 1)
+        probe.assert_called_once()
+        sleep.assert_not_called()
+
     def test_story_finalize_reuses_prefetched_capture(self) -> None:
         prefetched = {
             "capture": {"reason": "OK"},
