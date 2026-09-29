@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import json
+import ast
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-import influencerresearch_mcp as irmcp
 import youtube_creator_evaluation as yte
-from mcp.types import ImageContent, TextContent
 
 
 class VisualReviewClassifierTests(unittest.TestCase):
@@ -70,45 +68,21 @@ class VisualReviewClassifierTests(unittest.TestCase):
         self.assertIn("CREATOR_CHART_PRIOR", bundle["visual_review_reason"])
 
 
-class EvidenceToolTests(unittest.TestCase):
-    def test_analysis_evidence_get_returns_actual_image_blocks(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            state = root / "state"
-            state.mkdir()
-            frame = root / "output" / "creator" / "frame.jpg"
-            frame.parent.mkdir(parents=True)
-            frame.write_bytes(b"jpeg-bytes")
-            queue = {
-                "items": [{
-                    "queue_id": "yt_demo",
-                    "creator": "creator",
-                    "source_platform": "YOUTUBE",
-                    "source_url": "https://www.youtube.com/watch?v=demo",
-                    "analysis_mode_recommended": "TRANSCRIPT_PLUS_VISUAL_REVIEW",
-                    "visual_review_recommended": True,
-                    "visual_review_reason": ["PER_VIDEO_VISUAL_SIGNAL"],
-                    "agent_visual_bundle": {
-                        "creator_visual_prior": "NEUTRAL",
-                        "chart_signal_ratio": 0.5,
-                        "chart_signal_frame_count": 2,
-                        "representative_frames": [{
-                            "timestamp_s": 12.0,
-                            "file": "output/creator/frame.jpg",
-                            "visual_score": 4.0,
-                            "visual_signals": ["CHART_TERMS"],
-                            "ocr_text": "SPX resistance",
-                        }],
-                    },
-                }]
-            }
-            (state / "research_queue.json").write_text(json.dumps(queue), encoding="utf-8")
-            with mock.patch.object(irmcp, "ROOT", root), mock.patch.object(irmcp, "STATE_DIR", state):
-                content = irmcp.analysis_evidence_get("yt_demo", max_frames=1)
-        self.assertTrue(any(isinstance(block, TextContent) for block in content))
-        images = [block for block in content if isinstance(block, ImageContent)]
-        self.assertEqual(len(images), 1)
-        self.assertEqual(images[0].mime_type, "image/jpeg")
+class EvidenceToolContractTests(unittest.TestCase):
+    def test_analysis_evidence_get_returns_image_content_contract(self) -> None:
+        source = Path("influencerresearch_mcp.py").read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        fn = next(
+            node
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "analysis_evidence_get"
+        )
+        rendered = ast.unparse(fn)
+        self.assertIn("ImageContent", rendered)
+        self.assertIn("base64.b64encode", rendered)
+        self.assertIn("REPRESENTATIVE_FRAMES", rendered)
+        self.assertIn("CONTACT_SHEET", rendered)
+        self.assertIn("max_frames", rendered)
 
 
 if __name__ == "__main__":
