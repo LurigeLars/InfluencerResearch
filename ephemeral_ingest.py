@@ -45,6 +45,8 @@ MAX_STORY_VISUAL_ENRICHMENTS_PER_RUN = 2
 MAX_STORY_OLLAMA_ENRICHMENTS_PER_RUN = 2
 STORY_GEMINI_RATE_LIMIT_COOLDOWN_SECONDS = 300
 STORY_GEMINI_PROVIDER_ERROR_COOLDOWN_SECONDS = 60
+STORY_GEMINI_MAX_ADAPTIVE_COOLDOWN_SECONDS = 900
+STORY_GEMINI_BACKOFF_EXPONENT_CAP = 4
 STORY_OCR_TIMEOUT_SECONDS = 20
 STORY_OCR_LANGUAGES = "eng+swe"
 STORY_OCR_MIN_WORDS = 8
@@ -91,6 +93,33 @@ def _gemini_health_path(root: Path) -> Path:
     return root / "state" / "provider_health.json"
 
 
+def story_gemini_adaptive_cooldown_seconds(
+    health: dict,
+    *,
+    base_seconds: int,
+    provider_retry_seconds: int | None = None,
+) -> tuple[int, int]:
+    """Return cooldown seconds and next transient-failure streak.
+
+    Explicit provider Retry-After wins. Otherwise the fallback cooldown grows
+    exponentially and is capped so repeated 5xx failures do not get hammered
+    every minute forever.
+    """
+    streak = max(
+        0,
+        int((health or {}).get("consecutive_transient_failures") or 0),
+    ) + 1
+    if provider_retry_seconds is not None:
+        return max(1, int(provider_retry_seconds)), streak
+
+    exponent = min(
+        STORY_GEMINI_BACKOFF_EXPONENT_CAP,
+        max(0, streak - 1),
+    )
+    cooldown = max(1, int(base_seconds)) * (2 ** exponent)
+    return min(STORY_GEMINI_MAX_ADAPTIVE_COOLDOWN_SECONDS, cooldown), streak
+
+
 def get_gemini_provider_health(root: Path) -> dict:
     state = load_json(_gemini_health_path(root), {"schema_version": 1, "gemini": {}})
     gemini = state.get("gemini") if isinstance(state, dict) else {}
@@ -108,6 +137,8 @@ def get_gemini_provider_health(root: Path) -> dict:
         "story_visual_calls",
         "story_visual_successes",
         "story_visual_deferred",
+        "consecutive_transient_failures",
+        "last_cooldown_seconds",
     )
     return {key: gemini.get(key) for key in keys if key in gemini}
 
@@ -121,6 +152,8 @@ def update_gemini_provider_health(
     error_meta: dict | None = None,
     cooldown_until: datetime | None = None,
     retry_after_source: str | None = None,
+    transient_failure: bool = False,
+    cooldown_seconds: int | None = None,
 ) -> dict:
     path = _gemini_health_path(root)
     state = load_json(path, {"schema_version": 1, "gemini": {}})
@@ -137,6 +170,8 @@ def update_gemini_provider_health(
 
     if successes:
         gemini["last_success_at"] = utc_now()
+        gemini["consecutive_transient_failures"] = 0
+        gemini["last_cooldown_seconds"] = 0
         existing_cooldown = _parse_retry_after(gemini.get("cooldown_until"))
         if existing_cooldown is None or existing_cooldown <= datetime.now(timezone.utc):
             gemini["cooldown_until"] = None
@@ -144,6 +179,12 @@ def update_gemini_provider_health(
 
     if error_meta:
         now_text = utc_now()
+        if transient_failure:
+            gemini["consecutive_transient_failures"] = (
+                int(gemini.get("consecutive_transient_failures") or 0) + 1
+            )
+        if cooldown_seconds is not None:
+            gemini["last_cooldown_seconds"] = max(0, int(cooldown_seconds))
         gemini["last_error_at"] = now_text
         gemini["last_code"] = error_meta.get("code")
         gemini["last_status"] = error_meta.get("status")
@@ -1398,11 +1439,15 @@ def enrich_story_visual_evidence(
                 else:
                     reason = "PROVIDER_UNAVAILABLE"
                     fallback_cooldown = STORY_GEMINI_PROVIDER_ERROR_COOLDOWN_SECONDS
-                cooldown = provider_retry_seconds or fallback_cooldown
+                cooldown, _ = story_gemini_adaptive_cooldown_seconds(
+                    get_gemini_provider_health(root),
+                    base_seconds=fallback_cooldown,
+                    provider_retry_seconds=provider_retry_seconds,
+                )
                 retry_source = (
                     "PROVIDER_RETRY_AFTER"
                     if provider_retry_seconds is not None
-                    else "FALLBACK"
+                    else "ADAPTIVE_BACKOFF"
                 )
                 retry_after = datetime.now(timezone.utc) + timedelta(seconds=cooldown)
                 _defer_story_visual(
@@ -1429,6 +1474,8 @@ def enrich_story_visual_evidence(
                     error_meta=meta,
                     cooldown_until=retry_after,
                     retry_after_source=retry_source,
+                    transient_failure=True,
+                    cooldown_seconds=cooldown,
                 )
                 health_deferred_recorded += 1
             else:
