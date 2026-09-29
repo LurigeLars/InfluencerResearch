@@ -87,6 +87,7 @@ The MCP v1 tool surface is deliberately small:
 - `creator_evaluate`
 - `creator_monitor`
 - `creator_recent_check`
+- `analysis_evidence_get`
 - `research_status`
 - `research_stop`
 
@@ -131,9 +132,9 @@ the same `local-mcp` proxy pattern the other local MCP services in this fleet us
 No credential is needed on loopback: the authentication boundary is Cloudflare Access on the public
 path, not the local one. Keep the endpoint bound to `127.0.0.1` so that stays true.
 
-**Verify** by listing the tools. The local surface is eight: `creator_register`, `creator_list`,
-`creator_get`, `creator_evaluate`, `creator_monitor`, `creator_recent_check`, `research_status` and
-`research_stop`. The public allowlist is the same eight.
+**Verify** by listing the tools. The local surface is nine: `creator_register`, `creator_list`,
+`creator_get`, `creator_evaluate`, `creator_monitor`, `creator_recent_check`, `analysis_evidence_get`,
+`research_status` and `research_stop`. The public allowlist is the same nine.
 
 ## Public Cloudflare access
 

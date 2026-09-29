@@ -7,6 +7,7 @@ export const ALLOWED_TOOLS = new Set([
   'creator_evaluate',
   'creator_monitor',
   'creator_recent_check',
+  'analysis_evidence_get',
   'research_status',
   'research_stop',
 ]);
