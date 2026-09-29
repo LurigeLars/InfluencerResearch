@@ -424,6 +424,7 @@ def collect_video_urls(
         if clean not in seen:
             seen.add(clean)
             found.append(clean)
+    initial_url_count = len(found)
     stagnant = 0
     rounds = 0
     links_endpoint_errors = 0
@@ -435,7 +436,7 @@ def collect_video_urls(
             "rounds": 0,
             "stagnant_rounds_at_end": 0,
             "links_endpoint_errors": 0,
-            "initial_url_count": len(found),
+            "initial_url_count": initial_url_count,
             "source": "readiness_dom",
         }
 
@@ -493,10 +494,7 @@ def collect_video_urls(
         "rounds": rounds,
         "stagnant_rounds_at_end": stagnant,
         "links_endpoint_errors": links_endpoint_errors,
-        "initial_url_count": len([
-            url for url in (initial_urls or [])
-            if isinstance(url, str)
-        ]),
+        "initial_url_count": initial_url_count,
         "source": "browser_scan",
     }
 
