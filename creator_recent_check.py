@@ -1891,6 +1891,28 @@ def _main_impl() -> int:
                     discovery_parallelism.get("wall_duration_ms") or 0.0
                 ),
                 "discovery_parallelism": discovery_parallelism,
+                "story_discovery_overlap": {
+                    "story_wall_duration_ms": float(
+                        story_prefetch.get("wall_duration_ms") or 0.0
+                    ),
+                    "discovery_duration_ms": float(
+                        story_prefetch.get("discovery_duration_ms") or 0.0
+                    ),
+                    "join_wait_ms": float(
+                        story_prefetch.get("join_wait_ms") or 0.0
+                    ),
+                    "overlap_saved_estimate_ms": float(
+                        story_prefetch.get("overlap_saved_estimate_ms") or 0.0
+                    ),
+                    "creator_count": int(
+                        story_prefetch.get("creator_count") or 0
+                    ),
+                    "failed_creator_count": sum(
+                        1
+                        for row in (story_prefetch.get("results") or [])
+                        if isinstance(row, dict) and row.get("error")
+                    ),
+                },
                 "stage_totals_ms": stage_totals_ms,
                 "slowest_operations": slowest_operations,
             },
