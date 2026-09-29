@@ -12,6 +12,7 @@ services:
       INFLUENCER_RESEARCH_MCP_PORT: "8770"
       INFLUENCER_RESEARCH_ALLOWED_HOSTS: "127.0.0.1:*,localhost:*,influencerresearch:*"
       INFLUENCER_RESEARCH_CAMOFOX_MODE: container
+      INFLUENCER_RESEARCH_DISCOVERY_BROWSER_WORKERS: "3"
       XDG_CACHE_HOME: /runtime/influencerresearch/cache
       HOME: /home/influencer
     ports:
@@ -110,7 +111,7 @@ services:
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,size=256m,mode=1777
-      - /run/camofox:rw,nosuid,nodev,size=256m,uid=1000,gid=1000,mode=0700
+      - /run/camofox:rw,nosuid,nodev,size=384m,uid=1000,gid=1000,mode=0700
       - /run/camofox-secrets:rw,nosuid,nodev,noexec,size=64k,uid=1000,gid=1000,mode=0700
     post_start:
       - command:
@@ -137,9 +138,9 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
-    shm_size: 1gb
-    mem_limit: 2g
-    cpus: 2.0
+    shm_size: 1536m
+    mem_limit: 3g
+    cpus: 3.0
     pids_limit: 256
     restart: unless-stopped
     healthcheck:
