@@ -1525,6 +1525,24 @@ def _run_discovery_batch(
                 ),
                 "profile_ready": bool(browser_diag.get("profile_ready")),
             })
+            if platform == "TIKTOK":
+                discovery_timing.update({
+                    "tab_create_ms": round(
+                        float(browser_diag.get("tab_create_ms") or 0.0),
+                        1,
+                    ),
+                    "readiness_seed_count": int(
+                        browser_diag.get("readiness_seed_count") or 0
+                    ),
+                    "initial_url_count": int(
+                        browser_diag.get("initial_url_count") or 0
+                    ),
+                    "browser_rounds": int(browser_diag.get("rounds") or 0),
+                    "browser_source": browser_diag.get("source"),
+                    "links_endpoint_errors": int(
+                        browser_diag.get("links_endpoint_errors") or 0
+                    ),
+                })
             if platform == "INSTAGRAM":
                 discovery_timing.update({
                     "reel_time_cache_hits": int(
