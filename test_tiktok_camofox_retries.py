@@ -59,6 +59,11 @@ class CamoFoxRetryTests(unittest.TestCase):
                         "readyState": "complete",
                         "bodyTextLength": 1200,
                         "videoLinkCount": 3,
+                        "videoLinks": [
+                            "https://www.tiktok.com/@nicholas_crown/video/1",
+                            "https://www.tiktok.com/@nicholas_crown/video/2",
+                            "https://www.tiktok.com/@nicholas_crown/video/3",
+                        ],
                         "href": "https://www.tiktok.com/@nicholas_crown",
                     }
                 },
@@ -72,8 +77,68 @@ class CamoFoxRetryTests(unittest.TestCase):
 
         self.assertTrue(result["ready"])
         self.assertEqual(result["attempts"], 1)
+        self.assertEqual(len(result["last_value"]["videoLinks"]), 3)
         request.assert_called_once()
         sleep.assert_not_called()
+
+    def test_collect_video_urls_uses_readiness_seed_without_browser_rescan(self) -> None:
+        initial = [
+            "https://www.tiktok.com/@nicholas_crown/video/100",
+            "https://www.tiktok.com/@nicholas_crown/video/101",
+            "https://www.tiktok.com/@nicholas_crown/video/102",
+        ]
+        with mock.patch.object(sync, "request_json") as request:
+            found, diag = sync.collect_video_urls(
+                "tab-1",
+                user_id="user-1",
+                handle="nicholas_crown",
+                target=3,
+                initial_urls=initial,
+            )
+
+        self.assertEqual(found, initial)
+        self.assertEqual(diag["rounds"], 0)
+        self.assertEqual(diag["source"], "readiness_dom")
+        self.assertEqual(diag["initial_url_count"], 3)
+        request.assert_not_called()
+
+    def test_collect_video_urls_filters_foreign_readiness_links(self) -> None:
+        initial = [
+            "https://www.tiktok.com/@nicholas_crown/video/100",
+            "https://www.tiktok.com/@other/video/999",
+            "https://example.com/video/123",
+        ]
+        snapshot = {
+            "links": [
+                "https://www.tiktok.com/@nicholas_crown/video/101",
+            ]
+        }
+        with mock.patch.object(
+            sync,
+            "request_json",
+            side_effect=[
+                snapshot,
+                {"links": []},
+            ],
+        ):
+            found, diag = sync.collect_video_urls(
+                "tab-1",
+                user_id="user-1",
+                handle="nicholas_crown",
+                target=2,
+                initial_urls=initial,
+                max_scrolls=0,
+            )
+
+        self.assertEqual(
+            found,
+            [
+                "https://www.tiktok.com/@nicholas_crown/video/100",
+                "https://www.tiktok.com/@nicholas_crown/video/101",
+            ],
+        )
+        self.assertEqual(diag["rounds"], 1)
+        self.assertEqual(diag["source"], "browser_scan")
 
     def test_exact_catalog_ids_skip_redundant_discovery(self) -> None:
         with tempfile.TemporaryDirectory() as td:
