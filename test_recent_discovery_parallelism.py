@@ -12,6 +12,50 @@ import creator_recent_check as crc
 
 
 class RecentDiscoveryParallelismTests(unittest.TestCase):
+    def test_discovery_worker_env_is_bounded_and_invalid_values_fall_back(self):
+        with patch.dict(
+            "os.environ",
+            {"INFLUENCER_RESEARCH_DISCOVERY_BROWSER_WORKERS": "3"},
+            clear=False,
+        ):
+            self.assertEqual(
+                crc._bounded_env_int(
+                    "INFLUENCER_RESEARCH_DISCOVERY_BROWSER_WORKERS",
+                    2,
+                    1,
+                    4,
+                ),
+                3,
+            )
+        with patch.dict(
+            "os.environ",
+            {"INFLUENCER_RESEARCH_DISCOVERY_BROWSER_WORKERS": "99"},
+            clear=False,
+        ):
+            self.assertEqual(
+                crc._bounded_env_int(
+                    "INFLUENCER_RESEARCH_DISCOVERY_BROWSER_WORKERS",
+                    2,
+                    1,
+                    4,
+                ),
+                4,
+            )
+        with patch.dict(
+            "os.environ",
+            {"INFLUENCER_RESEARCH_DISCOVERY_BROWSER_WORKERS": "bad"},
+            clear=False,
+        ):
+            self.assertEqual(
+                crc._bounded_env_int(
+                    "INFLUENCER_RESEARCH_DISCOVERY_BROWSER_WORKERS",
+                    2,
+                    1,
+                    4,
+                ),
+                2,
+            )
+
     def test_browser_discovery_is_bounded_and_results_stay_deterministic(self):
         active_browser = 0
         max_browser = 0
