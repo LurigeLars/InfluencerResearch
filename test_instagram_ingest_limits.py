@@ -166,6 +166,62 @@ class InstagramIngestLimitTests(unittest.TestCase):
         self.assertFalse(state["media_auth_gated"])
         self.assertFalse(state["blocked"])
 
+    def test_authenticated_discovery_closes_browser_before_playwright_exit(self) -> None:
+        events = []
+
+        class FakePlaywrightContext:
+            def __enter__(self):
+                return object()
+
+            def __exit__(self, exc_type, exc, tb):
+                events.append("playwright_exit")
+                return False
+
+        page = mock.Mock()
+        context = mock.Mock()
+        context.new_page.return_value = page
+        context.close.side_effect = lambda: events.append("context_close")
+        browser = mock.Mock()
+        browser.close.side_effect = lambda: events.append("browser_close")
+
+        with (
+            mock.patch.object(
+                ig,
+                "sync_playwright",
+                return_value=FakePlaywrightContext(),
+            ),
+            mock.patch.object(
+                ig,
+                "launch_instagram_ephemeral_context",
+                return_value=(browser, context),
+            ),
+            mock.patch.object(ig, "verify_logged_in"),
+            mock.patch.object(
+                ig,
+                "_wait_for_instagram_profile_ready",
+                return_value={
+                    "ready": True,
+                    "attempts": 1,
+                    "wait_ms": 1.0,
+                    "blocked": False,
+                    "media_auth_gated": False,
+                    "unavailable": False,
+                },
+            ),
+            mock.patch.object(
+                ig,
+                "_collect_loaded_reel_urls",
+                return_value=([], 1),
+            ),
+        ):
+            result = ig.discover_reels_authenticated("example", max_scan=15)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            events,
+            ["context_close", "browser_close", "playwright_exit"],
+        )
+
     def test_authenticated_discovery_fails_closed_without_session(self) -> None:
         class FakePlaywrightContext:
             def __enter__(self):
