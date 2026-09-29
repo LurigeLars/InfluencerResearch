@@ -962,7 +962,28 @@ def capture_visual_evidence(root: Path, creator_key: str, url: str, video_id: st
             existing = json.loads(index_path.read_text(encoding="utf-8"))
             retained = existing.get("frames", [])
             if retained and all((root / Path(x["file"])).exists() for x in retained if x.get("file")):
-                return {"ok": True, "source": "existing_visual_evidence", "index": index_path, **existing.get("summary", {})}
+                summary = dict(existing.get("summary") or {})
+                agent_visual_bundle = existing.get("agent_visual_bundle") or summary.get("agent_visual_bundle")
+                if not isinstance(agent_visual_bundle, dict):
+                    ffmpeg = _ffmpeg_exe()
+                    if ffmpeg:
+                        records = [
+                            {
+                                **row,
+                                "file": root / Path(row["file"]),
+                                "size_bytes": int(row.get("size_bytes") or (root / Path(row["file"])).stat().st_size),
+                            }
+                            for row in retained
+                            if row.get("file")
+                        ]
+                        agent_visual_bundle = build_agent_visual_bundle(
+                            root, creator_key, records, ffmpeg, evidence_dir
+                        )
+                        existing["agent_visual_bundle"] = agent_visual_bundle
+                        summary["agent_visual_bundle"] = agent_visual_bundle
+                        existing["summary"] = summary
+                        atomic_json(index_path, existing)
+                return {"ok": True, "source": "existing_visual_evidence", "index": index_path, **summary}
 
     ffmpeg = _ffmpeg_exe()
     if not ffmpeg:
