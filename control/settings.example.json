@@ -6,6 +6,7 @@
     "provider": "auto",
     "gemini_model": "gemini-3.5-transcribe",
     "gemini_visual_model": "gemini-3.8-flash",
+    "gemini_story_visual_timeout_ms": 12000,
     "ollama_visual_enabled": true,
     "ollama_visual_model": "gemma3-12b-16k",
     "ollama_base_url": "http://host.docker.internal:11434",
