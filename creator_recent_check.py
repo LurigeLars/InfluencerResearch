@@ -1434,20 +1434,36 @@ def _main_impl() -> int:
     errors = []
     source_map: dict[tuple[str, str], tuple[dict, dict]] = {}
     discovery_parallelism: dict = {}
+    story_prefetch: dict = {
+        "results": [],
+        "creator_count": 0,
+        "wall_duration_ms": 0.0,
+        "discovery_duration_ms": 0.0,
+        "join_wait_ms": 0.0,
+        "overlap_saved_estimate_ms": 0.0,
+    }
+    story_gemini_circuit = ephemeral.initial_story_gemini_circuit(root)
+    story_ollama_budget = {"attempted": 0}
     try:
         selected = select_profiles_and_sources(root, args.scope, creator_keys)
         (
-            discoveries,
-            discovery_errors,
-            source_map,
-            discovery_timings,
-            discovery_parallelism,
-        ) = _run_discovery_batch(
+            (
+                discoveries,
+                discovery_errors,
+                source_map,
+                discovery_timings,
+                discovery_parallelism,
+            ),
+            story_prefetch,
+        ) = _run_discovery_with_story_prefetch(
             root,
             selected,
             cutoff,
             end,
             discovery_limit,
+            max_items,
+            gemini_circuit=story_gemini_circuit,
+            ollama_budget_state=story_ollama_budget,
         )
         errors.extend(discovery_errors)
         stage_timings.extend(discovery_timings)
@@ -1507,8 +1523,11 @@ def _main_impl() -> int:
                 )
 
         story_results = []
-        story_gemini_circuit = ephemeral.initial_story_gemini_circuit(root)
-        story_ollama_budget = {"attempted": 0}
+        story_prefetch_by_creator = {
+            str(row.get("creator_key") or ""): row
+            for row in (story_prefetch.get("results") or [])
+            if isinstance(row, dict) and row.get("creator_key")
+        }
         story_selected: list[dict] = []
         story_available: list[dict] = []
         story_reused_existing_count = 0
@@ -1531,6 +1550,12 @@ def _main_impl() -> int:
                     continue
                 seen_instagram_creators.add(creator_key)
                 story_clock = time.perf_counter()
+                prefetch_row = story_prefetch_by_creator.get(creator_key) or {}
+                precomputed_run = (
+                    prefetch_row.get("run")
+                    if not prefetch_row.get("error")
+                    else None
+                )
                 try:
                     story_result = _ingest_instagram_stories(
                         root,
@@ -1540,6 +1565,7 @@ def _main_impl() -> int:
                         remaining_story_slots,
                         gemini_circuit=story_gemini_circuit,
                         ollama_budget_state=story_ollama_budget,
+                        precomputed_run=precomputed_run,
                     )
                     promoted = list(story_result.get("promoted") or [])
                     available = list(story_result.get("available") or [])
@@ -1571,12 +1597,25 @@ def _main_impl() -> int:
                         "error": f"{type(exc).__name__}: {exc}",
                     })
                 finally:
-                    record_timing(
-                        "STORY_INGESTION",
-                        story_clock,
-                        creator_key=creator_key,
-                        platform="INSTAGRAM",
+                    finalize_duration_ms = round(
+                        (time.perf_counter() - story_clock) * 1000,
+                        1,
                     )
+                    capture_duration_ms = float(
+                        prefetch_row.get("duration_ms") or 0.0
+                    )
+                    stage_timings.append({
+                        "stage": "STORY_INGESTION",
+                        "creator_key": creator_key,
+                        "platform": "INSTAGRAM",
+                        "duration_ms": round(
+                            capture_duration_ms + finalize_duration_ms,
+                            1,
+                        ),
+                        "prefetched": precomputed_run is not None,
+                        "prefetch_duration_ms": round(capture_duration_ms, 1),
+                        "finalize_duration_ms": finalize_duration_ms,
+                    })
 
         # Rebuild the queue even when all recent items were already ingested. This
         # migrates older evidence through the current content-readiness gate instead
