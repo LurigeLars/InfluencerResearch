@@ -16,7 +16,7 @@ from creator_registry import get_creator, load_registry, select_monitor_sources
 from creator_monitor import manifest_done_ids, _tiktok_published_at
 import youtube_creator_evaluation as yte
 import tiktok_camofox_sync as tts
-import instagram_camofox_public_smoke as instagram_smoke
+import instagram_ingest as instagram
 import ephemeral_ingest as ephemeral
 
 def _bounded_env_int(
@@ -35,7 +35,7 @@ def _bounded_env_int(
     return max(minimum, min(maximum, value))
 
 
-RECENT_CHECK_VERSION = "0.2.15"
+RECENT_CHECK_VERSION = "0.2.16"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
@@ -482,11 +482,9 @@ def discover_instagram(
     target = min(20, max(1, int(discovery_limit)))
     handle = _instagram_handle(source)
     cached_times = _instagram_known_reel_times(root)
-    probe = instagram_smoke.probe_public_session(
-        source["profile_url"],
+    probe = instagram.discover_reels_authenticated(
         handle,
-        run_index=max(1, int(run_index)),
-        inspect_reel_times=True,
+        max_scan=target,
         known_reel_times=cached_times,
     )
     entries = list(probe.get("reel_items") or [])
@@ -495,10 +493,11 @@ def discover_instagram(
     missing_time: list[str] = []
 
     for entry in entries:
-        urls = instagram_smoke.extract_reel_urls(str(entry.get("url") or ""))
-        if not urls:
+        try:
+            reel_url = instagram.canonical_reel_url(str(entry.get("url") or ""))
+            shortcode = instagram.reel_shortcode(reel_url)
+        except (TypeError, ValueError):
             continue
-        shortcode = urls[0].rstrip("/").rsplit("/", 1)[-1]
         raw = entry.get("published_at")
         if not raw:
             missing_time.append(shortcode)
@@ -515,7 +514,7 @@ def discover_instagram(
                 "platform": "INSTAGRAM",
                 "source_id": shortcode,
                 "item_key": shortcode,
-                "url": urls[0],
+                "url": reel_url,
                 "title": "",
                 "published_at": published.isoformat(),
                 "profile_url": source["profile_url"],
@@ -527,6 +526,7 @@ def discover_instagram(
         known_times=known_times,
         cutoff=cutoff,
     )
+    discovery_ok = bool(probe.get("ok"))
     blocked = bool(probe.get("blocked"))
     media_auth_gated = bool(probe.get("media_auth_gated"))
     coverage_limited_reason = None
@@ -534,6 +534,8 @@ def discover_instagram(
         coverage_limited_reason = "HARD_BLOCK"
     elif media_auth_gated and len(entries) < target:
         coverage_limited_reason = "MEDIA_AUTH_GATE"
+    elif not discovery_ok:
+        coverage_limited_reason = "DISCOVERY_ERROR"
     window_complete = natural_window_complete and coverage_limited_reason is None
 
     return {
@@ -548,10 +550,12 @@ def discover_instagram(
         "coverage_limited_reason": coverage_limited_reason,
         "missing_publish_time_ids": missing_time,
         "discovery": {
-            "ok": bool(probe.get("ok")),
+            "ok": discovery_ok,
+            "authenticated": bool(probe.get("authenticated")),
             "reel_count": int(probe.get("reel_count") or 0),
             "blocked": blocked,
             "media_auth_gated": media_auth_gated,
+            "error": probe.get("error"),
             "timings": probe.get("timings") or {},
         },
     }
