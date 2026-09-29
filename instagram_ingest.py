@@ -310,119 +310,127 @@ def discover_reels_authenticated(
 
     try:
         with sync_playwright() as playwright:
-            launch_started = time.perf_counter()
-            browser, context = launch_instagram_ephemeral_context(playwright)
-            browser_launch_ms = round(
-                (time.perf_counter() - launch_started) * 1000,
-                1,
-            )
             try:
-                verify_logged_in(context)
-                authenticated = True
-            except RuntimeError:
+                launch_started = time.perf_counter()
+                browser, context = launch_instagram_ephemeral_context(playwright)
+                browser_launch_ms = round(
+                    (time.perf_counter() - launch_started) * 1000,
+                    1,
+                )
+                try:
+                    verify_logged_in(context)
+                    authenticated = True
+                except RuntimeError:
+                    return {
+                        "ok": False,
+                        "authenticated": False,
+                        "blocked": False,
+                        "media_auth_gated": True,
+                        "reel_count": 0,
+                        "reel_items": [],
+                        "reel_discovery_ok": False,
+                        "error": "INSTAGRAM_SESSION_NOT_AUTHENTICATED",
+                        "timings": {
+                            "browser_launch_ms": browser_launch_ms,
+                            "profile_ready_wait_ms": 0.0,
+                            "profile_ready_attempts": 0,
+                            "profile_ready": False,
+                            "discovery_rounds": 0,
+                            "reel_time_cache_hits": 0,
+                            "reel_time_network_probes": 0,
+                            "reel_time_probe_ms": 0.0,
+                            "total_ms": round((time.perf_counter() - started) * 1000, 1),
+                        },
+                    }
+
+                page = context.new_page()
+                profile_url = f"https://www.instagram.com/{creator}/reels/"
+                profile_started = time.perf_counter()
+                page.goto(profile_url, wait_until="domcontentloaded", timeout=60000)
+                profile_load_ms = round(
+                    (time.perf_counter() - profile_started) * 1000,
+                    1,
+                )
+                readiness = _wait_for_instagram_profile_ready(page, creator)
+
+                blocked = bool(readiness.get("blocked"))
+                media_auth_gated = bool(readiness.get("media_auth_gated"))
+                unavailable = bool(readiness.get("unavailable"))
+                reel_urls: list[str] = []
+                if not blocked and not media_auth_gated and not unavailable:
+                    reel_urls, discovery_rounds = _collect_loaded_reel_urls(
+                        page,
+                        max_scan,
+                    )
+
+                reel_items: list[dict[str, Any]] = []
+                for reel_url in reel_urls:
+                    shortcode = reel_shortcode(reel_url)
+                    published_at = known_reel_times.get(shortcode)
+                    error = None
+                    source = None
+                    if published_at:
+                        reel_time_cache_hits += 1
+                        source = "LOCAL_MANIFEST_CACHE"
+                    else:
+                        reel_time_network_probes += 1
+                        published_at, error, probe_ms = _reel_published_at(
+                            page,
+                            reel_url,
+                        )
+                        reel_time_probe_ms += probe_ms
+                        source = "AUTHENTICATED_REEL_TIME_ELEMENT"
+                    reel_items.append({
+                        "url": reel_url,
+                        "published_at": published_at,
+                        "published_at_source": source,
+                        "error": error,
+                    })
+
                 return {
-                    "ok": False,
-                    "authenticated": False,
-                    "blocked": False,
-                    "media_auth_gated": True,
-                    "reel_count": 0,
-                    "reel_items": [],
-                    "reel_discovery_ok": False,
-                    "error": "INSTAGRAM_SESSION_NOT_AUTHENTICATED",
+                    "ok": bool(
+                        authenticated
+                        and not blocked
+                        and not media_auth_gated
+                        and not unavailable
+                    ),
+                    "authenticated": authenticated,
+                    "blocked": blocked,
+                    "media_auth_gated": media_auth_gated,
+                    "reel_count": len(reel_urls),
+                    "reel_items": reel_items,
+                    "reel_discovery_ok": bool(
+                        authenticated
+                        and not blocked
+                        and not media_auth_gated
+                        and not unavailable
+                    ),
+                    "error": "INSTAGRAM_PROFILE_UNAVAILABLE" if unavailable else None,
                     "timings": {
                         "browser_launch_ms": browser_launch_ms,
-                        "profile_ready_wait_ms": 0.0,
-                        "profile_ready_attempts": 0,
-                        "profile_ready": False,
-                        "discovery_rounds": 0,
-                        "reel_time_cache_hits": 0,
-                        "reel_time_network_probes": 0,
-                        "reel_time_probe_ms": 0.0,
+                        "profile_load_ms": profile_load_ms,
+                        "profile_ready_wait_ms": round(
+                            float(readiness.get("wait_ms") or 0.0),
+                            1,
+                        ),
+                        "profile_ready_attempts": int(
+                            readiness.get("attempts") or 0
+                        ),
+                        "profile_ready": bool(readiness.get("ready")),
+                        "discovery_rounds": discovery_rounds,
+                        "reel_time_cache_hits": reel_time_cache_hits,
+                        "reel_time_network_probes": reel_time_network_probes,
+                        "reel_time_probe_ms": round(reel_time_probe_ms, 1),
                         "total_ms": round((time.perf_counter() - started) * 1000, 1),
                     },
                 }
-
-            page = context.new_page()
-            profile_url = f"https://www.instagram.com/{creator}/reels/"
-            profile_started = time.perf_counter()
-            page.goto(profile_url, wait_until="domcontentloaded", timeout=60000)
-            profile_load_ms = round(
-                (time.perf_counter() - profile_started) * 1000,
-                1,
-            )
-            readiness = _wait_for_instagram_profile_ready(page, creator)
-
-            blocked = bool(readiness.get("blocked"))
-            media_auth_gated = bool(readiness.get("media_auth_gated"))
-            unavailable = bool(readiness.get("unavailable"))
-            reel_urls: list[str] = []
-            if not blocked and not media_auth_gated and not unavailable:
-                reel_urls, discovery_rounds = _collect_loaded_reel_urls(
-                    page,
-                    max_scan,
-                )
-
-            reel_items: list[dict[str, Any]] = []
-            for reel_url in reel_urls:
-                shortcode = reel_shortcode(reel_url)
-                published_at = known_reel_times.get(shortcode)
-                error = None
-                source = None
-                if published_at:
-                    reel_time_cache_hits += 1
-                    source = "LOCAL_MANIFEST_CACHE"
-                else:
-                    reel_time_network_probes += 1
-                    published_at, error, probe_ms = _reel_published_at(
-                        page,
-                        reel_url,
-                    )
-                    reel_time_probe_ms += probe_ms
-                    source = "AUTHENTICATED_REEL_TIME_ELEMENT"
-                reel_items.append({
-                    "url": reel_url,
-                    "published_at": published_at,
-                    "published_at_source": source,
-                    "error": error,
-                })
-
-            return {
-                "ok": bool(
-                    authenticated
-                    and not blocked
-                    and not media_auth_gated
-                    and not unavailable
-                ),
-                "authenticated": authenticated,
-                "blocked": blocked,
-                "media_auth_gated": media_auth_gated,
-                "reel_count": len(reel_urls),
-                "reel_items": reel_items,
-                "reel_discovery_ok": bool(
-                    authenticated
-                    and not blocked
-                    and not media_auth_gated
-                    and not unavailable
-                ),
-                "error": "INSTAGRAM_PROFILE_UNAVAILABLE" if unavailable else None,
-                "timings": {
-                    "browser_launch_ms": browser_launch_ms,
-                    "profile_load_ms": profile_load_ms,
-                    "profile_ready_wait_ms": round(
-                        float(readiness.get("wait_ms") or 0.0),
-                        1,
-                    ),
-                    "profile_ready_attempts": int(
-                        readiness.get("attempts") or 0
-                    ),
-                    "profile_ready": bool(readiness.get("ready")),
-                    "discovery_rounds": discovery_rounds,
-                    "reel_time_cache_hits": reel_time_cache_hits,
-                    "reel_time_network_probes": reel_time_network_probes,
-                    "reel_time_probe_ms": round(reel_time_probe_ms, 1),
-                    "total_ms": round((time.perf_counter() - started) * 1000, 1),
-                },
-            }
+            finally:
+                if context is not None:
+                    with contextlib.suppress(Exception):
+                        context.close()
+                if browser is not None:
+                    with contextlib.suppress(Exception):
+                        browser.close()
     except Exception as exc:
         return {
             "ok": False,
@@ -451,14 +459,6 @@ def discover_reels_authenticated(
                 "total_ms": round((time.perf_counter() - started) * 1000, 1),
             },
         }
-    finally:
-        if context is not None:
-            with contextlib.suppress(Exception):
-                context.close()
-        if browser is not None:
-            with contextlib.suppress(Exception):
-                browser.close()
-
 
 def collect_reel_urls(page, creator: str, max_scan: int) -> list[str]:
     url = f"https://www.instagram.com/{creator}/reels/"
