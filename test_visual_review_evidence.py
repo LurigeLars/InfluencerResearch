@@ -57,6 +57,89 @@ class VisualReviewClassifierTests(unittest.TestCase):
         self.assertEqual(run.call_count, 1)
         self.assertIn("11", run.call_args.args[0])
 
+    def test_transcript_visual_cue_bounds_ocr_to_representative_frame_count(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            records = self._records(root, count=vve.VISUAL_OCR_MAX_FRAMES)
+            with mock.patch.object(
+                vve,
+                "_ocr_visual_frame",
+                return_value="plain visual evidence",
+            ), mock.patch.object(vve, "_make_contact_sheet", return_value=None):
+                bundle = vve.build_agent_visual_bundle(
+                    root,
+                    "nicholascrown",
+                    records,
+                    "ffmpeg",
+                    root,
+                    transcript_text="You can see this on my screen right now.",
+                )
+        self.assertEqual(bundle["sampled_frame_count"], vve.VISUAL_REPRESENTATIVE_FRAMES)
+        self.assertTrue(bundle["visual_review_recommended"])
+        self.assertIn("TRANSCRIPT_VISUAL_CUE", bundle["visual_review_reason"])
+
+    def test_policy_refresh_reuses_existing_frames_without_ffmpeg_capture(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            media = root / "output" / "nicholascrown" / "tiktok" / "videos" / "demo.mp4"
+            evidence_dir = root / "output" / "nicholascrown" / "tiktok" / "frames" / "demo"
+            media.parent.mkdir(parents=True)
+            evidence_dir.mkdir(parents=True)
+            media.write_bytes(b"video")
+            frame = evidence_dir / "fps_00001.jpg"
+            frame.write_bytes(b"jpeg")
+            index_path = evidence_dir / "visual_index.json"
+            index_path.write_text(json.dumps({
+                "schema_version": 1,
+                "visual_review_policy_version": vve.VISUAL_REVIEW_POLICY_VERSION - 1,
+                "source_platform": "TIKTOK",
+                "video_id": "demo",
+                "summary": {
+                    "candidate_frames": 1,
+                    "retained_frames": 1,
+                    "capture_strategy": "legacy",
+                },
+                "frames": [{
+                    "timestamp_s": 1.0,
+                    "reason": "ONE_FPS",
+                    "file": str(frame.relative_to(root)),
+                    "size_bytes": frame.stat().st_size,
+                }],
+            }), encoding="utf-8")
+
+            with mock.patch.object(vve, "_ffmpeg_exe", return_value="ffmpeg"), mock.patch.object(
+                vve,
+                "build_agent_visual_bundle",
+                return_value={
+                    "available": True,
+                    "analysis_mode_recommended": "TRANSCRIPT_ONLY",
+                    "visual_review_recommended": False,
+                    "visual_review_reason": [],
+                    "creator_visual_prior": "NEUTRAL",
+                    "representative_frames": [],
+                },
+            ), mock.patch("video_visual_evidence.subprocess.run") as run:
+                result = vve.capture_local_video_visual_evidence(
+                    root,
+                    "nicholascrown",
+                    "TIKTOK",
+                    "demo",
+                    media,
+                    transcript_text="plain transcript",
+                )
+
+            updated = json.loads(index_path.read_text(encoding="utf-8"))
+
+        run.assert_not_called()
+        self.assertEqual(result["source"], "reused_frames_visual_policy_refresh")
+        self.assertTrue(result["frames_reused_for_policy_refresh"])
+        self.assertEqual(result["timings_ms"]["frame_capture"], 0.0)
+        self.assertEqual(updated["visual_capture_version"], vve.VISUAL_CAPTURE_VERSION)
+        self.assertEqual(
+            updated["visual_review_policy_version"],
+            vve.VISUAL_REVIEW_POLICY_VERSION,
+        )
+
     def test_transcript_caption_terms_do_not_count_as_chart_signal(self) -> None:
         score, reasons = vve.score_visual_frame_text(
             "Gube futures contract called Heating Oilis aetually",
