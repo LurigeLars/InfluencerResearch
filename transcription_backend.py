@@ -36,6 +36,10 @@ ALLOWED_PROVIDERS = {"auto", "gemini", "faster-whisper"}
 _WHISPER_MODEL_CACHE: dict[tuple[str, str, str], Any] = {}
 
 
+def bounded_story_gemini_timeout_ms(value: int = STORY_GEMINI_HTTP_TIMEOUT_MS) -> int:
+    return max(5_000, min(int(value), 30_000))
+
+
 def gemini_http_options(
     *,
     timeout_ms: int = GEMINI_HTTP_TIMEOUT_MS,
@@ -429,7 +433,7 @@ def extract_image_evidence_gemini(
 
     client = _gemini_client(
         api_key,
-        timeout_ms=max(5_000, min(int(timeout_ms), 30_000)),
+        timeout_ms=bounded_story_gemini_timeout_ms(timeout_ms),
         retry_attempts=STORY_GEMINI_RETRY_ATTEMPTS,
     )
     prompt = (
@@ -459,7 +463,7 @@ def extract_image_evidence_gemini(
         "model": model,
         "source": "GEMINI_STORY_SCREENSHOT_EVIDENCE",
         "transport": "INLINE_BYTES",
-        "timeout_ms": max(5_000, min(int(timeout_ms), 30_000)),
+        "timeout_ms": bounded_story_gemini_timeout_ms(timeout_ms),
         "text": text,
     }
 
