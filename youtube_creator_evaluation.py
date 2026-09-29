@@ -841,7 +841,7 @@ def _run_tesseract_visual_frame(path: Path, psm: int) -> str:
         return ""
     if proc.returncode != 0:
         return ""
-    return re.sub(r"[ \\t]+", " ", str(proc.stdout or "")).strip()
+    return re.sub(r"[ \t]+", " ", str(proc.stdout or "")).strip()
 
 
 def _ocr_visual_frame(path: Path) -> str:
