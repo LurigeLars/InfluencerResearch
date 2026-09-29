@@ -24,6 +24,10 @@ class VisualReviewClassifierTests(unittest.TestCase):
             })
         return rows
 
+    def test_visual_ocr_timeout_is_nonfatal(self) -> None:
+        with mock.patch("youtube_creator_evaluation.subprocess.run", side_effect=TimeoutError("timeout")):
+            self.assertEqual(yte._ocr_visual_frame(Path("/tmp/frame.jpg")), "")
+
     def test_nicholas_crown_escalates_per_video_when_frames_are_chart_heavy(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
