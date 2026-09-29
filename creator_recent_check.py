@@ -1534,6 +1534,9 @@ def _run_discovery_batch(
                     "readiness_seed_count": int(
                         browser_diag.get("readiness_seed_count") or 0
                     ),
+                    "profile_ready_target_reached": bool(
+                        browser_diag.get("profile_ready_target_reached")
+                    ),
                     "initial_url_count": int(
                         browser_diag.get("initial_url_count") or 0
                     ),
@@ -1541,6 +1544,22 @@ def _run_discovery_batch(
                     "browser_source": browser_diag.get("source"),
                     "links_endpoint_errors": int(
                         browser_diag.get("links_endpoint_errors") or 0
+                    ),
+                    "links_calls": int(browser_diag.get("links_calls") or 0),
+                    "snapshot_calls": int(
+                        browser_diag.get("snapshot_calls") or 0
+                    ),
+                    "links_ms": round(
+                        float(browser_diag.get("links_ms") or 0.0),
+                        1,
+                    ),
+                    "snapshot_ms": round(
+                        float(browser_diag.get("snapshot_ms") or 0.0),
+                        1,
+                    ),
+                    "scroll_ms": round(
+                        float(browser_diag.get("scroll_ms") or 0.0),
+                        1,
                     ),
                 })
             if platform == "INSTAGRAM":
