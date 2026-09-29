@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-YOUTUBE_EVAL_VERSION = "0.6.2"
+YOUTUBE_EVAL_VERSION = "0.6.3"
 
 
 def utc_now() -> str:
@@ -789,6 +789,171 @@ def _merge_frame_records(records: list[dict]) -> list[dict]:
     return kept
 
 
+
+VISUAL_OCR_MAX_FRAMES = 24
+VISUAL_REPRESENTATIVE_FRAMES = 12
+VISUAL_OCR_TIMEOUT_SECONDS = 8
+CHART_HEAVY_CREATORS = {"thetradingfraternity"}
+CHART_TERMS = {
+    "support", "resistance", "breakout", "trend", "vwap", "volume", "price",
+    "yield", "spread", "gamma", "delta", "rsi", "macd", "moving average",
+    "s&p", "spx", "nasdaq", "qqq", "dow", "dxy", "vix", "btc", "eth",
+    "treasury", "crude", "oil", "gold", "copper", "eur", "usd", "jpy",
+}
+
+
+def _sample_visual_records(records: list[dict], limit: int = VISUAL_OCR_MAX_FRAMES) -> list[dict]:
+    if len(records) <= limit:
+        return list(records)
+    scene = [row for row in records if row.get("reason") == "SCENE_CHANGE"]
+    selected: list[dict] = []
+    seen: set[str] = set()
+    for row in scene[: max(1, limit // 2)]:
+        key = str(row.get("file") or "")
+        if key and key not in seen:
+            selected.append(row)
+            seen.add(key)
+    remaining = max(0, limit - len(selected))
+    if remaining:
+        step = max(1, len(records) // remaining)
+        for row in records[::step]:
+            key = str(row.get("file") or "")
+            if key and key not in seen:
+                selected.append(row)
+                seen.add(key)
+            if len(selected) >= limit:
+                break
+    return sorted(selected[:limit], key=lambda row: float(row.get("timestamp_s") or 0.0))
+
+
+def _ocr_visual_frame(path: Path) -> str:
+    proc = subprocess.run(
+        ["tesseract", str(path), "stdout", "-l", "eng", "--psm", "11"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=VISUAL_OCR_TIMEOUT_SECONDS,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return ""
+    return re.sub(r"[ \t]+", " ", str(proc.stdout or "")).strip()
+
+
+def _score_visual_frame_text(text: str) -> tuple[float, list[str]]:
+    normalized = str(text or "").strip()
+    lower = normalized.casefold()
+    if not normalized:
+        return 0.0, []
+    reasons: list[str] = []
+    term_hits = sum(1 for term in CHART_TERMS if term in lower)
+    numeric_hits = len(re.findall(r"(?:[$€£]?\d+(?:[.,]\d+)?%?)", normalized))
+    ticker_hits = len(re.findall(r"\b[A-Z]{2,6}\b", normalized))
+    score = min(10.0, term_hits * 1.8 + min(numeric_hits, 8) * 0.35 + min(ticker_hits, 6) * 0.25)
+    if term_hits:
+        reasons.append("CHART_TERMS")
+    if numeric_hits >= 3:
+        reasons.append("NUMERIC_DENSITY")
+    if ticker_hits >= 2:
+        reasons.append("TICKER_DENSITY")
+    if len(normalized.split()) >= 18:
+        score += 0.5
+        reasons.append("TEXT_DENSITY")
+    return round(min(score, 10.0), 2), reasons
+
+
+def _make_contact_sheet(ffmpeg: str, evidence_dir: Path, selected: list[dict]) -> Path | None:
+    if not selected:
+        return None
+    staging = evidence_dir / ".contact_sheet"
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True, exist_ok=True)
+    try:
+        for idx, row in enumerate(selected[:VISUAL_REPRESENTATIVE_FRAMES]):
+            source = Path(row["file"])
+            shutil.copyfile(source, staging / f"frame_{idx:02d}.jpg")
+        out = evidence_dir / "contact_sheet.jpg"
+        proc = subprocess.run(
+            [
+                ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+                "-framerate", "1", "-i", str(staging / "frame_%02d.jpg"),
+                "-vf", "scale=320:-2,tile=4x3:padding=4:margin=4",
+                "-frames:v", "1", str(out),
+            ],
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+        return out if proc.returncode == 0 and out.exists() else None
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+
+def build_agent_visual_bundle(
+    root: Path, creator_key: str, records: list[dict], ffmpeg: str, evidence_dir: Path
+) -> dict:
+    sampled = _sample_visual_records(records)
+
+    def inspect(row: dict) -> dict:
+        text = _ocr_visual_frame(Path(row["file"]))
+        score, reasons = _score_visual_frame_text(text)
+        return {**row, "ocr_text": text[:1200], "visual_score": score, "visual_signals": reasons}
+
+    if sampled:
+        with ThreadPoolExecutor(max_workers=min(4, len(sampled)), thread_name_prefix="visual-ocr") as executor:
+            inspected = list(executor.map(inspect, sampled))
+    else:
+        inspected = []
+
+    strong = [row for row in inspected if float(row.get("visual_score") or 0.0) >= 2.0]
+    chart_ratio = (len(strong) / len(inspected)) if inspected else 0.0
+    creator_prior = "HIGH" if creator_key.casefold() in CHART_HEAVY_CREATORS else "NEUTRAL"
+    content_signal = len(strong) >= 2 or chart_ratio >= 0.20
+    visual_review_recommended = bool(inspected) and (creator_prior == "HIGH" or content_signal)
+    reasons: list[str] = []
+    if creator_prior == "HIGH":
+        reasons.append("CREATOR_CHART_PRIOR")
+    if content_signal:
+        reasons.append("PER_VIDEO_VISUAL_SIGNAL")
+
+    ranked = sorted(
+        inspected,
+        key=lambda row: (float(row.get("visual_score") or 0.0), row.get("reason") == "SCENE_CHANGE"),
+        reverse=True,
+    )
+    representative = ranked[:VISUAL_REPRESENTATIVE_FRAMES]
+    if len(representative) < min(3, len(inspected)):
+        representative = inspected[: min(VISUAL_REPRESENTATIVE_FRAMES, len(inspected))]
+    representative = sorted(representative, key=lambda row: float(row.get("timestamp_s") or 0.0))
+    contact_sheet = _make_contact_sheet(ffmpeg, evidence_dir, representative)
+
+    def public_row(row: dict) -> dict:
+        path = Path(row["file"])
+        return {
+            "timestamp_s": row.get("timestamp_s"),
+            "reason": row.get("reason"),
+            "file": str(path.relative_to(root)),
+            "visual_score": row.get("visual_score"),
+            "visual_signals": row.get("visual_signals"),
+            "ocr_text": row.get("ocr_text"),
+        }
+
+    return {
+        "available": bool(representative),
+        "analysis_mode_recommended": (
+            "TRANSCRIPT_PLUS_VISUAL_REVIEW" if visual_review_recommended else "TRANSCRIPT_ONLY"
+        ),
+        "visual_review_recommended": visual_review_recommended,
+        "visual_review_reason": reasons,
+        "creator_visual_prior": creator_prior,
+        "sampled_frame_count": len(inspected),
+        "chart_signal_frame_count": len(strong),
+        "chart_signal_ratio": round(chart_ratio, 3),
+        "contact_sheet": str(contact_sheet.relative_to(root)) if contact_sheet else None,
+        "representative_frames": [public_row(row) for row in representative],
+    }
+
 def capture_visual_evidence(root: Path, creator_key: str, url: str, video_id: str) -> dict:
     evidence_dir = root / "output" / creator_key / "youtube" / "frames" / video_id
     index_path = evidence_dir / "visual_index.json"
@@ -864,6 +1029,7 @@ def capture_visual_evidence(root: Path, creator_key: str, url: str, video_id: st
     records += _frame_records(evidence_dir, "scene", scene_times, "SCENE_CHANGE")
     candidate_count = len(records)
     records = _merge_frame_records(records)
+    agent_visual_bundle = build_agent_visual_bundle(root, creator_key, records, ffmpeg, evidence_dir)
 
     frames = []
     for rec in records:
@@ -881,6 +1047,7 @@ def capture_visual_evidence(root: Path, creator_key: str, url: str, video_id: st
         "scene_change_frames": sum(1 for x in frames if x["reason"] == "SCENE_CHANGE"),
         "one_fps_frames": sum(1 for x in frames if x["reason"] == "ONE_FPS"),
         "video_persisted": False,
+        "agent_visual_bundle": agent_visual_bundle,
     }
     index = {
         "schema_version": 1,
@@ -891,6 +1058,7 @@ def capture_visual_evidence(root: Path, creator_key: str, url: str, video_id: st
         "generated_at": utc_now(),
         "summary": summary,
         "frames": frames,
+        "agent_visual_bundle": agent_visual_bundle,
         "diagnostics": {
             "yt_dlp_returncode": yt_rc,
             "ffmpeg_returncode": ff.returncode,
@@ -1200,6 +1368,10 @@ def main() -> int:
             "visual_evidence_index": str(visual_index.relative_to(root)),
             "visual_frame_count": int(visual.get("retained_frames") or 0),
             "visual_capture_strategy": visual.get("capture_strategy"),
+            "agent_visual_bundle": visual.get("agent_visual_bundle"),
+            "analysis_mode_recommended": (visual.get("agent_visual_bundle") or {}).get("analysis_mode_recommended"),
+            "visual_review_recommended": bool((visual.get("agent_visual_bundle") or {}).get("visual_review_recommended")),
+            "visual_review_reason": (visual.get("agent_visual_bundle") or {}).get("visual_review_reason") or [],
             "research_status": old.get("research_status") or "PENDING",
             "source_class": "INFLUENCER_DISCOVERY_SECONDARY",
             "evaluation_mode": "CREATOR_EVALUATION",
