@@ -1064,8 +1064,6 @@ def _ingest_tiktok(root: Path, profile: dict, source: dict, ids: list[str], disc
         include_video_ids=set(ids),
         discovery_target_override=discovery_limit,
     )
-    if obj.get("completed"):
-        tts.run_research_queue(root)
     completed = [str(x.get("video_id")) for x in obj.get("completed", []) if x.get("video_id")]
     failures = obj.get("failures", []) if isinstance(obj.get("failures"), list) else []
     return {
