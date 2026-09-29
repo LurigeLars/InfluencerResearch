@@ -1068,7 +1068,14 @@ def _ingest_tiktok(root: Path, profile: dict, source: dict, ids: list[str], disc
         tts.run_research_queue(root)
     completed = [str(x.get("video_id")) for x in obj.get("completed", []) if x.get("video_id")]
     failures = obj.get("failures", []) if isinstance(obj.get("failures"), list) else []
-    return {"requested": len(ids), "completed_ids": completed, "returncode": 0 if not failures else 1, "failures": failures}
+    return {
+        "requested": len(ids),
+        "completed_ids": completed,
+        "returncode": 0 if not failures else 1,
+        "failures": failures,
+        "discovery_skipped_for_exact_ids": bool(obj.get("discovery_skipped_for_exact_ids")),
+        "pipeline_timings_ms": obj.get("timings_ms") or {},
+    }
 
 
 def _queue_targets(root: Path, item_keys: set[str]) -> list[dict]:
