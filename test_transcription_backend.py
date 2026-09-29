@@ -32,29 +32,11 @@ class TranscriptionBackendTests(unittest.TestCase):
             },
         )
 
-    def test_story_image_timeout_can_be_overridden_and_is_bounded(self) -> None:
-        with tempfile.TemporaryDirectory() as td:
-            image = Path(td) / "story.png"
-            image.write_bytes(b"png-bytes")
-            with patch.object(tb, "read_gemini_api_key", return_value="secret"), patch.object(
-                tb,
-                "_gemini_client",
-            ) as client_factory, patch("google.genai.types.Part.from_bytes") as part_from_bytes:
-                fake_client = client_factory.return_value
-                fake_client.models.generate_content.return_value.text = "visible"
-                part_from_bytes.return_value = object()
-
-                result = tb.extract_image_evidence_gemini(
-                    image,
-                    timeout_ms=7_500,
-                )
-
-        client_factory.assert_called_once_with(
-            "secret",
-            timeout_ms=7_500,
-            retry_attempts=tb.STORY_GEMINI_RETRY_ATTEMPTS,
-        )
-        self.assertEqual(result["timeout_ms"], 7_500)
+    def test_story_gemini_timeout_bounds(self) -> None:
+        self.assertEqual(tb.bounded_story_gemini_timeout_ms(), 12_000)
+        self.assertEqual(tb.bounded_story_gemini_timeout_ms(7_500), 7_500)
+        self.assertEqual(tb.bounded_story_gemini_timeout_ms(1_000), 5_000)
+        self.assertEqual(tb.bounded_story_gemini_timeout_ms(90_000), 30_000)
 
     def test_story_image_path_uses_inline_bytes_not_files_api(self) -> None:
         source = Path(tb.__file__).read_text(encoding="utf-8")
