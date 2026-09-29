@@ -19,7 +19,7 @@ import tiktok_camofox_sync as tts
 import instagram_camofox_public_smoke as instagram_smoke
 import ephemeral_ingest as ephemeral
 
-RECENT_CHECK_VERSION = "0.2.10"
+RECENT_CHECK_VERSION = "0.2.11"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
@@ -938,20 +938,17 @@ def _promote_story_items(
     }
 
 
-def _ingest_instagram_stories(
+def _capture_instagram_story_run(
     root: Path,
-    profile: dict,
     source: dict,
-    cutoff: datetime,
     max_new: int,
+    *,
     gemini_circuit: dict | None = None,
     ollama_budget_state: dict | None = None,
 ) -> dict:
+    """Capture/process one creator's Stories without promoting canonical items."""
     handle = _instagram_handle(source)
-    if max_new <= 0:
-        return {"promoted": [], "capture": None, "queue": None, "warnings": []}
-
-    run = ephemeral.run_one(
+    return ephemeral.run_one(
         root=root,
         mode="stories",
         creator=handle,
@@ -961,6 +958,31 @@ def _ingest_instagram_stories(
         gemini_circuit=gemini_circuit,
         ollama_budget_state=ollama_budget_state,
     )
+
+
+def _ingest_instagram_stories(
+    root: Path,
+    profile: dict,
+    source: dict,
+    cutoff: datetime,
+    max_new: int,
+    gemini_circuit: dict | None = None,
+    ollama_budget_state: dict | None = None,
+    precomputed_run: dict | None = None,
+) -> dict:
+    handle = _instagram_handle(source)
+    if max_new <= 0:
+        return {"promoted": [], "capture": None, "queue": None, "warnings": []}
+
+    run = precomputed_run
+    if run is None:
+        run = _capture_instagram_story_run(
+            root,
+            source,
+            max_new,
+            gemini_circuit=gemini_circuit,
+            ollama_budget_state=ollama_budget_state,
+        )
     bridge = _promote_story_items(root, profile, handle, cutoff, max_new)
     promoted = list(bridge.get("promoted") or [])
     available = list(bridge.get("available") or [])
@@ -1078,6 +1100,136 @@ def _queue_targets(root: Path, item_keys: set[str]) -> list[dict]:
             "analysis_evidence_truncated": len(evidence) > MAX_ANALYSIS_EVIDENCE_CHARS,
         })
     return out
+
+
+def _story_capture_targets(
+    selected: list[tuple[dict, list[dict]]],
+) -> list[tuple[dict, dict]]:
+    targets: list[tuple[dict, dict]] = []
+    seen: set[str] = set()
+    for profile, sources in selected:
+        creator_key = str(profile.get("creator_key") or "")
+        if not creator_key or creator_key in seen:
+            continue
+        instagram_source = next(
+            (
+                source
+                for source in sources
+                if str(source.get("platform") or "").upper() == "INSTAGRAM"
+            ),
+            None,
+        )
+        if instagram_source is None:
+            continue
+        seen.add(creator_key)
+        targets.append((profile, instagram_source))
+    return targets
+
+
+def _run_story_capture_batch(
+    root: Path,
+    selected: list[tuple[dict, list[dict]]],
+    max_items: int,
+    *,
+    gemini_circuit: dict,
+    ollama_budget_state: dict,
+) -> dict:
+    """Run Story browser work serially in one background worker.
+
+    Serial Story capture preserves the single-writer ephemeral-manifest contract.
+    The batch itself can overlap discovery because discovery uses separate state
+    and the separate CamoFox browser runtime.
+    """
+    batch_clock = time.perf_counter()
+    results: list[dict] = []
+    for profile, source in _story_capture_targets(selected):
+        creator_key = str(profile["creator_key"])
+        item_clock = time.perf_counter()
+        try:
+            run = _capture_instagram_story_run(
+                root,
+                source,
+                max_items,
+                gemini_circuit=gemini_circuit,
+                ollama_budget_state=ollama_budget_state,
+            )
+            results.append({
+                "creator_key": creator_key,
+                "profile": profile,
+                "source": source,
+                "run": run,
+                "error": None,
+                "duration_ms": round((time.perf_counter() - item_clock) * 1000, 1),
+            })
+        except Exception as exc:
+            results.append({
+                "creator_key": creator_key,
+                "profile": profile,
+                "source": source,
+                "run": None,
+                "error": f"{type(exc).__name__}: {exc}",
+                "duration_ms": round((time.perf_counter() - item_clock) * 1000, 1),
+            })
+    return {
+        "results": results,
+        "creator_count": len(results),
+        "wall_duration_ms": round((time.perf_counter() - batch_clock) * 1000, 1),
+    }
+
+
+def _run_discovery_with_story_prefetch(
+    root: Path,
+    selected: list[tuple[dict, list[dict]]],
+    cutoff: datetime,
+    end: datetime,
+    discovery_limit: int,
+    max_items: int,
+    *,
+    gemini_circuit: dict,
+    ollama_budget_state: dict,
+) -> tuple[tuple[list[dict], list[dict], dict, list[dict], dict], dict]:
+    """Overlap serial Story capture with bounded discovery."""
+    executor = ThreadPoolExecutor(
+        max_workers=1,
+        thread_name_prefix="recent-story-prefetch",
+    )
+    story_future = executor.submit(
+        _run_story_capture_batch,
+        root,
+        selected,
+        max_items,
+        gemini_circuit=gemini_circuit,
+        ollama_budget_state=ollama_budget_state,
+    )
+    discovery_clock = time.perf_counter()
+    try:
+        discovery_result = _run_discovery_batch(
+            root,
+            selected,
+            cutoff,
+            end,
+            discovery_limit,
+        )
+        discovery_duration_ms = round(
+            (time.perf_counter() - discovery_clock) * 1000,
+            1,
+        )
+        join_clock = time.perf_counter()
+        story_result = story_future.result()
+        join_wait_ms = round((time.perf_counter() - join_clock) * 1000, 1)
+    finally:
+        executor.shutdown(wait=True, cancel_futures=False)
+
+    story_result["discovery_duration_ms"] = discovery_duration_ms
+    story_result["join_wait_ms"] = join_wait_ms
+    story_result["overlap_saved_estimate_ms"] = round(
+        min(
+            float(discovery_duration_ms),
+            float(story_result.get("wall_duration_ms") or 0.0),
+        ),
+        1,
+    )
+    return discovery_result, story_result
 
 
 def _run_discovery_batch(
