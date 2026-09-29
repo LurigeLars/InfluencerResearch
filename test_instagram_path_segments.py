@@ -18,6 +18,7 @@ if not hasattr(playwright_sync, "sync_playwright"):
     playwright_sync.sync_playwright = lambda: None
 playwright_pkg.sync_api = playwright_sync
 
+import ephemeral_ingest as ephemeral
 from ephemeral_ingest import backfill_story_identity_metadata, enrich_story_visual_evidence, extract_story_identity, get_gemini_provider_health, initial_story_gemini_circuit, invalidate_legacy_unstable_story_evidence, normalize_creator_handle, retire_root_media_aliases_for_numeric_story
 from instagram_ingest import safe_creator
 
@@ -142,6 +143,91 @@ class InstagramPathSegmentTests(unittest.TestCase):
             "PENDING",
         )
 
+
+    def test_story_media_download_cache_reuses_identical_set_and_recovers_missing_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            media = root / "output" / "example" / "stories" / "videos" / "123.mp4"
+            media.parent.mkdir(parents=True)
+            media.write_bytes(b"video")
+
+            key = "STORY:example:123"
+            manifest = {
+                "items": {
+                    key: {
+                        "source_type": "STORY",
+                        "creator": "example",
+                        "screenshot_sha256": "abc123",
+                        "source_url": "https://www.instagram.com/stories/example/123/",
+                    }
+                }
+            }
+            capture = {"visited_item_keys": [key]}
+            result = {
+                "ok": True,
+                "files": [str(media.relative_to(root))],
+            }
+
+            ephemeral._record_story_ytdlp_success(
+                root,
+                "example",
+                manifest,
+                capture,
+                result,
+            )
+            cached = ephemeral._story_ytdlp_cached_result(
+                root,
+                "example",
+                manifest,
+                capture,
+            )
+            self.assertIsNotNone(cached)
+            self.assertTrue(cached["skipped"])
+            self.assertEqual(
+                cached["reason"],
+                "UNCHANGED_STORY_SET_ALREADY_DOWNLOADED",
+            )
+
+            media.unlink()
+            transcript = (
+                root
+                / "output"
+                / "example"
+                / "stories"
+                / "transcripts"
+                / "123.txt"
+            )
+            transcript.parent.mkdir(parents=True)
+            transcript.write_text("transcript", encoding="utf-8")
+            self.assertIsNotNone(
+                ephemeral._story_ytdlp_cached_result(
+                    root,
+                    "example",
+                    manifest,
+                    capture,
+                )
+            )
+
+            transcript.unlink()
+            self.assertIsNone(
+                ephemeral._story_ytdlp_cached_result(
+                    root,
+                    "example",
+                    manifest,
+                    capture,
+                )
+            )
+
+            media.write_bytes(b"video")
+            manifest["items"][key]["screenshot_sha256"] = "changed"
+            self.assertIsNone(
+                ephemeral._story_ytdlp_cached_result(
+                    root,
+                    "example",
+                    manifest,
+                    capture,
+                )
+            )
 
     def test_story_visual_enrichment_is_bounded_per_run(self) -> None:
         with tempfile.TemporaryDirectory() as td:
