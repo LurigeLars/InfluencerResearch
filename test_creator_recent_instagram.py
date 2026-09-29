@@ -54,7 +54,7 @@ class RecentInstagramTests(unittest.TestCase):
                 },
             ],
         }
-        with mock.patch.object(crc.instagram_smoke, "probe_public_session", return_value=probe) as run:
+        with mock.patch.object(crc.instagram, "discover_reels_authenticated", return_value=probe) as run:
             result = crc.discover_instagram(
                 {"creator_key": "creator"},
                 {"profile_url": "https://www.instagram.com/example/"},
@@ -66,10 +66,8 @@ class RecentInstagramTests(unittest.TestCase):
         self.assertEqual([item["source_id"] for item in result["items"]], ["RECENT123"])
         self.assertTrue(result["window_complete"])
         run.assert_called_once_with(
-            "https://www.instagram.com/example/",
             "example",
-            run_index=1,
-            inspect_reel_times=True,
+            max_scan=15,
             known_reel_times={},
         )
 
@@ -85,8 +83,8 @@ class RecentInstagramTests(unittest.TestCase):
             "timings": {},
         }
         with mock.patch.object(
-            crc.instagram_smoke,
-            "probe_public_session",
+            crc.instagram,
+            "discover_reels_authenticated",
             return_value=probe,
         ):
             result = crc.discover_instagram(
@@ -112,8 +110,8 @@ class RecentInstagramTests(unittest.TestCase):
             "timings": {},
         }
         with mock.patch.object(
-            crc.instagram_smoke,
-            "probe_public_session",
+            crc.instagram,
+            "discover_reels_authenticated",
             return_value=probe,
         ):
             result = crc.discover_instagram(
@@ -126,6 +124,39 @@ class RecentInstagramTests(unittest.TestCase):
 
         self.assertFalse(result["window_complete"])
         self.assertEqual(result["coverage_limited_reason"], "HARD_BLOCK")
+
+    def test_instagram_discovery_error_is_not_complete_coverage(self) -> None:
+        end = datetime(2026, 9, 29, 18, 0, tzinfo=timezone.utc)
+        cutoff = end - timedelta(days=1)
+        probe = {
+            "ok": False,
+            "authenticated": True,
+            "reel_count": 0,
+            "blocked": False,
+            "media_auth_gated": False,
+            "reel_items": [],
+            "error": "TimeoutError: profile navigation timed out",
+            "timings": {},
+        }
+        with mock.patch.object(
+            crc.instagram,
+            "discover_reels_authenticated",
+            return_value=probe,
+        ):
+            result = crc.discover_instagram(
+                {"creator_key": "creator"},
+                {"profile_url": "https://www.instagram.com/example/"},
+                cutoff,
+                end,
+                15,
+            )
+
+        self.assertFalse(result["window_complete"])
+        self.assertEqual(result["coverage_limited_reason"], "DISCOVERY_ERROR")
+        self.assertEqual(
+            result["discovery"]["error"],
+            "TimeoutError: profile navigation timed out",
+        )
 
     def test_instagram_discovery_reuses_cached_publish_times(self) -> None:
         end = datetime(2026, 9, 29, 18, 0, tzinfo=timezone.utc)
@@ -168,8 +199,8 @@ class RecentInstagramTests(unittest.TestCase):
                 "timings": {"reel_time_cache_hits": 1},
             }
             with mock.patch.object(
-                crc.instagram_smoke,
-                "probe_public_session",
+                crc.instagram,
+                "discover_reels_authenticated",
                 return_value=probe,
             ) as run:
                 result = crc.discover_instagram(
@@ -183,10 +214,8 @@ class RecentInstagramTests(unittest.TestCase):
 
         self.assertEqual(result["items"][0]["source_id"], "RECENT123")
         run.assert_called_once_with(
-            "https://www.instagram.com/example/",
             "example",
-            run_index=1,
-            inspect_reel_times=True,
+            max_scan=15,
             known_reel_times={"RECENT123": "2026-09-29T15:10:53+00:00"},
         )
 
