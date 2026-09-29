@@ -41,11 +41,30 @@ def load_json(path: Path, default: Any = None) -> Any:
     raise FileNotFoundError(path)
 
 
+def _json_text(data: dict) -> str:
+    return json.dumps(data, ensure_ascii=False, indent=2) + "\n"
+
+
 def atomic_write_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    tmp.write_text(_json_text(data), encoding="utf-8")
     os.replace(tmp, path)
+
+
+def atomic_write_json_if_changed(path: Path, data: dict) -> bool:
+    text = _json_text(data)
+    if path.is_file():
+        try:
+            if path.read_text(encoding="utf-8") == text:
+                return False
+        except OSError:
+            pass
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+    return True
 
 
 def read_text(path: Path) -> str:
@@ -206,8 +225,13 @@ def build_packet(
     evidence_lineage_id: str,
     duplicate_of: str | None,
     duplicate_basis: str | None,
+    transcript_text: str | None = None,
 ) -> dict:
-    transcript = read_text(transcript_path) if transcript_path is not None else ""
+    transcript = (
+        transcript_text
+        if transcript_text is not None
+        else (read_text(transcript_path) if transcript_path is not None else "")
+    )
     browser_text = str(item.get("browser_text") or "").strip()
     caption = str(item.get("caption") or "").strip()
     visible_text = str(item.get("visible_text") or "").strip()
@@ -534,6 +558,7 @@ def main() -> int:
             "shortcode": shortcode,
             "item": item,
             "transcript_path": transcript_path,
+            "transcript_text": transcript,
             "transcript_fp": fp,
             "url_key": url_key,
             "lineage_id": lineage_id(
@@ -635,6 +660,7 @@ def main() -> int:
             evidence_lineage_id=lineage,
             duplicate_of=None,
             duplicate_basis=None,
+            transcript_text=rec["transcript_text"],
         )
         items.append(packet)
 
@@ -710,11 +736,18 @@ def main() -> int:
         atomic_write_json(manifest_path, manifest)
 
     # Compact per-item packets remain a transport convenience, not an analysis source of truth.
+    # Avoid replacing identical packets on every queue refresh; bind-mounted small-file
+    # writes are materially more expensive than a byte-for-byte read comparison.
+    packet_writes = 0
+    packet_write_skips = 0
     for packet in items:
         creator = str(packet.get("creator") or "unknown")
         out_dir = root / "output" / creator / "research" / "pending"
         out_path = out_dir / f"{packet['shortcode']}.json"
-        atomic_write_json(out_path, packet)
+        if atomic_write_json_if_changed(out_path, packet):
+            packet_writes += 1
+        else:
+            packet_write_skips += 1
 
     print(json.dumps({
         "screen_version": SCREEN_VERSION,
@@ -728,6 +761,8 @@ def main() -> int:
         "deferred_extraction_count": len(deferred_extraction_items),
         "extraction_error_count": len(extraction_error_items),
         "pending_extraction_count": len(pending_extraction_items),
+        "packet_writes": packet_writes,
+        "packet_write_skips": packet_write_skips,
         "must_include_requested": must_include,
         "must_include_eligible": must_include_eligible,
         "must_include_queued": must_include_queued,
