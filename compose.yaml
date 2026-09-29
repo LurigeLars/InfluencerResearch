@@ -12,7 +12,7 @@ services:
       INFLUENCER_RESEARCH_MCP_PORT: "8770"
       INFLUENCER_RESEARCH_ALLOWED_HOSTS: "127.0.0.1:*,localhost:*,influencerresearch:*"
       INFLUENCER_RESEARCH_CAMOFOX_MODE: container
-      INFLUENCER_RESEARCH_DISCOVERY_BROWSER_WORKERS: "3"
+      INFLUENCER_RESEARCH_DISCOVERY_BROWSER_WORKERS: "2"
       XDG_CACHE_HOME: /runtime/influencerresearch/cache
       HOME: /home/influencer
     ports:

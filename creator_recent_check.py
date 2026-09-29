@@ -40,8 +40,8 @@ SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
 YOUTUBE_METADATA_PROBE_WORKERS = 4
-# Default remains conservative for non-Compose runtimes. Our reviewed Compose
-# deployment raises CamoFox to 3 vCPU / 3 GB and explicitly opts into 3 workers.
+# Default remains conservative. The worker count is configurable for bounded
+# capacity experiments, but the reviewed Compose deployment currently uses 2.
 DISCOVERY_BROWSER_WORKERS = _bounded_env_int(
     "INFLUENCER_RESEARCH_DISCOVERY_BROWSER_WORKERS",
     2,
