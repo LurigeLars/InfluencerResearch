@@ -5,12 +5,14 @@ import json
 import re
 import shutil
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VISUAL_REVIEW_POLICY_VERSION = 3
+VISUAL_REVIEW_POLICY_VERSION = 4
+VISUAL_CAPTURE_VERSION = 1
 VISUAL_OCR_MAX_FRAMES = 24
 VISUAL_REPRESENTATIVE_FRAMES = 12
 VISUAL_OCR_TIMEOUT_SECONDS = 8
@@ -283,7 +285,15 @@ def build_agent_visual_bundle(
     media_path: Path | None = None,
     transcript_text: str = "",
 ) -> dict:
-    sampled = _sample_visual_records(records)
+    creator_prior_high = creator_key.casefold() in CHART_HEAVY_CREATORS
+    transcript_lower = str(transcript_text or "").casefold()
+    transcript_visual_cue = any(cue in transcript_lower for cue in TRANSCRIPT_VISUAL_CUES)
+    sample_limit = (
+        VISUAL_REPRESENTATIVE_FRAMES
+        if creator_prior_high or transcript_visual_cue
+        else VISUAL_OCR_MAX_FRAMES
+    )
+    sampled = _sample_visual_records(records, limit=sample_limit)
 
     def inspect(row: dict) -> dict:
         text = _ocr_visual_frame(Path(row["file"]))
@@ -339,6 +349,33 @@ def build_agent_visual_bundle(
     }
 
 
+def _reusable_existing_frame_records(root: Path, existing: dict) -> list[dict]:
+    if int(existing.get("schema_version") or 0) != 1:
+        return []
+    # Legacy schema-v1 indexes predate the explicit capture version but use the
+    # same frame layout as capture v1.
+    capture_version = int(existing.get("visual_capture_version") or 1)
+    if capture_version != VISUAL_CAPTURE_VERSION:
+        return []
+    rows = existing.get("frames") or []
+    if not isinstance(rows, list) or not rows:
+        return []
+
+    records: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("file"):
+            return []
+        path = root / Path(str(row["file"]))
+        if not path.exists():
+            return []
+        records.append({
+            **row,
+            "file": path,
+            "size_bytes": int(row.get("size_bytes") or path.stat().st_size),
+        })
+    return records
+
+
 def capture_local_video_visual_evidence(
     root: Path,
     creator_key: str,
@@ -354,23 +391,28 @@ def capture_local_video_visual_evidence(
     into transcript-only analysis; the source video remains available as the last local
     fallback for a downstream agent or future transport.
     """
+    started = time.perf_counter()
     platform_dir = source_platform.strip().lower()
     evidence_dir = root / "output" / creator_key / platform_dir / "frames" / video_id
     index_path = evidence_dir / "visual_index.json"
 
+    existing: dict = {}
+    reusable_records: list[dict] = []
     if index_path.exists():
         with contextlib.suppress(OSError, json.JSONDecodeError, KeyError, TypeError, ValueError):
             existing = json.loads(index_path.read_text(encoding="utf-8"))
-            if int(existing.get("visual_review_policy_version") or 0) >= VISUAL_REVIEW_POLICY_VERSION:
-                retained = existing.get("frames") or []
-                if retained and all((root / Path(row["file"])).exists() for row in retained if row.get("file")):
-                    summary = dict(existing.get("summary") or {})
-                    return {
-                        "ok": True,
-                        "source": "existing_visual_evidence",
-                        "index": index_path,
-                        **summary,
-                    }
+            reusable_records = _reusable_existing_frame_records(root, existing)
+            if (
+                int(existing.get("visual_review_policy_version") or 0) >= VISUAL_REVIEW_POLICY_VERSION
+                and reusable_records
+            ):
+                summary = dict(existing.get("summary") or {})
+                return {
+                    "ok": True,
+                    "source": "existing_visual_evidence",
+                    "index": index_path,
+                    **summary,
+                }
 
     ffmpeg = _ffmpeg_exe()
     if not ffmpeg:
@@ -386,43 +428,56 @@ def capture_local_video_visual_evidence(
             "visual_review_policy_version": VISUAL_REVIEW_POLICY_VERSION,
         }
 
-    shutil.rmtree(evidence_dir, ignore_errors=True)
-    evidence_dir.mkdir(parents=True, exist_ok=True)
-    filter_complex = (
-        "[0:v]split=2[fpssrc][scsrc];"
-        "[fpssrc]fps=1,mpdecimate,showinfo@fps[fpsout];"
-        "[scsrc]select='gt(scene\\,0.30)',showinfo@scene[scout]"
-    )
-    command = [
-        ffmpeg, "-hide_banner", "-loglevel", "info", "-y",
-        "-i", str(media_path),
-        "-filter_complex", filter_complex,
-        "-map", "[fpsout]", "-fps_mode", "vfr", "-q:v", "5", str(evidence_dir / "fps_%05d.jpg"),
-        "-map", "[scout]", "-fps_mode", "vfr", "-q:v", "5", str(evidence_dir / "scene_%05d.jpg"),
-    ]
-    try:
-        proc = subprocess.run(command, capture_output=True, timeout=600, check=False)
-    except (OSError, subprocess.SubprocessError) as exc:
-        return {
-            "ok": False,
-            "error": f"{type(exc).__name__}:visual_frame_capture_failed",
-            "visual_review_policy_version": VISUAL_REVIEW_POLICY_VERSION,
-        }
+    frames_reused = bool(reusable_records)
+    frame_capture_ms = 0.0
+    ffmpeg_returncode: int | None = None
 
-    stderr = (proc.stderr or b"").decode("utf-8", errors="replace")
-    fps_times = _showinfo_times(stderr, "fps")
-    scene_times = _showinfo_times(stderr, "scene")
-    records = _frame_records(evidence_dir, "fps", fps_times, "ONE_FPS")
-    records += _frame_records(evidence_dir, "scene", scene_times, "SCENE_CHANGE")
-    candidate_count = len(records)
-    records = _merge_frame_records(records)
-    if proc.returncode != 0 and not records:
-        return {
-            "ok": False,
-            "error": f"ffmpeg_visual_frame_capture_failed:{proc.returncode}",
-            "visual_review_policy_version": VISUAL_REVIEW_POLICY_VERSION,
-        }
+    if frames_reused:
+        records = reusable_records
+        old_summary = existing.get("summary") if isinstance(existing.get("summary"), dict) else {}
+        candidate_count = int(old_summary.get("candidate_frames") or len(records))
+    else:
+        shutil.rmtree(evidence_dir, ignore_errors=True)
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        filter_complex = (
+            "[0:v]split=2[fpssrc][scsrc];"
+            "[fpssrc]fps=1,mpdecimate,showinfo@fps[fpsout];"
+            "[scsrc]select='gt(scene\\,0.30)',showinfo@scene[scout]"
+        )
+        command = [
+            ffmpeg, "-hide_banner", "-loglevel", "info", "-y",
+            "-i", str(media_path),
+            "-filter_complex", filter_complex,
+            "-map", "[fpsout]", "-fps_mode", "vfr", "-q:v", "5", str(evidence_dir / "fps_%05d.jpg"),
+            "-map", "[scout]", "-fps_mode", "vfr", "-q:v", "5", str(evidence_dir / "scene_%05d.jpg"),
+        ]
+        capture_started = time.perf_counter()
+        try:
+            proc = subprocess.run(command, capture_output=True, timeout=600, check=False)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return {
+                "ok": False,
+                "error": f"{type(exc).__name__}:visual_frame_capture_failed",
+                "visual_review_policy_version": VISUAL_REVIEW_POLICY_VERSION,
+            }
+        frame_capture_ms = round((time.perf_counter() - capture_started) * 1000, 1)
+        ffmpeg_returncode = int(proc.returncode)
 
+        stderr = (proc.stderr or b"").decode("utf-8", errors="replace")
+        fps_times = _showinfo_times(stderr, "fps")
+        scene_times = _showinfo_times(stderr, "scene")
+        records = _frame_records(evidence_dir, "fps", fps_times, "ONE_FPS")
+        records += _frame_records(evidence_dir, "scene", scene_times, "SCENE_CHANGE")
+        candidate_count = len(records)
+        records = _merge_frame_records(records)
+        if proc.returncode != 0 and not records:
+            return {
+                "ok": False,
+                "error": f"ffmpeg_visual_frame_capture_failed:{proc.returncode}",
+                "visual_review_policy_version": VISUAL_REVIEW_POLICY_VERSION,
+            }
+
+    bundle_started = time.perf_counter()
     bundle = build_agent_visual_bundle(
         root,
         creator_key,
@@ -432,6 +487,8 @@ def capture_local_video_visual_evidence(
         media_path=media_path,
         transcript_text=transcript_text,
     )
+    visual_bundle_ms = round((time.perf_counter() - bundle_started) * 1000, 1)
+
     frames = [
         {
             "timestamp_s": row.get("timestamp_s"),
@@ -441,6 +498,11 @@ def capture_local_video_visual_evidence(
         }
         for row in records
     ]
+    timings_ms = {
+        "frame_capture": frame_capture_ms,
+        "visual_bundle": visual_bundle_ms,
+        "total": round((time.perf_counter() - started) * 1000, 1),
+    }
     summary = {
         "capture_strategy": "1FPS_PLUS_SCENE_CHANGE_WITH_FFMPEG_MPDECIMATE_LOCAL_MEDIA",
         "candidate_frames": candidate_count,
@@ -448,10 +510,13 @@ def capture_local_video_visual_evidence(
         "scene_change_frames": sum(1 for row in frames if row.get("reason") == "SCENE_CHANGE"),
         "one_fps_frames": sum(1 for row in frames if row.get("reason") == "ONE_FPS"),
         "video_persisted": True,
+        "frames_reused_for_policy_refresh": frames_reused,
+        "timings_ms": timings_ms,
         "agent_visual_bundle": bundle,
     }
     index = {
         "schema_version": 1,
+        "visual_capture_version": VISUAL_CAPTURE_VERSION,
         "visual_review_policy_version": VISUAL_REVIEW_POLICY_VERSION,
         "source_platform": source_platform.upper(),
         "video_id": video_id,
@@ -460,12 +525,20 @@ def capture_local_video_visual_evidence(
         "summary": summary,
         "frames": frames,
         "agent_visual_bundle": bundle,
-        "diagnostics": {"ffmpeg_returncode": proc.returncode},
+        "diagnostics": {
+            "ffmpeg_returncode": ffmpeg_returncode,
+            "frames_reused_for_policy_refresh": frames_reused,
+            "timings_ms": timings_ms,
+        },
     }
     atomic_json(index_path, index)
     return {
         "ok": True,
-        "source": "local_video_visual_evidence",
+        "source": (
+            "reused_frames_visual_policy_refresh"
+            if frames_reused
+            else "local_video_visual_evidence"
+        ),
         "index": index_path,
         **summary,
     }
