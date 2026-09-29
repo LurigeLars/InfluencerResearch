@@ -162,6 +162,14 @@ def _instagram_page_access_state(page, creator: str) -> dict[str, Any]:
         or "we restrict certain activity" in folded
         or "suspicious login attempt" in folded
     )
+    unavailable = (
+        "sorry, this page isn't available" in folded
+        or "sorry, something went wrong" in folded
+        or "page isn't available" in folded
+        or "please wait a few minutes before you try again" in folded
+        or "sidan är inte tillgänglig" in folded
+        or "något gick fel" in folded
+    )
     handle_visible = creator_folded in folded
     return {
         "url": current_url,
@@ -169,6 +177,7 @@ def _instagram_page_access_state(page, creator: str) -> dict[str, Any]:
         "handle_visible": handle_visible,
         "media_auth_gated": media_auth_gated,
         "blocked": blocked,
+        "unavailable": unavailable,
     }
 
 
@@ -192,6 +201,7 @@ def _wait_for_instagram_profile_ready(
             reel_count > 0
             or state.get("media_auth_gated")
             or state.get("blocked")
+            or state.get("unavailable")
             or int(state.get("body_text_length") or 0) > 300
         ):
             break
@@ -206,6 +216,7 @@ def _wait_for_instagram_profile_ready(
             reel_count > 0
             or state.get("media_auth_gated")
             or state.get("blocked")
+            or state.get("unavailable")
             or int(state.get("body_text_length") or 0) > 300
         ),
         "reel_link_count": reel_count,
@@ -343,8 +354,9 @@ def discover_reels_authenticated(
 
             blocked = bool(readiness.get("blocked"))
             media_auth_gated = bool(readiness.get("media_auth_gated"))
+            unavailable = bool(readiness.get("unavailable"))
             reel_urls: list[str] = []
-            if not blocked and not media_auth_gated:
+            if not blocked and not media_auth_gated and not unavailable:
                 reel_urls, discovery_rounds = _collect_loaded_reel_urls(
                     page,
                     max_scan,
@@ -375,16 +387,24 @@ def discover_reels_authenticated(
                 })
 
             return {
-                "ok": bool(authenticated and not blocked and not media_auth_gated),
+                "ok": bool(
+                    authenticated
+                    and not blocked
+                    and not media_auth_gated
+                    and not unavailable
+                ),
                 "authenticated": authenticated,
                 "blocked": blocked,
                 "media_auth_gated": media_auth_gated,
                 "reel_count": len(reel_urls),
                 "reel_items": reel_items,
                 "reel_discovery_ok": bool(
-                    authenticated and not blocked and not media_auth_gated
+                    authenticated
+                    and not blocked
+                    and not media_auth_gated
+                    and not unavailable
                 ),
-                "error": None,
+                "error": "INSTAGRAM_PROFILE_UNAVAILABLE" if unavailable else None,
                 "timings": {
                     "browser_launch_ms": browser_launch_ms,
                     "profile_load_ms": profile_load_ms,
