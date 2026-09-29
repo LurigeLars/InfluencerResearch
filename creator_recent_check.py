@@ -19,15 +19,35 @@ import tiktok_camofox_sync as tts
 import instagram_camofox_public_smoke as instagram_smoke
 import ephemeral_ingest as ephemeral
 
-RECENT_CHECK_VERSION = "0.2.13"
+def _bounded_env_int(
+    name: str,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    raw = os.environ.get(name)
+    if raw in {None, ""}:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, value))
+
+
+RECENT_CHECK_VERSION = "0.2.14"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
 YOUTUBE_METADATA_PROBE_WORKERS = 4
-# Live testing on the 2-vCPU/2-GB CamoFox container showed that 3 concurrent
-# browser discoveries can restart the browser and invalidate active tabs. Keep
-# this at 2 unless the runtime capacity or admission model changes.
-DISCOVERY_BROWSER_WORKERS = 2
+# Default remains conservative for non-Compose runtimes. Our reviewed Compose
+# deployment raises CamoFox to 3 vCPU / 3 GB and explicitly opts into 3 workers.
+DISCOVERY_BROWSER_WORKERS = _bounded_env_int(
+    "INFLUENCER_RESEARCH_DISCOVERY_BROWSER_WORKERS",
+    2,
+    1,
+    4,
+)
 DISCOVERY_NETWORK_WORKERS = 4
 MAX_ANALYSIS_EVIDENCE_CHARS = 6000
 STOCKHOLM_TZ = ZoneInfo("Europe/Stockholm")
