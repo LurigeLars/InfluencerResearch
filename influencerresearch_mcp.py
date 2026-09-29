@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+import base64
 import json
 import os
 import signal
@@ -14,7 +15,7 @@ from typing import Literal
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp.types import ToolAnnotations
+from mcp.types import ImageContent, TextContent, ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -53,6 +54,27 @@ def load_json(path: Path, default: dict | None = None) -> dict:
 
 def as_text(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _safe_evidence_path(value: str | None) -> Path | None:
+    if not value:
+        return None
+    try:
+        root = ROOT.resolve()
+        path = (ROOT / Path(str(value))).resolve()
+        if not path.is_relative_to(root) or not path.is_file():
+            return None
+        return path
+    except OSError:
+        return None
+
+
+def _research_queue_item(queue_id: str) -> dict | None:
+    queue = load_json(STATE_DIR / "research_queue.json", {})
+    for item in queue.get("items", []):
+        if str(item.get("queue_id") or item.get("shortcode") or "") == str(queue_id):
+            return item if isinstance(item, dict) else None
+    return None
 
 
 class CreatorSource(BaseModel):
@@ -408,6 +430,82 @@ def creator_recent_check(
         "max_items": cap,
     }
     return as_text(jobs.start("creator_recent_check", params))
+
+
+@mcp.tool(
+    description=(
+        "Return retained visual evidence for one research-queue item so the analysis agent can inspect frames directly. "
+        "Use when visual_review_recommended is true or when transcript evidence appears visually incomplete."
+    ),
+    annotations=READ,
+    structured_output=False,
+)
+def analysis_evidence_get(
+    queue_id: str,
+    mode: Literal["REPRESENTATIVE_FRAMES", "CONTACT_SHEET"] = "REPRESENTATIVE_FRAMES",
+    max_frames: int = 8,
+) -> list[TextContent | ImageContent]:
+    item = _research_queue_item(queue_id)
+    if item is None:
+        return [TextContent(type="text", text=as_text({"ok": False, "error": "QUEUE_ITEM_NOT_FOUND", "queue_id": queue_id}))]
+
+    bundle = item.get("agent_visual_bundle") if isinstance(item.get("agent_visual_bundle"), dict) else {}
+    metadata = {
+        "ok": True,
+        "queue_id": queue_id,
+        "creator": item.get("creator"),
+        "source_platform": item.get("source_platform"),
+        "source_url": item.get("source_url"),
+        "analysis_mode_recommended": item.get("analysis_mode_recommended"),
+        "visual_review_recommended": item.get("visual_review_recommended"),
+        "visual_review_reason": item.get("visual_review_reason") or [],
+        "creator_visual_prior": bundle.get("creator_visual_prior"),
+        "chart_signal_ratio": bundle.get("chart_signal_ratio"),
+        "chart_signal_frame_count": bundle.get("chart_signal_frame_count"),
+    }
+    content: list[TextContent | ImageContent] = [
+        TextContent(type="text", text=as_text(metadata))
+    ]
+
+    if mode == "CONTACT_SHEET":
+        contact = _safe_evidence_path(bundle.get("contact_sheet"))
+        if contact is None:
+            content.append(TextContent(type="text", text=as_text({"warning": "CONTACT_SHEET_NOT_AVAILABLE"})))
+            return content
+        content.append(ImageContent(type="image", data=base64.b64encode(contact.read_bytes()).decode("ascii"), mime_type="image/jpeg"))
+        return content
+
+    cap = max(1, min(int(max_frames), 12))
+    frames = bundle.get("representative_frames") if isinstance(bundle.get("representative_frames"), list) else []
+    returned = 0
+    for frame in frames:
+        if returned >= cap or not isinstance(frame, dict):
+            break
+        path = _safe_evidence_path(frame.get("file"))
+        if path is None:
+            continue
+        content.append(
+            TextContent(
+                type="text",
+                text=as_text({
+                    "timestamp_s": frame.get("timestamp_s"),
+                    "visual_score": frame.get("visual_score"),
+                    "visual_signals": frame.get("visual_signals") or [],
+                    "ocr_text": frame.get("ocr_text"),
+                }),
+            )
+        )
+        content.append(
+            ImageContent(
+                type="image",
+                data=base64.b64encode(path.read_bytes()).decode("ascii"),
+                mime_type="image/jpeg",
+            )
+        )
+        returned += 1
+    if returned == 0:
+        content.append(TextContent(type="text", text=as_text({"warning": "REPRESENTATIVE_FRAMES_NOT_AVAILABLE"})))
+    return content
 
 
 @mcp.tool(
