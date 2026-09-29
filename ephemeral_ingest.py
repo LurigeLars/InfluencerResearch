@@ -35,7 +35,7 @@ from transcription_backend import (
 )
 
 
-APP_VERSION = "0.5.2"
+APP_VERSION = "0.5.3"
 STORY_URL_RE = re.compile(r"/stories/(?P<user>[^/]+)/(?P<id>\d+)/?")
 HIGHLIGHT_URL_RE = re.compile(r"/stories/highlights/(?P<id>\d+)/?")
 STRICT_STORY_ROOT_PATH_RE = re.compile(r"^/stories/[A-Za-z0-9._-]{1,64}/?$")
@@ -486,6 +486,63 @@ def wait_for_story_advance(
         page.wait_for_timeout(min(poll_ms, max(1, int(remaining_ms))))
 
 
+def wait_for_story_initial_ready(
+    page,
+    *,
+    max_wait_ms: int = 2500,
+    poll_ms: int = 100,
+) -> dict[str, Any]:
+    """Wait for the first Story identity without a blind fixed delay.
+
+    The first captured frame still keeps the existing 900 ms settle wait. If no
+    stable Story identity appears, this helper consumes the same 2500 ms maximum
+    budget as the old unconditional sleep before the existing error/overlay checks
+    continue unchanged.
+    """
+    started = time.perf_counter()
+    attempts = 0
+    max_wait_ms = max(0, int(max_wait_ms))
+    poll_ms = max(25, int(poll_ms))
+
+    while True:
+        attempts += 1
+        current_url = str(getattr(page, "url", "") or "")
+        if "/stories/" not in current_url:
+            return {
+                "ready": True,
+                "redirected": True,
+                "timed_out": False,
+                "identity": None,
+                "attempts": attempts,
+                "wait_ms": round((time.perf_counter() - started) * 1000, 1),
+            }
+
+        identity = _story_navigation_identity(page)
+        if identity:
+            return {
+                "ready": True,
+                "redirected": False,
+                "timed_out": False,
+                "identity": identity,
+                "attempts": attempts,
+                "wait_ms": round((time.perf_counter() - started) * 1000, 1),
+            }
+
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        remaining_ms = max_wait_ms - elapsed_ms
+        if remaining_ms <= 0:
+            return {
+                "ready": False,
+                "redirected": False,
+                "timed_out": True,
+                "identity": None,
+                "attempts": attempts,
+                "wait_ms": round((time.perf_counter() - started) * 1000, 1),
+            }
+
+        page.wait_for_timeout(min(poll_ms, max(1, int(remaining_ms))))
+
+
 def extract_story_identity(
     url: str,
     screenshot_bytes: bytes,
@@ -743,9 +800,24 @@ def capture_story_frames(
     max_items: int,
     preopened: bool = False,
 ) -> dict:
+    initial_readiness = {
+        "ready": bool(preopened),
+        "redirected": False,
+        "timed_out": False,
+        "identity": None,
+        "attempts": 0,
+        "wait_ms": 0.0,
+    }
     if not preopened:
         page.goto(start_url, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(2500)
+        if source_type == "STORY":
+            initial_readiness = wait_for_story_initial_ready(
+                page,
+                max_wait_ms=2500,
+                poll_ms=100,
+            )
+        else:
+            page.wait_for_timeout(2500)
 
     if instagram_story_error_present(page):
         return {
@@ -924,6 +996,15 @@ def capture_story_frames(
         "identity_aliases_retired": identity_aliases_retired,
         "visited_item_keys": visited_item_keys,
         "visited_frames": visited,
+        "story_initial_wait_ms": round(
+            float(initial_readiness.get("wait_ms") or 0.0),
+            1,
+        ),
+        "story_initial_attempts": int(
+            initial_readiness.get("attempts") or 0
+        ),
+        "story_initial_ready": bool(initial_readiness.get("ready")),
+        "story_initial_timeout": bool(initial_readiness.get("timed_out")),
         "story_advance_wait_ms": round(story_advance_wait_ms, 1),
         "story_advance_attempts": story_advance_attempts,
         "story_advance_ready_count": story_advance_ready_count,
@@ -2131,6 +2212,19 @@ def run_one(
             "total_ms": round((time.perf_counter() - run_clock) * 1000, 1),
             "browser_total_ms": round(browser_total_ms, 1),
             "capture_ms": round(capture_duration_ms, 1),
+            "story_initial_wait_ms": round(
+                float(capture.get("story_initial_wait_ms") or 0.0),
+                1,
+            ),
+            "story_initial_attempts": int(
+                capture.get("story_initial_attempts") or 0
+            ),
+            "story_initial_ready": bool(
+                capture.get("story_initial_ready")
+            ),
+            "story_initial_timeout": bool(
+                capture.get("story_initial_timeout")
+            ),
             "story_advance_wait_ms": round(
                 float(capture.get("story_advance_wait_ms") or 0.0),
                 1,
