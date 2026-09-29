@@ -827,15 +827,18 @@ def _sample_visual_records(records: list[dict], limit: int = VISUAL_OCR_MAX_FRAM
 
 
 def _ocr_visual_frame(path: Path) -> str:
-    proc = subprocess.run(
-        ["tesseract", str(path), "stdout", "-l", "eng", "--psm", "11"],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=VISUAL_OCR_TIMEOUT_SECONDS,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            ["tesseract", str(path), "stdout", "-l", "eng", "--psm", "11"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=VISUAL_OCR_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
     if proc.returncode != 0:
         return ""
     return re.sub(r"[ \t]+", " ", str(proc.stdout or "")).strip()
@@ -874,17 +877,20 @@ def _make_contact_sheet(ffmpeg: str, evidence_dir: Path, selected: list[dict]) -
             source = Path(row["file"])
             shutil.copyfile(source, staging / f"frame_{idx:02d}.jpg")
         out = evidence_dir / "contact_sheet.jpg"
-        proc = subprocess.run(
-            [
-                ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
-                "-framerate", "1", "-i", str(staging / "frame_%02d.jpg"),
-                "-vf", "scale=320:-2,tile=4x3:padding=4:margin=4",
-                "-frames:v", "1", str(out),
-            ],
-            capture_output=True,
-            timeout=60,
-            check=False,
-        )
+        try:
+            proc = subprocess.run(
+                [
+                    ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+                    "-framerate", "1", "-i", str(staging / "frame_%02d.jpg"),
+                    "-vf", "scale=320:-2,tile=4x3:padding=4:margin=4",
+                    "-frames:v", "1", str(out),
+                ],
+                capture_output=True,
+                timeout=60,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
         return out if proc.returncode == 0 and out.exists() else None
     finally:
         shutil.rmtree(staging, ignore_errors=True)
