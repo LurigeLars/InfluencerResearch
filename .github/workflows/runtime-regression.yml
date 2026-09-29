@@ -49,6 +49,7 @@ jobs:
           creator_recent_check.py
           ephemeral_ingest.py
           influencerresearch_mcp.py
+          youtube_creator_evaluation.py
       - name: Run runtime secret regression tests
         run: >-
           python -m unittest -v
@@ -70,3 +71,4 @@ jobs:
           test_creator_recent_youtube
           test_recent_discovery_parallelism
           test_mcp_status_summary
+          test_visual_review_evidence
