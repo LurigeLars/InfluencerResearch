@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -11,9 +12,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-VISUAL_REVIEW_POLICY_VERSION = 4
+VISUAL_REVIEW_POLICY_VERSION = 5
 VISUAL_CAPTURE_VERSION = 1
 VISUAL_OCR_MAX_FRAMES = 24
+VISUAL_OCR_WORKERS = 2
 VISUAL_REPRESENTATIVE_FRAMES = 12
 VISUAL_OCR_TIMEOUT_SECONDS = 8
 CHART_HEAVY_CREATORS = {"thetradingfraternity"}
@@ -141,6 +143,7 @@ def _run_tesseract_visual_frame(path: Path, psm: int) -> str:
             errors="replace",
             timeout=VISUAL_OCR_TIMEOUT_SECONDS,
             check=False,
+            env={**os.environ, "OMP_THREAD_LIMIT": "1"},
         )
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -288,9 +291,10 @@ def build_agent_visual_bundle(
     creator_prior_high = creator_key.casefold() in CHART_HEAVY_CREATORS
     transcript_lower = str(transcript_text or "").casefold()
     transcript_visual_cue = any(cue in transcript_lower for cue in TRANSCRIPT_VISUAL_CUES)
+    policy_already_requires_visual_review = creator_prior_high or transcript_visual_cue
     sample_limit = (
         VISUAL_REPRESENTATIVE_FRAMES
-        if creator_prior_high or transcript_visual_cue
+        if policy_already_requires_visual_review
         else VISUAL_OCR_MAX_FRAMES
     )
     sampled = _sample_visual_records(records, limit=sample_limit)
@@ -300,8 +304,22 @@ def build_agent_visual_bundle(
         score, reasons = score_visual_frame_text(text, transcript_text=transcript_text)
         return {**row, "ocr_text": text[:1200], "visual_score": score, "visual_signals": reasons}
 
-    if sampled:
-        with ThreadPoolExecutor(max_workers=min(4, len(sampled)), thread_name_prefix="visual-ocr") as executor:
+    ocr_skipped = bool(sampled) and policy_already_requires_visual_review
+    if ocr_skipped:
+        inspected = [
+            {
+                **row,
+                "ocr_text": "",
+                "visual_score": 0.0,
+                "visual_signals": [],
+            }
+            for row in sampled
+        ]
+    elif sampled:
+        with ThreadPoolExecutor(
+            max_workers=min(VISUAL_OCR_WORKERS, len(sampled)),
+            thread_name_prefix="visual-ocr",
+        ) as executor:
             inspected = list(executor.map(inspect, sampled))
     else:
         inspected = []
@@ -341,6 +359,16 @@ def build_agent_visual_bundle(
         "available": bool(representative),
         "visual_review_policy_version": VISUAL_REVIEW_POLICY_VERSION,
         **policy,
+        "ocr_skipped": ocr_skipped,
+        "ocr_skip_reason": (
+            "POLICY_ALREADY_REQUIRES_VISUAL_REVIEW" if ocr_skipped else None
+        ),
+        "ocr_sampled_frame_count": 0 if ocr_skipped else len(sampled),
+        "ocr_worker_limit": (
+            0
+            if ocr_skipped or not sampled
+            else min(VISUAL_OCR_WORKERS, len(sampled))
+        ),
         "contact_sheet": str(contact_sheet.relative_to(root)) if contact_sheet else None,
         "representative_frames": [public_row(row) for row in representative],
         "raw_video_available": bool(raw_video),

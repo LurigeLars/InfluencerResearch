@@ -56,16 +56,15 @@ class VisualReviewClassifierTests(unittest.TestCase):
         self.assertEqual(text, "NASDAQ QQQ 500")
         self.assertEqual(run.call_count, 1)
         self.assertIn("11", run.call_args.args[0])
+        self.assertEqual(run.call_args.kwargs["env"]["OMP_THREAD_LIMIT"], "1")
 
-    def test_transcript_visual_cue_bounds_ocr_to_representative_frame_count(self) -> None:
+    def test_transcript_visual_cue_skips_ocr_and_keeps_representative_frames(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             records = self._records(root, count=vve.VISUAL_OCR_MAX_FRAMES)
-            with mock.patch.object(
-                vve,
-                "_ocr_visual_frame",
-                return_value="plain visual evidence",
-            ), mock.patch.object(vve, "_make_contact_sheet", return_value=None):
+            with mock.patch.object(vve, "_ocr_visual_frame") as ocr, mock.patch.object(
+                vve, "_make_contact_sheet", return_value=None
+            ):
                 bundle = vve.build_agent_visual_bundle(
                     root,
                     "nicholascrown",
@@ -74,9 +73,43 @@ class VisualReviewClassifierTests(unittest.TestCase):
                     root,
                     transcript_text="You can see this on my screen right now.",
                 )
+        ocr.assert_not_called()
         self.assertEqual(bundle["sampled_frame_count"], vve.VISUAL_REPRESENTATIVE_FRAMES)
+        self.assertEqual(bundle["ocr_sampled_frame_count"], 0)
+        self.assertTrue(bundle["ocr_skipped"])
+        self.assertEqual(bundle["ocr_worker_limit"], 0)
+        self.assertEqual(
+            bundle["ocr_skip_reason"],
+            "POLICY_ALREADY_REQUIRES_VISUAL_REVIEW",
+        )
+        self.assertEqual(
+            len(bundle["representative_frames"]),
+            vve.VISUAL_REPRESENTATIVE_FRAMES,
+        )
         self.assertTrue(bundle["visual_review_recommended"])
         self.assertIn("TRANSCRIPT_VISUAL_CUE", bundle["visual_review_reason"])
+
+    def test_neutral_video_keeps_full_ocr_detection_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            records = self._records(root, count=vve.VISUAL_OCR_MAX_FRAMES)
+            with mock.patch.object(
+                vve,
+                "_ocr_visual_frame",
+                return_value="plain visual evidence",
+            ) as ocr, mock.patch.object(vve, "_make_contact_sheet", return_value=None):
+                bundle = vve.build_agent_visual_bundle(
+                    root,
+                    "nicholascrown",
+                    records,
+                    "ffmpeg",
+                    root,
+                    transcript_text="A general market discussion without visual cues.",
+                )
+        self.assertEqual(ocr.call_count, vve.VISUAL_OCR_MAX_FRAMES)
+        self.assertFalse(bundle["ocr_skipped"])
+        self.assertEqual(bundle["ocr_sampled_frame_count"], vve.VISUAL_OCR_MAX_FRAMES)
+        self.assertEqual(bundle["ocr_worker_limit"], vve.VISUAL_OCR_WORKERS)
 
     def test_policy_refresh_reuses_existing_frames_without_ffmpeg_capture(self) -> None:
         with tempfile.TemporaryDirectory() as td:
