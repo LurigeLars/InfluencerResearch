@@ -30,7 +30,7 @@ OLLAMA_VISUAL_MIN_GROUNDING_OVERLAP = 0.25
 
 GEMINI_HTTP_TIMEOUT_MS = 45_000
 GEMINI_RETRY_ATTEMPTS = 2
-STORY_GEMINI_HTTP_TIMEOUT_MS = 30_000
+STORY_GEMINI_HTTP_TIMEOUT_MS = 12_000
 STORY_GEMINI_RETRY_ATTEMPTS = 1
 ALLOWED_PROVIDERS = {"auto", "gemini", "faster-whisper"}
 _WHISPER_MODEL_CACHE: dict[tuple[str, str, str], Any] = {}
@@ -400,6 +400,7 @@ def extract_image_evidence_gemini(
     *,
     model: str = DEFAULT_GEMINI_VISUAL_MODEL,
     secret_path: Path | None = None,
+    timeout_ms: int = STORY_GEMINI_HTTP_TIMEOUT_MS,
 ) -> dict[str, Any]:
     """Convert a Story screenshot into compact factual text evidence.
 
@@ -428,7 +429,7 @@ def extract_image_evidence_gemini(
 
     client = _gemini_client(
         api_key,
-        timeout_ms=STORY_GEMINI_HTTP_TIMEOUT_MS,
+        timeout_ms=max(5_000, min(int(timeout_ms), 30_000)),
         retry_attempts=STORY_GEMINI_RETRY_ATTEMPTS,
     )
     prompt = (
@@ -458,6 +459,7 @@ def extract_image_evidence_gemini(
         "model": model,
         "source": "GEMINI_STORY_SCREENSHOT_EVIDENCE",
         "transport": "INLINE_BYTES",
+        "timeout_ms": max(5_000, min(int(timeout_ms), 30_000)),
         "text": text,
     }
 
