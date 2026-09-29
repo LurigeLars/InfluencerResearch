@@ -935,6 +935,63 @@ def _story_visual_needs_enrichment(item: dict) -> bool:
 OLLAMA_INSUFFICIENT_CACHE_STATUS = "INSUFFICIENT"
 
 
+OCR_INSUFFICIENT_CACHE_STATUS = "INSUFFICIENT"
+
+
+def _story_ocr_attempt_fingerprint(screenshot_path: Path) -> str:
+    """Fingerprint exact Story pixels plus the local OCR quality contract."""
+    digest = hashlib.sha256()
+    digest.update(b"story-ocr-insufficient-cache-v1\0")
+    digest.update(STORY_OCR_LANGUAGES.encode("utf-8"))
+    digest.update(b"\0psm=6\0")
+    digest.update(str(STORY_OCR_MIN_WORDS).encode("ascii"))
+    digest.update(b"\0")
+    digest.update(str(STORY_OCR_MIN_CHARS).encode("ascii"))
+    digest.update(b"\0")
+    digest.update(str(STORY_OCR_MIN_MEANINGFUL_RATIO).encode("ascii"))
+    digest.update(b"\0")
+    digest.update(str(STORY_OCR_MAX_NOISE_RATIO).encode("ascii"))
+    digest.update(b"\0")
+    digest.update(str(STORY_OCR_MAX_FRAGMENTED_LINE_RATIO).encode("ascii"))
+    digest.update(b"\0")
+    digest.update(screenshot_path.read_bytes())
+    return digest.hexdigest()
+
+
+def _story_ocr_cached_insufficient(item: dict, fingerprint: str) -> bool:
+    return (
+        str(item.get("ocr_visual_attempt_status") or "").upper()
+        == OCR_INSUFFICIENT_CACHE_STATUS
+        and str(item.get("ocr_visual_attempt_fingerprint") or "") == fingerprint
+    )
+
+
+def _record_story_ocr_insufficient(
+    item: dict,
+    *,
+    fingerprint: str,
+    text: str,
+) -> None:
+    item["ocr_visual_attempt_status"] = OCR_INSUFFICIENT_CACHE_STATUS
+    item["ocr_visual_attempt_fingerprint"] = fingerprint
+    item["ocr_visual_attempt_model"] = STORY_OCR_LANGUAGES
+    item["ocr_visual_attempt_psm"] = 6
+    item["ocr_visual_attempt_text"] = str(text or "")
+    item["ocr_visual_attempted_at"] = utc_now()
+
+
+def _clear_story_ocr_insufficient(item: dict) -> None:
+    for field in (
+        "ocr_visual_attempt_status",
+        "ocr_visual_attempt_fingerprint",
+        "ocr_visual_attempt_model",
+        "ocr_visual_attempt_psm",
+        "ocr_visual_attempt_text",
+        "ocr_visual_attempted_at",
+    ):
+        item.pop(field, None)
+
+
 def _story_ollama_attempt_fingerprint(
     screenshot_path: Path,
     *,
@@ -1084,6 +1141,7 @@ def enrich_story_visual_evidence(
     ocr_attempted = 0
     ocr_completed = 0
     ocr_insufficient = 0
+    ocr_cached_insufficient = 0
     ocr_errors: list[str] = []
     ollama_attempted = 0
     ollama_completed = 0
@@ -1130,36 +1188,62 @@ def enrich_story_visual_evidence(
             errors.append(f"{key}: STORY_SCREENSHOT_MISSING")
             continue
 
-        # Local OCR is the cheap first pass. It runs even while Gemini is cooling
-        # down so provider throttling does not block text-heavy Story evidence.
+        # Local OCR is the cheap first pass. Cache a grounded INSUFFICIENT
+        # result for the exact screenshot + OCR quality contract so unchanged
+        # Stories do not rerun deterministic Tesseract work on every scan.
         ocr_text = ""
-        ocr_attempted += 1
-        ocr_clock = time.perf_counter()
+        ocr_fingerprint = ""
+        ocr_cache_hit = False
         try:
-            ocr_result = extract_story_text_local_ocr(screenshot_path)
-            ocr_text = str(ocr_result.get("text") or "").strip()
-            if _story_ocr_text_sufficient(ocr_text):
-                item["visual_description"] = ocr_text
-                item["visual_description_status"] = "DONE"
-                item["visual_description_source"] = ocr_result.get("source")
-                item["visual_description_provider"] = ocr_result.get("provider")
-                item["visual_description_model"] = ocr_result.get("model")
-                item.pop("visual_description_contract", None)
-                item["visual_description_generated_at"] = utc_now()
-                item.pop("visual_description_error", None)
-                item.pop("visual_description_deferred_reason", None)
-                item.pop("visual_description_retry_after", None)
-                _clear_story_ollama_insufficient(item)
-                changed = True
-                completed += 1
-                ocr_completed += 1
-                continue
-            ocr_insufficient += 1
-        except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
-            # OCR failure is non-fatal; richer local/remote fallbacks remain available.
-            ocr_errors.append(f"{key}: {type(exc).__name__}: {exc}")
-        finally:
-            ocr_duration_ms += (time.perf_counter() - ocr_clock) * 1000
+            ocr_fingerprint = _story_ocr_attempt_fingerprint(screenshot_path)
+            ocr_cache_hit = _story_ocr_cached_insufficient(
+                item,
+                ocr_fingerprint,
+            )
+        except OSError as exc:
+            ocr_errors.append(
+                f"{key}: {type(exc).__name__}: OCR cache fingerprint failed"
+            )
+
+        if ocr_cache_hit:
+            ocr_cached_insufficient += 1
+            ocr_text = str(item.get("ocr_visual_attempt_text") or "").strip()
+        else:
+            ocr_attempted += 1
+            ocr_clock = time.perf_counter()
+            try:
+                ocr_result = extract_story_text_local_ocr(screenshot_path)
+                ocr_text = str(ocr_result.get("text") or "").strip()
+                if _story_ocr_text_sufficient(ocr_text):
+                    item["visual_description"] = ocr_text
+                    item["visual_description_status"] = "DONE"
+                    item["visual_description_source"] = ocr_result.get("source")
+                    item["visual_description_provider"] = ocr_result.get("provider")
+                    item["visual_description_model"] = ocr_result.get("model")
+                    item.pop("visual_description_contract", None)
+                    item["visual_description_generated_at"] = utc_now()
+                    item.pop("visual_description_error", None)
+                    item.pop("visual_description_deferred_reason", None)
+                    item.pop("visual_description_retry_after", None)
+                    _clear_story_ocr_insufficient(item)
+                    _clear_story_ollama_insufficient(item)
+                    changed = True
+                    completed += 1
+                    ocr_completed += 1
+                    continue
+                ocr_insufficient += 1
+                if ocr_fingerprint:
+                    _record_story_ocr_insufficient(
+                        item,
+                        fingerprint=ocr_fingerprint,
+                        text=ocr_text,
+                    )
+                    changed = True
+            except (OSError, subprocess.SubprocessError, RuntimeError) as exc:
+                # OCR failure is non-fatal; richer local/remote fallbacks remain available.
+                ocr_errors.append(f"{key}: {type(exc).__name__}: {exc}")
+            finally:
+                ocr_duration_ms += (time.perf_counter() - ocr_clock) * 1000
 
         # Ollama is the local multimodal second pass. Cache only a grounded
         # INSUFFICIENT result for this exact screenshot + OCR hint + model contract.
@@ -1215,6 +1299,7 @@ def enrich_story_visual_evidence(
                     item.pop("visual_description_error", None)
                     item.pop("visual_description_deferred_reason", None)
                     item.pop("visual_description_retry_after", None)
+                    _clear_story_ocr_insufficient(item)
                     _clear_story_ollama_insufficient(item)
                     changed = True
                     completed += 1
@@ -1284,6 +1369,8 @@ def enrich_story_visual_evidence(
             item.pop("visual_description_error", None)
             item.pop("visual_description_deferred_reason", None)
             item.pop("visual_description_retry_after", None)
+            _clear_story_ocr_insufficient(item)
+            _clear_story_ollama_insufficient(item)
             changed = True
             if text:
                 completed += 1
@@ -1378,6 +1465,7 @@ def enrich_story_visual_evidence(
         "ocr_attempted": ocr_attempted,
         "ocr_completed": ocr_completed,
         "ocr_insufficient": ocr_insufficient,
+        "ocr_cached_insufficient": ocr_cached_insufficient,
         "ocr_errors": ocr_errors,
         "ollama_attempted": ollama_attempted,
         "ollama_completed": ollama_completed,

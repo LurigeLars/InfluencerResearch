@@ -196,6 +196,80 @@ class InstagramPathSegmentTests(unittest.TestCase):
             )
 
 
+    def test_story_ocr_insufficient_cache_reuses_text_and_invalidates_on_pixel_change(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            shot = root / "output" / "story.png"
+            shot.parent.mkdir(parents=True)
+            shot.write_bytes(b"first-pixels")
+
+            settings = root / "control" / "settings.json"
+            settings.parent.mkdir(parents=True)
+            settings.write_text(
+                '{"transcription":{"ollama_visual_enabled":false}}',
+                encoding="utf-8",
+            )
+
+            key = "STORY:example:123"
+            manifest = {
+                "items": {
+                    key: {
+                        "source_type": "STORY",
+                        "creator": "example",
+                        "research_status": "PENDING",
+                        "screenshot_file": str(shot.relative_to(root)),
+                    }
+                }
+            }
+            circuit = {
+                "open": True,
+                "reason": "PROVIDER_UNAVAILABLE",
+                "retry_after": None,
+                "retry_after_source": "TEST",
+            }
+
+            with mock.patch(
+                "ephemeral_ingest.extract_story_text_local_ocr",
+                return_value={
+                    "text": "x",
+                    "source": "LOCAL_OCR",
+                    "provider": "tesseract",
+                    "model": "eng+swe",
+                },
+            ) as ocr:
+                first = enrich_story_visual_evidence(
+                    root,
+                    manifest,
+                    [key],
+                    circuit_state=dict(circuit),
+                )
+                second = enrich_story_visual_evidence(
+                    root,
+                    manifest,
+                    [key],
+                    circuit_state=dict(circuit),
+                )
+
+                shot.write_bytes(b"changed-pixels")
+                third = enrich_story_visual_evidence(
+                    root,
+                    manifest,
+                    [key],
+                    circuit_state=dict(circuit),
+                )
+
+            self.assertEqual(first["ocr_attempted"], 1)
+            self.assertEqual(first["ocr_cached_insufficient"], 0)
+            self.assertEqual(second["ocr_attempted"], 0)
+            self.assertEqual(second["ocr_cached_insufficient"], 1)
+            self.assertEqual(third["ocr_attempted"], 1)
+            self.assertEqual(third["ocr_cached_insufficient"], 0)
+            self.assertEqual(ocr.call_count, 2)
+            self.assertEqual(
+                manifest["items"][key]["ocr_visual_attempt_text"],
+                "x",
+            )
+
     def test_story_visual_failure_records_safe_code_and_status(self) -> None:
         class FakeGeminiError(Exception):
             code = 429

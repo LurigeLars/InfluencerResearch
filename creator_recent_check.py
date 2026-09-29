@@ -19,7 +19,7 @@ import tiktok_camofox_sync as tts
 import instagram_camofox_public_smoke as instagram_smoke
 import ephemeral_ingest as ephemeral
 
-RECENT_CHECK_VERSION = "0.2.11"
+RECENT_CHECK_VERSION = "0.2.12"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
@@ -1773,6 +1773,7 @@ def _main_impl() -> int:
         visual_totals = {
             "ocr_attempted": 0,
             "ocr_completed": 0,
+            "ocr_cached_insufficient": 0,
             "ollama_attempted": 0,
             "ollama_completed": 0,
             "ollama_cached_insufficient": 0,
@@ -1793,6 +1794,9 @@ def _main_impl() -> int:
                 "creator_key": story_result.get("creator_key"),
                 "ocr_attempted": int(visual.get("ocr_attempted") or 0),
                 "ocr_completed": int(visual.get("ocr_completed") or 0),
+                "ocr_cached_insufficient": int(
+                    visual.get("ocr_cached_insufficient") or 0
+                ),
                 "ollama_attempted": int(visual.get("ollama_attempted") or 0),
                 "ollama_completed": int(visual.get("ollama_completed") or 0),
                 "ollama_cached_insufficient": int(
@@ -1823,8 +1827,9 @@ def _main_impl() -> int:
             }
             visual_by_creator.append(row)
             for key in (
-                "ocr_attempted", "ocr_completed", "ollama_attempted", "ollama_completed",
-                "ollama_cached_insufficient", "gemini_attempted", "completed", "deferred",
+                "ocr_attempted", "ocr_completed", "ocr_cached_insufficient",
+                "ollama_attempted", "ollama_completed", "ollama_cached_insufficient",
+                "gemini_attempted", "completed", "deferred",
                 "provider_event_count", "error_count",
             ):
                 visual_totals[key] += int(row[key])
