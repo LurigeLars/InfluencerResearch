@@ -19,7 +19,7 @@ import tiktok_camofox_sync as tts
 import instagram_camofox_public_smoke as instagram_smoke
 import ephemeral_ingest as ephemeral
 
-RECENT_CHECK_VERSION = "0.2.12"
+RECENT_CHECK_VERSION = "0.2.13"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
@@ -1018,6 +1018,7 @@ def _ingest_instagram_stories(
         ),
         "conflicts": list(bridge.get("conflicts") or []),
         "capture": capture,
+        "video_download": run.get("video_download") or {},
         "visual_enrichment": run.get("visual_enrichment") or {},
         "pipeline_timings": run.get("timings") or {},
         "queue": queue,

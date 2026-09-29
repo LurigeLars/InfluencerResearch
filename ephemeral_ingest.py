@@ -1610,6 +1610,127 @@ def transcribe_downloaded_videos(root: Path, creator: str, source_type: str) -> 
         "errors": errors,
     }
 
+def _story_media_download_state_path(root: Path) -> Path:
+    return root / "state" / "ephemeral" / "story_media_download_state.json"
+
+
+def _story_media_set_fingerprint(manifest: dict, capture: dict) -> str | None:
+    keys = sorted({
+        str(key)
+        for key in (capture.get("visited_item_keys") or [])
+        if str(key)
+    })
+    if not keys:
+        return None
+
+    digest = hashlib.sha256()
+    digest.update(b"story-media-download-cache-v1\0")
+    items = manifest.get("items") or {}
+    for key in keys:
+        item = items.get(key)
+        if not isinstance(item, dict):
+            return None
+        digest.update(key.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(str(item.get("screenshot_sha256") or "").encode("ascii", "ignore"))
+        digest.update(b"\0")
+        digest.update(str(item.get("source_url") or "").encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _story_media_outputs_available(
+    root: Path,
+    creator: str,
+    files: list[str],
+) -> bool:
+    if not files:
+        return True
+    transcript_dir = root / "output" / creator / "stories" / "transcripts"
+    for relative in files:
+        rel = str(relative or "").strip()
+        if not rel:
+            return False
+        media_path = root / rel
+        transcript_path = transcript_dir / f"{Path(rel).stem}.txt"
+        if not media_path.is_file() and not transcript_path.is_file():
+            return False
+    return True
+
+
+def _story_ytdlp_cached_result(
+    root: Path,
+    creator: str,
+    manifest: dict,
+    capture: dict,
+) -> dict | None:
+    fingerprint = _story_media_set_fingerprint(manifest, capture)
+    if not fingerprint:
+        return None
+
+    state = load_json(
+        _story_media_download_state_path(root),
+        {"schema_version": 1, "items": {}},
+    )
+    row = (state.get("items") or {}).get(creator)
+    if not isinstance(row, dict):
+        return None
+    if str(row.get("status") or "").upper() != "SUCCESS":
+        return None
+    if str(row.get("fingerprint") or "") != fingerprint:
+        return None
+
+    files = [
+        str(value)
+        for value in (row.get("files") or [])
+        if str(value)
+    ]
+    if not _story_media_outputs_available(root, creator, files):
+        return None
+
+    return {
+        "ok": True,
+        "returncode": 0,
+        "files": files,
+        "error": None,
+        "skipped": True,
+        "reason": "UNCHANGED_STORY_SET_ALREADY_DOWNLOADED",
+        "cached_at": row.get("updated_at"),
+    }
+
+
+def _record_story_ytdlp_success(
+    root: Path,
+    creator: str,
+    manifest: dict,
+    capture: dict,
+    result: dict,
+) -> None:
+    fingerprint = _story_media_set_fingerprint(manifest, capture)
+    if not fingerprint or not result.get("ok"):
+        return
+    path = _story_media_download_state_path(root)
+    state = load_json(path, {"schema_version": 1, "items": {}})
+    if not isinstance(state, dict):
+        state = {"schema_version": 1, "items": {}}
+    items = state.get("items")
+    if not isinstance(items, dict):
+        items = {}
+    items[creator] = {
+        "status": "SUCCESS",
+        "fingerprint": fingerprint,
+        "files": [
+            str(value)
+            for value in (result.get("files") or [])
+            if str(value)
+        ],
+        "updated_at": utc_now(),
+    }
+    state["schema_version"] = 1
+    state["items"] = items
+    atomic_write_json(path, state)
+
+
 def resolve_configured_story_creators(root: Path) -> list[str]:
     cfg = load_json(root / "control" / "ephemeral_sources.json", {"creators": {}})
     creators = []
@@ -1730,13 +1851,51 @@ def run_one(
             atomic_write_json(manifest_path, manifest)
 
             ytdlp_clock = time.perf_counter()
-            ytdlp = run_ytdlp(
-                context=context,
-                root=root,
-                creator=creator,
-                source_type=source_type,
-                source_url=source_url,
-            )
+            if (
+                source_type == "STORY"
+                and str(capture.get("reason") or "")
+                == "NO_ACTIVE_STORY_OR_STORY_VIEW_REDIRECTED"
+                and int(capture.get("visited_frames") or 0) == 0
+            ):
+                ytdlp = {
+                    "ok": True,
+                    "returncode": 0,
+                    "files": [],
+                    "error": None,
+                    "skipped": True,
+                    "reason": "NO_ACTIVE_STORY",
+                }
+            elif source_type == "STORY":
+                ytdlp = _story_ytdlp_cached_result(
+                    root,
+                    creator,
+                    manifest,
+                    capture,
+                )
+                if ytdlp is None:
+                    ytdlp = run_ytdlp(
+                        context=context,
+                        root=root,
+                        creator=creator,
+                        source_type=source_type,
+                        source_url=source_url,
+                    )
+                    if ytdlp.get("ok"):
+                        _record_story_ytdlp_success(
+                            root,
+                            creator,
+                            manifest,
+                            capture,
+                            ytdlp,
+                        )
+            else:
+                ytdlp = run_ytdlp(
+                    context=context,
+                    root=root,
+                    creator=creator,
+                    source_type=source_type,
+                    source_url=source_url,
+                )
             ytdlp_duration_ms = (time.perf_counter() - ytdlp_clock) * 1000
         finally:
             context.close()
