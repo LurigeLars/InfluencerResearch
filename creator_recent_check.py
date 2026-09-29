@@ -35,7 +35,7 @@ def _bounded_env_int(
     return max(minimum, min(maximum, value))
 
 
-RECENT_CHECK_VERSION = "0.2.14"
+RECENT_CHECK_VERSION = "0.2.15"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
@@ -1103,6 +1103,11 @@ def _queue_targets(root: Path, item_keys: set[str]) -> list[dict]:
             "caption": item.get("caption"),
             "analysis_content_status": item.get("analysis_content_status"),
             "analysis_content_reason": item.get("analysis_content_reason"),
+            "analysis_mode_recommended": item.get("analysis_mode_recommended"),
+            "visual_review_recommended": bool(item.get("visual_review_recommended")),
+            "visual_review_reason": item.get("visual_review_reason") or [],
+            "creator_visual_prior": (item.get("agent_visual_bundle") or {}).get("creator_visual_prior") if isinstance(item.get("agent_visual_bundle"), dict) else item.get("creator_visual_prior"),
+            "visual_review_policy_version": (item.get("agent_visual_bundle") or {}).get("visual_review_policy_version") if isinstance(item.get("agent_visual_bundle"), dict) else item.get("visual_review_policy_version"),
             "transcript_source": item.get("transcript_source"),
             "word_count": item.get("word_count"),
             "visual_description": item.get("visual_description"),

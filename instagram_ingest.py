@@ -17,9 +17,10 @@ from urllib.parse import urljoin, urlsplit
 from playwright.sync_api import sync_playwright
 
 from transcription_backend import transcribe_video
+from video_visual_evidence import VISUAL_REVIEW_POLICY_VERSION, capture_local_video_visual_evidence
 
 
-APP_VERSION = "0.3.1"
+APP_VERSION = "0.3.2"
 REEL_RE = re.compile(r"/reel/([A-Za-z0-9_-]+)/?")
 
 
@@ -423,6 +424,96 @@ def transcribe_videos(root: Path, manifest: dict, settings: dict, keys: list[str
     return {"attempted": len(keys), "completed": completed, "errors": errors}
 
 
+def select_visual_evidence_keys(
+    manifest: dict,
+    summaries: list[dict],
+    *,
+    new_only: bool,
+    only_shortcodes: set[str] | None = None,
+) -> list[str]:
+    if only_shortcodes is not None:
+        candidates = list(only_shortcodes)
+    elif new_only:
+        candidates = [
+            key
+            for summary in summaries
+            for key in summary.get("new_keys", [])
+        ]
+    else:
+        candidates = list(manifest.get("items", {}).keys())
+
+    selected: list[str] = []
+    seen: set[str] = set()
+    for key in candidates:
+        if key in seen:
+            continue
+        seen.add(key)
+        item = manifest.get("items", {}).get(key, {})
+        if (
+            item.get("download_status") == "DONE"
+            and item.get("video_file")
+            and int(item.get("visual_review_policy_version") or 0) < VISUAL_REVIEW_POLICY_VERSION
+        ):
+            selected.append(key)
+    return selected
+
+
+def enrich_visual_evidence(root: Path, manifest: dict, keys: list[str]) -> dict:
+    completed = 0
+    fail_open = 0
+    errors: list[str] = []
+    for key in keys:
+        item = manifest.get("items", {}).get(key, {})
+        creator = str(item.get("creator") or "")
+        video_rel = item.get("video_file")
+        if not creator or not video_rel:
+            continue
+        media_path = root / str(video_rel)
+        transcript_text = ""
+        transcript_rel = item.get("transcript_txt")
+        if transcript_rel:
+            transcript_path = root / str(transcript_rel)
+            if transcript_path.is_file():
+                transcript_text = transcript_path.read_text(encoding="utf-8", errors="replace").strip()
+        try:
+            result = capture_local_video_visual_evidence(
+                root,
+                creator,
+                "INSTAGRAM",
+                key,
+                media_path,
+                transcript_text=transcript_text,
+            )
+        except Exception as exc:
+            result = {"ok": False, "error": f"{type(exc).__name__}:visual_evidence_unavailable"}
+
+        item["visual_review_policy_version"] = VISUAL_REVIEW_POLICY_VERSION
+        if result.get("ok"):
+            bundle = result.get("agent_visual_bundle") if isinstance(result.get("agent_visual_bundle"), dict) else {}
+            item["visual_evidence_status"] = "DONE"
+            item.pop("visual_evidence_error", None)
+            if result.get("index"):
+                item["visual_evidence_index"] = str(Path(result["index"]).relative_to(root))
+            item["visual_frame_count"] = int(result.get("retained_frames") or 0)
+            item["visual_capture_strategy"] = result.get("capture_strategy")
+            item["agent_visual_bundle"] = bundle or None
+            item["analysis_mode_recommended"] = bundle.get("analysis_mode_recommended") or "TRANSCRIPT_ONLY"
+            item["visual_review_recommended"] = bool(bundle.get("visual_review_recommended"))
+            item["visual_review_reason"] = list(bundle.get("visual_review_reason") or [])
+            item["creator_visual_prior"] = bundle.get("creator_visual_prior") or "NEUTRAL"
+            completed += 1
+        else:
+            item["visual_evidence_status"] = "ERROR"
+            item["visual_evidence_error"] = str(result.get("error") or "visual_evidence_unavailable")[:500]
+            item["analysis_mode_recommended"] = "TRANSCRIPT_ONLY"
+            item["visual_review_recommended"] = False
+            item["visual_review_reason"] = []
+            item["creator_visual_prior"] = "NEUTRAL"
+            fail_open += 1
+            errors.append(f"{key}: {item['visual_evidence_error']}")
+    return {"attempted": len(keys), "completed": completed, "fail_open": fail_open, "errors": errors}
+
+
 def resolve_creators(creators_cfg: list[dict], override: str | None) -> list[str]:
     if override is not None:
         return [safe_creator(override)]
@@ -623,6 +714,15 @@ def main() -> int:
             transcription = transcribe_videos(root, manifest, settings, pending)
             atomic_write_json(manifest_path, manifest)
 
+        visual_keys = select_visual_evidence_keys(
+            manifest,
+            summaries,
+            new_only=args.transcribe_new_only,
+            only_shortcodes=only_shortcodes,
+        )
+        visual_enrichment = enrich_visual_evidence(root, manifest, visual_keys)
+        atomic_write_json(manifest_path, manifest)
+
         total_errors = (
             sum(len(s["errors"]) for s in summaries)
             + len(transcription.get("errors", []))
@@ -636,6 +736,7 @@ def main() -> int:
             "finished_at": utc_now(),
             "creator_summaries": summaries,
             "transcription": transcription,
+            "visual_enrichment": visual_enrichment,
             "total_new_videos": sum(s["downloaded"] for s in summaries),
             "total_errors": total_errors,
         }
