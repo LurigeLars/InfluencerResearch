@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import video_visual_evidence as vve
 import youtube_creator_evaluation as yte
 
 
@@ -27,6 +28,34 @@ class VisualReviewClassifierTests(unittest.TestCase):
     def test_visual_ocr_timeout_is_nonfatal(self) -> None:
         with mock.patch("youtube_creator_evaluation.subprocess.run", side_effect=TimeoutError("timeout")):
             self.assertEqual(yte._ocr_visual_frame(Path("/tmp/frame.jpg")), "")
+
+    def test_shared_visual_ocr_retries_block_layout_when_sparse_layout_is_empty(self) -> None:
+        empty = mock.Mock(returncode=0, stdout="")
+        caption = mock.Mock(returncode=0, stdout="Cheap oil doesn't mean cheap energy\n")
+        with mock.patch("video_visual_evidence.subprocess.run", side_effect=[empty, caption]) as run:
+            text = vve._ocr_visual_frame(Path("/tmp/frame.jpg"))
+        self.assertEqual(text, "Cheap oil doesn't mean cheap energy")
+        self.assertEqual(run.call_count, 2)
+        self.assertIn("11", run.call_args_list[0].args[0])
+        self.assertIn("6", run.call_args_list[1].args[0])
+
+    def test_youtube_visual_ocr_retries_block_layout_when_sparse_layout_is_empty(self) -> None:
+        empty = mock.Mock(returncode=0, stdout="")
+        caption = mock.Mock(returncode=0, stdout="Cheap oil doesn't mean cheap energy\n")
+        with mock.patch("youtube_creator_evaluation.subprocess.run", side_effect=[empty, caption]) as run:
+            text = yte._ocr_visual_frame(Path("/tmp/frame.jpg"))
+        self.assertEqual(text, "Cheap oil doesn't mean cheap energy")
+        self.assertEqual(run.call_count, 2)
+        self.assertIn("11", run.call_args_list[0].args[0])
+        self.assertIn("6", run.call_args_list[1].args[0])
+
+    def test_visual_ocr_does_not_retry_when_sparse_layout_succeeds(self) -> None:
+        detected = mock.Mock(returncode=0, stdout="NASDAQ QQQ 500\n")
+        with mock.patch("video_visual_evidence.subprocess.run", return_value=detected) as run:
+            text = vve._ocr_visual_frame(Path("/tmp/frame.jpg"))
+        self.assertEqual(text, "NASDAQ QQQ 500")
+        self.assertEqual(run.call_count, 1)
+        self.assertIn("11", run.call_args.args[0])
 
     def test_nicholas_crown_escalates_per_video_when_frames_are_chart_heavy(self) -> None:
         with tempfile.TemporaryDirectory() as td:
