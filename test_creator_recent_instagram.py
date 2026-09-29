@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import tempfile
 import unittest
@@ -69,7 +70,184 @@ class RecentInstagramTests(unittest.TestCase):
             "example",
             run_index=1,
             inspect_reel_times=True,
+            known_reel_times={},
         )
+
+    def test_instagram_discovery_reuses_cached_publish_times(self) -> None:
+        end = datetime(2026, 9, 29, 18, 0, tzinfo=timezone.utc)
+        cutoff = end - timedelta(days=1)
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            state = root / "state"
+            state.mkdir(parents=True)
+            (state / "manifest.json").write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "items": {
+                        "RECENT123": {
+                            "source_platform": "INSTAGRAM",
+                            "source_id": "RECENT123",
+                            "published_at": "2026-09-29T15:10:53+00:00",
+                            "download_status": "DONE",
+                            "transcription_status": "DONE",
+                        },
+                        "ig_story_999": {
+                            "source_platform": "INSTAGRAM",
+                            "source_subtype": "STORY",
+                            "source_id": "story:999",
+                            "published_at": "2026-09-29T16:00:00+00:00",
+                        },
+                    },
+                }),
+                encoding="utf-8",
+            )
+            probe = {
+                "ok": True,
+                "reel_count": 1,
+                "blocked": False,
+                "media_auth_gated": False,
+                "reel_items": [{
+                    "url": "https://www.instagram.com/reel/RECENT123/",
+                    "published_at": "2026-09-29T15:10:53+00:00",
+                    "error": None,
+                }],
+                "timings": {"reel_time_cache_hits": 1},
+            }
+            with mock.patch.object(
+                crc.instagram_smoke,
+                "probe_public_session",
+                return_value=probe,
+            ) as run:
+                result = crc.discover_instagram(
+                    {"creator_key": "creator"},
+                    {"profile_url": "https://www.instagram.com/example/"},
+                    cutoff,
+                    end,
+                    15,
+                    root=root,
+                )
+
+        self.assertEqual(result["items"][0]["source_id"], "RECENT123")
+        run.assert_called_once_with(
+            "https://www.instagram.com/example/",
+            "example",
+            run_index=1,
+            inspect_reel_times=True,
+            known_reel_times={"RECENT123": "2026-09-29T15:10:53+00:00"},
+        )
+
+    def test_public_probe_uses_cached_reel_time_without_navigation(self) -> None:
+        module_path = Path(__file__).with_name("instagram_camofox_public_smoke.py")
+        spec = importlib.util.spec_from_file_location(
+            "instagram_camofox_public_smoke_perf_test",
+            module_path,
+        )
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        smoke = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(smoke)
+
+        reel_url = "https://www.instagram.com/reel/RECENT123/"
+        initial_dom = {
+            "reel_links": [reel_url],
+            "media_links": [reel_url],
+            "cookie_consent_visible": False,
+            "media_auth_gate_visible": False,
+            "handle_visible": True,
+            "body_text_length": 1000,
+        }
+        classified = {
+            "handle_visible": True,
+            "reels": [reel_url],
+            "block_hits": [],
+            "auth_prompt_hits": [],
+            "language_dialog_visible": False,
+            "language_dialog_hits": [],
+            "snapshot_excerpt": "",
+        }
+        calls = []
+
+        def fake_request(method, path, body=None, timeout=30):
+            calls.append((method, path))
+            if method == "POST" and path == "/tabs":
+                return {"tabId": "tab-1"}
+            if method == "GET" and "/snapshot?" in path:
+                return {}
+            if method == "GET" and "/links?" in path:
+                return {}
+            return {"ok": True}
+
+        with (
+            mock.patch.object(
+                smoke,
+                "_wait_for_profile_ready",
+                return_value={
+                    "ready": True,
+                    "attempts": 1,
+                    "wait_ms": 12.0,
+                    "dom": initial_dom,
+                    "last_error": None,
+                },
+            ),
+            mock.patch.object(
+                smoke,
+                "classify_snapshot",
+                return_value=classified,
+            ),
+            mock.patch.object(
+                smoke,
+                "request_json",
+                side_effect=fake_request,
+            ),
+        ):
+            result = smoke.probe_public_session(
+                "https://www.instagram.com/example/",
+                "example",
+                1,
+                inspect_reel_times=True,
+                known_reel_times={"RECENT123": "2026-09-29T15:10:53+00:00"},
+            )
+
+        self.assertEqual(
+            result["reel_items"][0]["published_at_source"],
+            "LOCAL_MANIFEST_CACHE",
+        )
+        self.assertEqual(result["timings"]["reel_time_cache_hits"], 1)
+        self.assertEqual(result["timings"]["reel_time_network_probes"], 0)
+        self.assertFalse(any("/navigate" in path for _, path in calls))
+
+    def test_instagram_profile_readiness_exits_without_blind_sleep(self) -> None:
+        module_path = Path(__file__).with_name("instagram_camofox_public_smoke.py")
+        spec = importlib.util.spec_from_file_location(
+            "instagram_camofox_public_smoke_ready_test",
+            module_path,
+        )
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        smoke = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(smoke)
+
+        with (
+            mock.patch.object(
+                smoke,
+                "dom_probe",
+                return_value={
+                    "reel_links": ["https://www.instagram.com/reel/RECENT123/"],
+                    "media_links": ["https://www.instagram.com/reel/RECENT123/"],
+                    "cookie_consent_visible": False,
+                    "media_auth_gate_visible": False,
+                    "handle_visible": True,
+                    "body_text_length": 1200,
+                },
+            ) as probe,
+            mock.patch.object(smoke.time, "sleep") as sleep,
+        ):
+            result = smoke._wait_for_profile_ready("tab-1", "user-1", "example")
+
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["attempts"], 1)
+        probe.assert_called_once()
+        sleep.assert_not_called()
 
     def test_story_finalize_reuses_prefetched_capture(self) -> None:
         prefetched = {

@@ -49,6 +49,32 @@ class CamoFoxRetryTests(unittest.TestCase):
 
         self.assertEqual(request.call_count, 1)
 
+    def test_profile_readiness_returns_without_blind_sleep_when_links_are_ready(self) -> None:
+        with (
+            mock.patch.object(
+                sync,
+                "request_json",
+                return_value={
+                    "result": {
+                        "readyState": "complete",
+                        "bodyTextLength": 1200,
+                        "videoLinkCount": 3,
+                        "href": "https://www.tiktok.com/@nicholas_crown",
+                    }
+                },
+            ) as request,
+            mock.patch.object(sync.time, "sleep") as sleep,
+        ):
+            result = sync._wait_for_tiktok_profile_ready(
+                "tab-1",
+                user_id="user-1",
+            )
+
+        self.assertTrue(result["ready"])
+        self.assertEqual(result["attempts"], 1)
+        request.assert_called_once()
+        sleep.assert_not_called()
+
     def test_exact_catalog_ids_skip_redundant_discovery(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -121,8 +147,16 @@ class CamoFoxRetryTests(unittest.TestCase):
             }
             with (
                 mock.patch.object(sync, "request_json", side_effect=fake_request),
+                mock.patch.object(
+                    sync,
+                    "_wait_for_tiktok_profile_ready",
+                    return_value={
+                        "ready": True,
+                        "attempts": 1,
+                        "wait_ms": 0.0,
+                    },
+                ),
                 mock.patch.object(sync, "collect_video_urls", side_effect=RuntimeError("boom")),
-                mock.patch.object(sync.time, "sleep"),
             ):
                 with self.assertRaisesRegex(RuntimeError, "boom"):
                     sync.process_source(

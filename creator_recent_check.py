@@ -442,6 +442,33 @@ def _instagram_handle(source: dict) -> str:
     return handle
 
 
+def _instagram_known_reel_times(root: Path | None) -> dict[str, str]:
+    if root is None:
+        return {}
+    manifest = load_json(
+        root / "state" / "manifest.json",
+        {"schema_version": 1, "items": {}},
+    )
+    out: dict[str, str] = {}
+    for key, item in (manifest.get("items") or {}).items():
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("source_platform") or "").upper() != "INSTAGRAM":
+            continue
+        if str(item.get("source_subtype") or "").upper() == "STORY":
+            continue
+        source_id = str(item.get("source_id") or key or "").strip()
+        published_at = str(item.get("published_at") or "").strip()
+        if not source_id or not published_at or source_id.startswith("story:"):
+            continue
+        try:
+            parse_iso_utc(published_at)
+        except Exception:
+            continue
+        out[source_id] = published_at
+    return out
+
+
 def discover_instagram(
     profile: dict,
     source: dict,
@@ -450,14 +477,17 @@ def discover_instagram(
     discovery_limit: int,
     *,
     run_index: int = 1,
+    root: Path | None = None,
 ) -> dict:
     target = min(20, max(1, int(discovery_limit)))
     handle = _instagram_handle(source)
+    cached_times = _instagram_known_reel_times(root)
     probe = instagram_smoke.probe_public_session(
         source["profile_url"],
         handle,
         run_index=max(1, int(run_index)),
         inspect_reel_times=True,
+        known_reel_times=cached_times,
     )
     entries = list(probe.get("reel_items") or [])
     known_times: list[datetime] = []
@@ -512,6 +542,7 @@ def discover_instagram(
             "reel_count": int(probe.get("reel_count") or 0),
             "blocked": bool(probe.get("blocked")),
             "media_auth_gated": bool(probe.get("media_auth_gated")),
+            "timings": probe.get("timings") or {},
         },
     }
 
@@ -1316,6 +1347,7 @@ def _run_discovery_batch(
                     end,
                     discovery_limit,
                     run_index=index + 1,
+                    root=root,
                 )
             if platform == "YOUTUBE" and discovery is not None:
                 for pass_index, yt_timing in enumerate(
@@ -1347,18 +1379,50 @@ def _run_discovery_batch(
                 "stage": "DISCOVERY",
                 "error": f"{type(exc).__name__}: {exc}",
             }
+        browser_diag = {}
+        if platform in {"INSTAGRAM", "TIKTOK"} and isinstance(discovery, dict):
+            browser_diag = discovery.get("discovery") or {}
+            if platform == "INSTAGRAM":
+                browser_diag = browser_diag.get("timings") or {}
+
+        discovery_timing = {
+            "stage": "DISCOVERY",
+            "creator_key": profile["creator_key"],
+            "platform": platform,
+            "duration_ms": round((time.perf_counter() - source_clock) * 1000, 1),
+        }
+        if browser_diag:
+            discovery_timing.update({
+                "profile_ready_wait_ms": round(
+                    float(browser_diag.get("profile_ready_wait_ms") or 0.0),
+                    1,
+                ),
+                "profile_ready_attempts": int(
+                    browser_diag.get("profile_ready_attempts") or 0
+                ),
+                "profile_ready": bool(browser_diag.get("profile_ready")),
+            })
+            if platform == "INSTAGRAM":
+                discovery_timing.update({
+                    "reel_time_cache_hits": int(
+                        browser_diag.get("reel_time_cache_hits") or 0
+                    ),
+                    "reel_time_network_probes": int(
+                        browser_diag.get("reel_time_network_probes") or 0
+                    ),
+                    "reel_time_probe_ms": round(
+                        float(browser_diag.get("reel_time_probe_ms") or 0.0),
+                        1,
+                    ),
+                })
+
         return {
             "index": index,
             "profile": profile,
             "platform": platform,
             "discovery": discovery,
             "error": error,
-            "timings": youtube_timings + [{
-                "stage": "DISCOVERY",
-                "creator_key": profile["creator_key"],
-                "platform": platform,
-                "duration_ms": round((time.perf_counter() - source_clock) * 1000, 1),
-            }],
+            "timings": youtube_timings + [discovery_timing],
         }
 
     batch_clock = time.perf_counter()
@@ -1978,6 +2042,12 @@ def _main_impl() -> int:
                 },
                 "stage_totals_ms": stage_totals_ms,
                 "slowest_operations": slowest_operations,
+                "browser_discovery": [
+                    row
+                    for row in stage_timings
+                    if row.get("stage") == "DISCOVERY"
+                    and row.get("platform") in {"INSTAGRAM", "TIKTOK"}
+                ],
                 "ingestion_pipeline": ingestion_pipeline,
             },
             "auto_ingest": True,

@@ -104,7 +104,17 @@ class RecentDiscoveryParallelismTests(unittest.TestCase):
                 with guard:
                     active_browser -= 1
 
-        def fake_instagram(profile, source, cutoff, end, discovery_limit, *, run_index=1):
+        def fake_instagram(
+            profile,
+            source,
+            cutoff,
+            end,
+            discovery_limit,
+            *,
+            run_index=1,
+            root=None,
+        ):
+            self.assertIsNotNone(root)
             instagram_run_indexes.append(run_index)
             return browser_result(profile, "INSTAGRAM")
 

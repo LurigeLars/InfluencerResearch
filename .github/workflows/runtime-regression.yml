@@ -62,6 +62,7 @@ jobs:
           test_story_local_ocr
           test_story_ollama_backend
           test_tiktok_content_fallback
+          test_tiktok_camofox_retries
           test_transcription_backend
           test_creator_monitor
           test_creator_recent_analysis_targets
