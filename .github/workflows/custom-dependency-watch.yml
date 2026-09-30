@@ -1,0 +1,22 @@
+name: Custom dependency watch
+
+on:
+  schedule:
+    - cron: "17 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Check reviewed custom pins
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python scripts/check_custom_dependencies.py --sync-issues
