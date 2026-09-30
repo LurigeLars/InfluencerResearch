@@ -156,8 +156,8 @@ def main() -> int:
             outdated=result["camoufox"]["outdated"],
             body=(
                 "A newer Camoufox browser release candidate exists.\n\n"
-                f"- reviewed runtime pin: \`{current_camoufox}\`\n"
-                f"- newest upstream browser release: \`{latest_camoufox}\`\n"
+                f"- reviewed runtime pin: `{current_camoufox}`\n"
+                f"- newest upstream browser release: `{latest_camoufox}`\n"
                 f"- upstream: {latest_camoufox_url}\n\n"
                 "This watcher is signal-only. Promotion requires manual compatibility, "
                 "digest and runtime review; do not auto-merge or auto-deploy."
@@ -169,8 +169,8 @@ def main() -> int:
             outdated=result["camofox_browser"]["outdated"],
             body=(
                 "The protected camofox-browser master branch moved beyond the reviewed archive pin.\n\n"
-                f"- reviewed pin: \`{current_browser}\`\n"
-                f"- current \`{CAMOFOX_BROWSER_BRANCH}\` head: \`{latest_browser}\`\n"
+                f"- reviewed pin: `{current_browser}`\n"
+                f"- current `{CAMOFOX_BROWSER_BRANCH}` head: `{latest_browser}`\n"
                 f"- upstream fork commit: {latest_browser_url}\n\n"
                 "This watcher is signal-only. The exact commit remains manual-review-only."
             ),
