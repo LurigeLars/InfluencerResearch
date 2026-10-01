@@ -305,6 +305,8 @@ class EvidenceToolContractTests(unittest.TestCase):
         self.assertIn("REPRESENTATIVE_FRAMES", rendered)
         self.assertIn("CONTACT_SHEET", rendered)
         self.assertIn("max_frames", rendered)
+        self.assertIn("screenshot_file", rendered)
+        self.assertIn("STORY_SCREENSHOT", rendered)
 
 
 if __name__ == "__main__":
