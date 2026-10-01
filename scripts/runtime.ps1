@@ -511,6 +511,7 @@ switch ($Action) {
         $tests = @(
             "test_camofox_container_config",
             "test_camofox_container_runtime",
+            "test_camofox_public_proxy_fallback",
             "test_camofox_manifest_validation",
             "test_tiktok_media_transport",
             "test_smoke_production_separation",
