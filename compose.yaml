@@ -173,6 +173,7 @@ services:
       CAMOFOX_BIND_HOST: 0.0.0.0
       CAMOFOX_LOCALE: sv-SE
       CAMOFOX_TIMEZONE: Europe/Stockholm
+      GEOIP_SETUP_TIMEOUT_MS: "30000"
       CAMOUFOX_EXECUTABLE: /opt/camoufox/camoufox-bin
       CAMOUFOX_INSTALL_DIR: /run/camofox-proxy/install
       HOME: /run/camofox-proxy

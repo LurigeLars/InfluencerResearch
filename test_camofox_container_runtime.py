@@ -29,14 +29,14 @@ class CamofoxContainerRuntimeTests(TestCase):
         lock = json.loads(
             (BASE / "runtime" / "camofox" / "package-lock.json").read_text(encoding="utf-8")
         )
-        expected = "https://github.com/LurigeLars/camofox-browser/archive/011faad7a88797e780556321d328bdd00b8f68b7.tar.gz"
+        expected = "https://github.com/LurigeLars/camofox-browser/archive/23a032ef1ef3db6142dd3870b5a5fe7e9ed6499a.tar.gz"
         self.assertEqual(package["dependencies"]["@askjo/camofox-browser"], expected)
         self.assertEqual(lock["packages"][""]["dependencies"]["@askjo/camofox-browser"], expected)
         camofox = lock["packages"]["node_modules/@askjo/camofox-browser"]
         self.assertEqual(camofox["version"], "1.17.0")
         self.assertEqual(camofox["resolved"], expected)
-        self.assertEqual(camofox["integrity"], "sha512-6wRwkXJeIwTZsTAOuN1uAvKrtwL3fs40fw1BJQiLX3gEfxBM2NuAr7ts49Hw5YjmM80RJ1OBtDkZC8bCRTAI0Q==")
-        self.assertEqual(sync.CAMOFOX_CONTAINER_SOURCE_COMMIT, "011faad7a88797e780556321d328bdd00b8f68b7")
+        self.assertNotIn("integrity", camofox)
+        self.assertEqual(sync.CAMOFOX_CONTAINER_SOURCE_COMMIT, "23a032ef1ef3db6142dd3870b5a5fe7e9ed6499a")
 
     def test_runtime_manifest_pins_required_impit_linux_binding(self) -> None:
         package = json.loads(
@@ -99,6 +99,7 @@ class CamofoxContainerRuntimeTests(TestCase):
         self.assertIn('PROXY_PORT: "80"', proxy)
         self.assertIn('CAMOUFOX_EXECUTABLE: /opt/camoufox/camoufox-bin', proxy)
         self.assertIn('CAMOUFOX_INSTALL_DIR: /run/camofox-proxy/install', proxy)
+        self.assertIn('GEOIP_SETUP_TIMEOUT_MS: "30000"', proxy)
         self.assertNotIn('CAMOUFOX_INSTALL_DIR: /opt/camoufox', proxy)
         self.assertIn(
             'ln -sf /opt/camoufox/version.json /run/camofox-proxy/install/version.json',
