@@ -18,6 +18,7 @@ class CamofoxContainerRuntimeTests(TestCase):
         self.assertIn("/opt/camoufox/version.json", text)
         self.assertIn("test -d /opt/camoufox/fontconfig", text)
         self.assertIn("npm ci --ignore-scripts", text)
+        self.assertIn("require('express-rate-limit')", text)
         self.assertIn("CAMOFOX_SKIP_DOWNLOAD=1", text)
         self.assertIn("USER node", text)
         self.assertNotIn("releases/latest", text)
@@ -36,6 +37,13 @@ class CamofoxContainerRuntimeTests(TestCase):
         self.assertEqual(camofox["version"], "1.17.0")
         self.assertEqual(camofox["resolved"], expected)
         self.assertNotIn("integrity", camofox)
+        self.assertEqual(camofox["dependencies"]["express-rate-limit"], "8.6.1")
+        rate_limit = lock["packages"]["node_modules/express-rate-limit"]
+        self.assertEqual(rate_limit["version"], "8.6.1")
+        self.assertEqual(
+            rate_limit["integrity"],
+            "sha512-0D493aP61w0TJ2A0wy27riRsO7FMQ7FK+KUHOKCSfPvYo0R55aiC6emCVgFUeShH0fq0ICPVzNcgoS+BsbXQCA==",
+        )
         self.assertEqual(sync.CAMOFOX_CONTAINER_SOURCE_COMMIT, "23a032ef1ef3db6142dd3870b5a5fe7e9ed6499a")
 
     def test_runtime_manifest_pins_required_impit_linux_binding(self) -> None:
