@@ -11,9 +11,13 @@ This directory defines the reviewed Camofox/Camoufox container used by the Influ
 
 The Docker build disables npm lifecycle scripts during dependency resolution, explicitly builds the required `better-sqlite3` native binding, and bakes the exact reviewed Linux Camoufox release into the image after verifying the release artifact. The dynamic Camofox postinstall browser fetch is not used.
 
-Camofox is a separate service in the root `compose.yaml`. It is reachable only from the Compose `runtime` network at `http://camofox:9377`; port 9377 is not published to the Windows host. The `influencerresearch` service authenticates to it with generated access/admin keys.
+Direct Camofox is a separate service in the root `compose.yaml`. It is reachable only from the Compose `runtime` network at `http://camofox:9377`; port 9377 is not published to the Windows host. The `influencerresearch` service authenticates to it with generated access/admin keys.
 
-The service runs as the non-root `node` user with a read-only root filesystem, dropped Linux capabilities, no-new-privileges, explicit CPU/RAM/PID limits and no host bind mounts. Browser profile, cookies, traces and cache are ephemeral inside container tmpfs. Camofox is used for TikTok discovery/browser metadata only; individual TikTok media is downloaded by yt-dlp in the `influencerresearch` container.
+An optional `public-proxy` Compose profile adds a second, isolated Camofox runtime at `http://camofox-public-proxy:9377`. Public TikTok/Instagram tab creation is always attempted on direct Camofox first. Only a target HTTP 403/429 on an allowlisted public host activates up to three bounded proxy attempts. The remainder of that browser session stays on the proxy runtime after takeover. Other hosts remain direct.
+
+The proxy runtime reuses the DPAPI-protected Webshare username/password already configured for the local Firecrawl public-proxy fallback. The runtime appends Webshare's `-rotate` username parameter and injects the credentials only into proxy-Camofox lifecycle tmpfs. Direct Camofox and authenticated Instagram Playwright ingestion never receive those proxy credentials or copy target cookies/auth state into the proxy browser.
+
+Both browser services run as the non-root `node` user with read-only root filesystems, dropped Linux capabilities, no-new-privileges, explicit CPU/RAM/PID limits and no host bind mounts. Browser profiles, cookies, traces and caches are ephemeral inside container tmpfs. Individual TikTok media remains yt-dlp's responsibility in the `influencerresearch` container; this fallback covers browser discovery only. Aggregate fallback counters are persisted without URLs, content, cookies or credentials.
 
 Start, stop, inspect or smoke-test the complete stack with `scripts/runtime.ps1`.
 

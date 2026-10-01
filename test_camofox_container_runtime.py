@@ -87,6 +87,47 @@ class CamofoxContainerRuntimeTests(TestCase):
         self.assertIn("/run/camofox-secrets/admin_key", text)
         self.assertIn("post_start:", text)
 
+    def test_public_proxy_camofox_is_isolated_and_profile_gated(self) -> None:
+        text = (BASE / "compose.yaml").read_text(encoding="utf-8")
+        start = text.index("  camofox-public-proxy:")
+        proxy = text[start:]
+        direct = text[text.index("  camofox:"):start]
+
+        self.assertIn("profiles:\n      - public-proxy", proxy)
+        self.assertIn("container_name: influencerresearch-camofox-public-proxy", proxy)
+        self.assertIn("PROXY_HOST: p.webshare.io", proxy)
+        self.assertIn('PROXY_PORT: "80"', proxy)
+        self.assertIn('expose:\n      - "9377"', proxy)
+        self.assertNotIn("ports:", proxy)
+        self.assertNotIn("PROXY_HOST:", direct)
+        self.assertNotIn("PROXY_USERNAME:", direct)
+        self.assertNotIn("PROXY_PASSWORD:", direct)
+        self.assertIn('test -n "$$INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET"', proxy)
+        self.assertIn('test -n "$$INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET"', proxy)
+        self.assertIn(
+            'export PROXY_USERNAME="$$(cat /run/camofox-proxy-secrets/proxy_username)"',
+            proxy,
+        )
+        self.assertIn(
+            'export PROXY_PASSWORD="$$(cat /run/camofox-proxy-secrets/proxy_password)"',
+            proxy,
+        )
+
+    def test_runtime_reuses_dpapi_webshare_secrets_without_copying_api_key(self) -> None:
+        text = (BASE / "scripts" / "runtime.ps1").read_text(encoding="utf-8")
+        self.assertIn(
+            'FirecrawlLocal\\secrets\\public_proxy_username.dpapi',
+            text,
+        )
+        self.assertIn(
+            'FirecrawlLocal\\secrets\\public_proxy_password.dpapi',
+            text,
+        )
+        self.assertIn('EndsWith("-rotate"', text)
+        self.assertIn('--profile", "public-proxy"', text)
+        self.assertNotIn("proxy.webshare.io/api/", text)
+        self.assertNotIn("Webshare API key", text)
+
     def test_camofox_config_disables_unneeded_plugins(self) -> None:
         config = json.loads(
             (BASE / "runtime" / "camofox" / "camofox.config.json").read_text(encoding="utf-8")

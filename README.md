@@ -30,14 +30,15 @@ InfluencerResearch is a standalone research-ingestion and evaluation toolkit for
 
 ## Runtime architecture
 
-The canonical runtime is Docker Compose with two services on the same private `runtime` network:
+The canonical runtime is Docker Compose with two always-on services plus one optional public-proxy browser service on the same private `runtime` network:
 
 - `influencerresearch` — Python 3.12 workers plus the official MCP Python SDK. Streamable HTTP MCP is published to the Windows host only at `http://127.0.0.1:8770/mcp`.
-- `camofox` — isolated Camofox/Camoufox browser service reachable only inside Compose at `http://camofox:9377`.
+- `camofox` — direct isolated Camofox/Camoufox browser service reachable only inside Compose at `http://camofox:9377`.
+- `camofox-public-proxy` — optional internal-only Camofox service enabled by the `public-proxy` profile when the existing Firecrawl Webshare DPAPI credentials are available.
 
-Camofox has **no host-published port** and is not an MCP surface. TikTok browser discovery/metadata uses Camofox; individual media downloads remain yt-dlp's responsibility inside the `influencerresearch` container.
+Neither Camofox service has a host-published port or MCP surface. Public TikTok/Instagram browser discovery goes direct first; only target HTTP 403/429 on allowlisted hosts triggers up to three bounded proxy attempts. Successful takeover keeps that browser session on the proxy runtime. Authenticated Instagram Playwright ingestion and TikTok media downloads do not use this browser proxy fallback.
 
-Persistent research data uses narrow bind mounts for the existing parent-root `control/`, `state/`, `output/` and `logs/` directories. Browser cache uses the `influencerresearch-runtime` Docker volume. Camofox service keys, the Instagram portable session export and the Gemini API key are protected on the Windows host with DPAPI and injected only into per-container tmpfs at runtime.
+Persistent research data uses narrow bind mounts for the existing parent-root `control/`, `state/`, `output/` and `logs/` directories. Browser cache uses the `influencerresearch-runtime` Docker volume. Camofox service keys, the Instagram portable session export and the Gemini API key are protected on the Windows host with DPAPI and injected only into per-container tmpfs at runtime. The optional browser fallback reuses the DPAPI-protected Webshare username/password from `%LOCALAPPDATA%\FirecrawlLocal\secrets`; those credentials are injected only into proxy-Camofox and are never exposed to direct Camofox.
 
 The runtime expects the host control directory one level above the repository (for example `<redacted-workspace>\control`). On a fresh installation, initialize the required settings file from the tracked non-secret template:
 

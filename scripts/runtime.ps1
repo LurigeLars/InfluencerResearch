@@ -21,6 +21,8 @@ $ConfigPath = Join-Path $ConfigDir "docker-runtime.json"
 $SecretDir = Join-Path $ConfigDir "secrets"
 $CamofoxAccessDpapiPath = Join-Path $SecretDir "camofox_access_key.dpapi"
 $CamofoxAdminDpapiPath = Join-Path $SecretDir "camofox_admin_key.dpapi"
+$FirecrawlPublicProxyUsernameDpapiPath = Join-Path $env:LOCALAPPDATA "FirecrawlLocal\secrets\public_proxy_username.dpapi"
+$FirecrawlPublicProxyPasswordDpapiPath = Join-Path $env:LOCALAPPDATA "FirecrawlLocal\secrets\public_proxy_password.dpapi"
 $InstagramDpapiPath = Join-Path $SecretDir "instagram_cookies.dpapi"
 $LegacyInstagramPath = Join-Path $SecretDir "instagram_cookies.json"
 
@@ -185,6 +187,21 @@ function Ensure-InstagramCookieStore {
     return $true
 }
 
+function Test-PublicProxyConfigured {
+    return (
+        (Test-Path -LiteralPath $FirecrawlPublicProxyUsernameDpapiPath -PathType Leaf) -and
+        (Test-Path -LiteralPath $FirecrawlPublicProxyPasswordDpapiPath -PathType Leaf)
+    )
+}
+
+function Get-PublicProxyRuntimeUsername {
+    $username = Get-DpapiSecretValue -Path $FirecrawlPublicProxyUsernameDpapiPath -Label "Firecrawl public proxy username"
+    if ($username.EndsWith("-rotate", [StringComparison]::OrdinalIgnoreCase)) {
+        return $username
+    }
+    return "$username-rotate"
+}
+
 function Test-TcpPortFree([int]$Port) {
     $listener = $null
     try {
@@ -238,6 +255,7 @@ function Ensure-HostMcpPort($Config) {
 }
 
 $needsCamofoxSecrets = $Action -in @("Up", "Redeploy", "Smoke", "InstagramPublicSmoke")
+$publicProxyConfigured = Test-PublicProxyConfigured
 
 if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
     $config = [pscustomobject]@{
@@ -289,23 +307,40 @@ function Compose([string[]]$ComposeArgs) {
 function Invoke-ComposeUp([bool]$ForceRecreate = $false) {
     $accessWasSet = Test-Path Env:INFLUENCER_CAMOFOX_ACCESS_SECRET
     $adminWasSet = Test-Path Env:INFLUENCER_CAMOFOX_ADMIN_SECRET
+    $proxyUserWasSet = Test-Path Env:INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET
+    $proxyPassWasSet = Test-Path Env:INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET
     $oldAccess = if ($accessWasSet) { $env:INFLUENCER_CAMOFOX_ACCESS_SECRET } else { $null }
     $oldAdmin = if ($adminWasSet) { $env:INFLUENCER_CAMOFOX_ADMIN_SECRET } else { $null }
+    $oldProxyUser = if ($proxyUserWasSet) { $env:INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET } else { $null }
+    $oldProxyPass = if ($proxyPassWasSet) { $env:INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET } else { $null }
 
     $access = $null
     $admin = $null
+    $proxyUser = $null
+    $proxyPass = $null
     try {
         $access = Get-DpapiSecretValue -Path $CamofoxAccessDpapiPath -Label "Camofox access"
         $admin = Get-DpapiSecretValue -Path $CamofoxAdminDpapiPath -Label "Camofox admin"
         $env:INFLUENCER_CAMOFOX_ACCESS_SECRET = $access
         $env:INFLUENCER_CAMOFOX_ADMIN_SECRET = $admin
-        $composeArgs = @("up", "-d", "--build")
+
+        $composeArgs = @()
+        if ($publicProxyConfigured) {
+            $proxyUser = Get-PublicProxyRuntimeUsername
+            $proxyPass = Get-DpapiSecretValue -Path $FirecrawlPublicProxyPasswordDpapiPath -Label "Firecrawl public proxy password"
+            $env:INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET = $proxyUser
+            $env:INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET = $proxyPass
+            $composeArgs += @("--profile", "public-proxy")
+        }
+        $composeArgs += @("up", "-d", "--build")
         if ($ForceRecreate) { $composeArgs += "--force-recreate" }
         Compose -ComposeArgs $composeArgs
     }
     finally {
         $access = $null
         $admin = $null
+        $proxyUser = $null
+        $proxyPass = $null
         if ($accessWasSet) {
             $env:INFLUENCER_CAMOFOX_ACCESS_SECRET = $oldAccess
         } else {
@@ -315,6 +350,16 @@ function Invoke-ComposeUp([bool]$ForceRecreate = $false) {
             $env:INFLUENCER_CAMOFOX_ADMIN_SECRET = $oldAdmin
         } else {
             Remove-Item Env:INFLUENCER_CAMOFOX_ADMIN_SECRET -ErrorAction SilentlyContinue
+        }
+        if ($proxyUserWasSet) {
+            $env:INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET = $oldProxyUser
+        } else {
+            Remove-Item Env:INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET -ErrorAction SilentlyContinue
+        }
+        if ($proxyPassWasSet) {
+            $env:INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET = $oldProxyPass
+        } else {
+            Remove-Item Env:INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET -ErrorAction SilentlyContinue
         }
     }
 }
@@ -396,8 +441,12 @@ function Import-AvailableRuntimeSecrets {
 
 $outerAccessWasSet = Test-Path Env:INFLUENCER_CAMOFOX_ACCESS_SECRET
 $outerAdminWasSet = Test-Path Env:INFLUENCER_CAMOFOX_ADMIN_SECRET
+$outerProxyUserWasSet = Test-Path Env:INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET
+$outerProxyPassWasSet = Test-Path Env:INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET
 $outerAccessOriginal = if ($outerAccessWasSet) { $env:INFLUENCER_CAMOFOX_ACCESS_SECRET } else { $null }
 $outerAdminOriginal = if ($outerAdminWasSet) { $env:INFLUENCER_CAMOFOX_ADMIN_SECRET } else { $null }
+$outerProxyUserOriginal = if ($outerProxyUserWasSet) { $env:INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET } else { $null }
+$outerProxyPassOriginal = if ($outerProxyPassWasSet) { $env:INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET } else { $null }
 
 try {
     # Compose reparses post_start interpolation for ps/exec/status/down too. Keep
@@ -407,18 +456,22 @@ try {
     # the post_start hooks write them into tmpfs.
     $env:INFLUENCER_CAMOFOX_ACCESS_SECRET = "compose-config-only"
     $env:INFLUENCER_CAMOFOX_ADMIN_SECRET = "compose-config-only"
+    $env:INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET = "compose-config-only"
+    $env:INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET = "compose-config-only"
 
 switch ($Action) {
     "Up" {
         Invoke-ComposeUp
         Write-Host "INFLUENCERRESEARCH_MCP=http://127.0.0.1:$($config.mcp_port)/mcp"
         Write-Host "Camofox is internal-only at http://camofox:9377"
+        if ($publicProxyConfigured) { Write-Host "Public proxy fallback is internal-only at http://camofox-public-proxy:9377" }
         Import-AvailableRuntimeSecrets
     }
     "Redeploy" {
         Invoke-ComposeUp -ForceRecreate $true
         Write-Host "INFLUENCERRESEARCH_MCP=http://127.0.0.1:$($config.mcp_port)/mcp"
         Write-Host "Camofox is internal-only at http://camofox:9377"
+        if ($publicProxyConfigured) { Write-Host "Public proxy fallback is internal-only at http://camofox-public-proxy:9377" }
         Import-AvailableRuntimeSecrets
     }
     "Down" {
@@ -458,6 +511,7 @@ switch ($Action) {
         $tests = @(
             "test_camofox_container_config",
             "test_camofox_container_runtime",
+            "test_camofox_public_proxy_fallback",
             "test_camofox_manifest_validation",
             "test_tiktok_media_transport",
             "test_smoke_production_separation",
@@ -483,5 +537,15 @@ finally {
         $env:INFLUENCER_CAMOFOX_ADMIN_SECRET = $outerAdminOriginal
     } else {
         Remove-Item Env:INFLUENCER_CAMOFOX_ADMIN_SECRET -ErrorAction SilentlyContinue
+    }
+    if ($outerProxyUserWasSet) {
+        $env:INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET = $outerProxyUserOriginal
+    } else {
+        Remove-Item Env:INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET -ErrorAction SilentlyContinue
+    }
+    if ($outerProxyPassWasSet) {
+        $env:INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET = $outerProxyPassOriginal
+    } else {
+        Remove-Item Env:INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET -ErrorAction SilentlyContinue
     }
 }
