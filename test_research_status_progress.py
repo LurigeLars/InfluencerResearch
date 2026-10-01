@@ -18,8 +18,8 @@ def test_summarize_status_exposes_live_progress(tmp_path):
                     "phase": "SOURCE_COMPLETE",
                     "completed_sources": 3,
                     "total_sources": 7,
-                    "current_creator": "nicholascrown",
-                    "current_platform": "TIKTOK",
+                    "last_completed_creator": "nicholascrown",
+                    "last_completed_platform": "TIKTOK",
                     "discovered_items": 4,
                 },
                 "private_internal_field": "must-not-leak",
@@ -34,5 +34,5 @@ def test_summarize_status_exposes_live_progress(tmp_path):
     assert result["updated_at"] == "2026-10-01T12:58:10+00:00"
     assert result["progress"]["stage"] == "DISCOVERY"
     assert result["progress"]["completed_sources"] == 3
-    assert result["progress"]["current_creator"] == "nicholascrown"
+    assert result["progress"]["last_completed_creator"] == "nicholascrown"
     assert "private_internal_field" not in result
