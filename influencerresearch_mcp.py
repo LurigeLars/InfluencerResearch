@@ -435,7 +435,8 @@ def creator_recent_check(
 @mcp.tool(
     description=(
         "Return retained visual evidence for one research-queue item so the analysis agent can inspect frames directly. "
-        "Use when visual_review_recommended is true or when transcript evidence appears visually incomplete."
+        "Use when visual_review_recommended is true, when transcript evidence appears visually incomplete, "
+        "or when a Story provider failure was routed to AGENT_VISUAL_FALLBACK."
     ),
     annotations=READ,
     structured_output=False,
@@ -504,6 +505,31 @@ def analysis_evidence_get(
         )
         returned += 1
     if returned == 0:
+        # Instagram Stories may have a single retained screenshot instead of a
+        # representative-frame bundle. This is the final model-vision fallback
+        # when OCR/Ollama/Gemini extraction could not produce usable text.
+        screenshot = _safe_evidence_path(item.get("screenshot_file"))
+        if screenshot is not None:
+            suffix = screenshot.suffix.casefold()
+            mime_type = "image/png" if suffix == ".png" else "image/jpeg"
+            content.append(
+                TextContent(
+                    type="text",
+                    text=as_text({
+                        "fallback": "STORY_SCREENSHOT",
+                        "analysis_content_reason": item.get("analysis_content_reason"),
+                        "visual_description_status": item.get("visual_description_status"),
+                    }),
+                )
+            )
+            content.append(
+                ImageContent(
+                    type="image",
+                    data=base64.b64encode(screenshot.read_bytes()).decode("ascii"),
+                    mime_type=mime_type,
+                )
+            )
+            return content
         content.append(TextContent(type="text", text=as_text({"warning": "REPRESENTATIVE_FRAMES_NOT_AVAILABLE"})))
     return content
 
