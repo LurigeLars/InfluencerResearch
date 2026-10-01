@@ -232,11 +232,11 @@ class PublicProxyFallbackTests(unittest.TestCase):
     def test_metrics_persist_only_aggregate_numeric_counters(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             with self._metric_patch(Path(td)):
-            sync._increment_public_proxy_metric("direct_blocked")
-            sync._increment_public_proxy_metric("proxy_attempts", 2)
-            path = sync._public_proxy_metrics_path()
-            raw = path.read_text(encoding="utf-8")
-            parsed = json.loads(raw)
+                sync._increment_public_proxy_metric("direct_blocked")
+                sync._increment_public_proxy_metric("proxy_attempts", 2)
+                path = sync._public_proxy_metrics_path()
+                raw = path.read_text(encoding="utf-8")
+                parsed = json.loads(raw)
 
         self.assertEqual(set(parsed), set(sync._CAMOFOX_PROXY_METRIC_KEYS))
         self.assertTrue(all(isinstance(value, int) for value in parsed.values()))
