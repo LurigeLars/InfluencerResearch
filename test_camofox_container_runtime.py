@@ -102,14 +102,14 @@ class CamofoxContainerRuntimeTests(TestCase):
         self.assertNotIn("PROXY_HOST:", direct)
         self.assertNotIn("PROXY_USERNAME:", direct)
         self.assertNotIn("PROXY_PASSWORD:", direct)
-        self.assertIn('test -n "$INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET"', proxy)
-        self.assertIn('test -n "$INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET"', proxy)
+        self.assertIn('test -n "$$INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET"', proxy)
+        self.assertIn('test -n "$$INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET"', proxy)
         self.assertIn(
-            'export PROXY_USERNAME="$(cat /run/camofox-proxy-secrets/proxy_username)"',
+            'export PROXY_USERNAME="$$(cat /run/camofox-proxy-secrets/proxy_username)"',
             proxy,
         )
         self.assertIn(
-            'export PROXY_PASSWORD="$(cat /run/camofox-proxy-secrets/proxy_password)"',
+            'export PROXY_PASSWORD="$$(cat /run/camofox-proxy-secrets/proxy_password)"',
             proxy,
         )
 
