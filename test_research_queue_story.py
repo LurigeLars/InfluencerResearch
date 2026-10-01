@@ -131,13 +131,15 @@ class ResearchQueueStoryTests(unittest.TestCase):
                 self.assertEqual(research_queue.main(), 0)
 
             queue = json.loads((state / "research_queue.json").read_text(encoding="utf-8"))
-            self.assertEqual(queue["count"], 0)
+            self.assertEqual(queue["count"], 1)
             self.assertEqual(queue["insufficient_content_count"], 0)
-            self.assertEqual(queue["extraction_error_count"], 1)
-            self.assertEqual(
-                queue["extraction_error_items"][0]["status"],
-                "EXTRACTION_ERROR",
-            )
+            self.assertEqual(queue["extraction_error_count"], 0)
+            packet = queue["items"][0]
+            self.assertEqual(packet["analysis_content_status"], "READY")
+            self.assertEqual(packet["analysis_content_reason"], "AGENT_VISUAL_FALLBACK")
+            self.assertEqual(packet["analysis_mode_recommended"], "VISUAL_REVIEW_REQUIRED")
+            self.assertTrue(packet["visual_review_recommended"])
+            self.assertIn("AGENT_VISUAL_FALLBACK", packet["visual_review_reason"])
 
 
     def test_story_rate_limit_is_deferred_not_insufficient(self) -> None:
@@ -192,16 +194,18 @@ class ResearchQueueStoryTests(unittest.TestCase):
                 self.assertEqual(research_queue.main(), 0)
 
             queue = json.loads((state / "research_queue.json").read_text(encoding="utf-8"))
-            self.assertEqual(queue["count"], 0)
+            self.assertEqual(queue["count"], 1)
             self.assertEqual(queue["insufficient_content_count"], 0)
-            self.assertEqual(queue["deferred_extraction_count"], 1)
-            deferred = queue["deferred_extraction_items"][0]
-            self.assertEqual(deferred["status"], "DEFERRED_EXTRACTION")
-            self.assertEqual(deferred["reason"], "PROVIDER_RATE_LIMIT")
+            self.assertEqual(queue["deferred_extraction_count"], 0)
+            packet = queue["items"][0]
+            self.assertEqual(packet["analysis_content_status"], "READY")
+            self.assertEqual(packet["analysis_content_reason"], "AGENT_VISUAL_FALLBACK")
+            self.assertEqual(packet["analysis_mode_recommended"], "VISUAL_REVIEW_REQUIRED")
+            self.assertTrue(packet["visual_review_recommended"])
             updated = json.loads((state / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(
                 updated["items"]["ig_story_deferred"]["research_status"],
-                "PENDING_EXTRACTION",
+                "PENDING_ANALYSIS",
             )
 
 
