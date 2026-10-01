@@ -770,7 +770,15 @@ def _ingest_youtube(root: Path, creator_key: str, ids: list[str]) -> dict:
     p = subprocess.run(cmd, cwd=str(root / "app"))
     status = load_json(root / "state" / "creator_evaluation_status.json", {})
     completed = [str(x)[3:] for x in status.get("completed", []) if str(x).startswith("yt_")]
-    return {"requested": len(ids), "completed_ids": completed, "returncode": int(p.returncode), "evaluation_state": status.get("state")}
+    failures = status.get("failures") if isinstance(status.get("failures"), list) else []
+    return {
+        "requested": len(ids),
+        "completed_ids": completed,
+        "returncode": int(p.returncode),
+        "evaluation_state": status.get("state"),
+        "failure_count": int(status.get("failure_count") or len(failures)),
+        "failures": failures[:10],
+    }
 
 
 def _ingest_instagram(
@@ -1869,7 +1877,23 @@ def _main_impl() -> int:
                     continue
                 ingestion_results.append({"creator_key": creator_key, "platform": platform, **ing})
                 if int(ing.get("returncode", 0)) != 0:
-                    errors.append({"creator_key": creator_key, "platform": platform, "stage": "INGESTION", "error": f"RETURNCODE:{ing.get('returncode')}"})
+                    failure = next(
+                        (row for row in (ing.get("failures") or []) if isinstance(row, dict)),
+                        {},
+                    )
+                    failure_stage = str(failure.get("stage") or "").strip()
+                    failure_detail = str(failure.get("detail") or "").strip()
+                    diagnostic = f"RETURNCODE:{ing.get('returncode')}"
+                    if failure_stage:
+                        diagnostic += f"; STAGE:{failure_stage}"
+                    if failure_detail:
+                        diagnostic += f"; DETAIL:{failure_detail[:1200]}"
+                    errors.append({
+                        "creator_key": creator_key,
+                        "platform": platform,
+                        "stage": "INGESTION",
+                        "error": diagnostic,
+                    })
             except Exception as exc:
                 errors.append({"creator_key": creator_key, "platform": platform, "stage": "INGESTION", "error": f"{type(exc).__name__}: {exc}"})
             finally:
