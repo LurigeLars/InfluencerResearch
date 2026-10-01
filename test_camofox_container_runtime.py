@@ -100,6 +100,16 @@ class CamofoxContainerRuntimeTests(TestCase):
         self.assertIn('CAMOUFOX_EXECUTABLE: /opt/camoufox/camoufox-bin', proxy)
         self.assertIn('CAMOUFOX_INSTALL_DIR: /run/camofox-proxy/install', proxy)
         self.assertNotIn('CAMOUFOX_INSTALL_DIR: /opt/camoufox', proxy)
+        self.assertIn(
+            'ln -sf /opt/camoufox/version.json /run/camofox-proxy/install/version.json',
+            proxy,
+        )
+        self.assertIn(
+            'ln -s /opt/camoufox/fontconfig /run/camofox-proxy/install/fontconfig',
+            proxy,
+        )
+        self.assertIn('test -r /opt/camoufox/version.json', proxy)
+        self.assertIn('test -d /opt/camoufox/fontconfig', proxy)
         self.assertIn('expose:\n      - "9377"', proxy)
         self.assertNotIn("ports:", proxy)
         self.assertNotIn("PROXY_HOST:", direct)
