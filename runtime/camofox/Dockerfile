@@ -49,6 +49,7 @@ COPY runtime/camofox/package.json runtime/camofox/package-lock.json ./
 RUN npm ci --ignore-scripts --omit=dev --omit=optional --no-audit --no-fund \
     && npm_config_build_from_source=true npm rebuild better-sqlite3 --foreground-scripts --no-audit --no-fund \
     && node -e "const fs=require('fs');const path=require('path');const expected={'@askjo/camofox-browser':'1.17.0','camoufox-js':'0.11.5','impit-linux-x64-gnu':'0.14.5'};for(const [name,version] of Object.entries(expected)){const p=path.join('/app/node_modules',...name.split('/'),'package.json');const actual=JSON.parse(fs.readFileSync(p,'utf8')).version;if(actual!==version)throw new Error(name+': expected '+version+', got '+actual);}" \
+    && node -e "const fs=require('fs');const p='/app/node_modules/@askjo/camofox-browser/server.js';const from='const GEOIP_SETUP_TIMEOUT_MS = 10000;';const to='const GEOIP_SETUP_TIMEOUT_MS = 30000;';const s=fs.readFileSync(p,'utf8');if((s.split(from).length-1)!==1)throw new Error('unexpected Camofox GeoIP timeout source');fs.writeFileSync(p,s.replace(from,to));" \
     && node -e "require('impit');" \
     && node -e "const Database=require('better-sqlite3');const db=new Database(':memory:');if(db.prepare('select 1 as ok').get().ok!==1)process.exit(2);db.close();"
 
