@@ -203,6 +203,18 @@ class InstagramPathSegmentTests(unittest.TestCase):
                 ),
                 mock.patch.object(
                     ephemeral,
+                    "wait_for_story_media_ready",
+                    return_value={
+                        "ready": True,
+                        "exited": False,
+                        "timed_out": False,
+                        "attempts": 1,
+                        "wait_ms": 0.0,
+                        "media": {"kind": "image", "ready": True},
+                    },
+                ),
+                mock.patch.object(
+                    ephemeral,
                     "safe_body_text",
                     return_value="story",
                 ),
