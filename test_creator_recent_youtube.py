@@ -2,11 +2,44 @@ from __future__ import annotations
 
 import json
 import subprocess
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import creator_recent_check as recent
+
+
+class YouTubeIngestionDiagnosticsTests(unittest.TestCase):
+    def test_ingest_youtube_returns_failure_stage_and_detail(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = recent.Path(td)
+            status_path = root / "state" / "creator_evaluation_status.json"
+            status_path.parent.mkdir(parents=True, exist_ok=True)
+            status_path.write_text(
+                json.dumps({
+                    "state": "FAILED",
+                    "completed": [],
+                    "failure_count": 1,
+                    "failures": [{
+                        "video_id": "abc123",
+                        "stage": "visual_capture",
+                        "detail": "fixture capture failure",
+                    }],
+                }),
+                encoding="utf-8",
+            )
+            with patch.object(
+                recent.subprocess,
+                "run",
+                return_value=SimpleNamespace(returncode=2),
+            ):
+                result = recent._ingest_youtube(root, "creator", ["abc123"])
+
+        self.assertEqual(result["returncode"], 2)
+        self.assertEqual(result["failure_count"], 1)
+        self.assertEqual(result["failures"][0]["stage"], "visual_capture")
+        self.assertEqual(result["failures"][0]["detail"], "fixture capture failure")
 
 
 class YouTubeMetadataProbeTests(unittest.TestCase):
