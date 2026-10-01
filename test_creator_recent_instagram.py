@@ -33,6 +33,18 @@ class RecentInstagramTests(unittest.TestCase):
         self.assertEqual([row["platform"] for row in selected], ["INSTAGRAM"])
         self.assertFalse(profile["sources"][0]["evaluation_enabled"])
 
+    def test_story_video_path_prefers_mp4_and_accepts_other_video_formats(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            video_dir = root / "output" / "creator" / "stories" / "videos"
+            video_dir.mkdir(parents=True)
+            webm = video_dir / "123.webm"
+            webm.write_bytes(b"webm")
+            self.assertEqual(crc._story_video_path(root, "creator", "123"), webm)
+            mp4 = video_dir / "123.mp4"
+            mp4.write_bytes(b"mp4")
+            self.assertEqual(crc._story_video_path(root, "creator", "123"), mp4)
+
     def test_instagram_discovery_filters_reels_by_window(self) -> None:
         end = datetime(2026, 9, 27, 12, 0, tzinfo=timezone.utc)
         cutoff = end - timedelta(days=7)
