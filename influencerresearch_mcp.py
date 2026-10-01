@@ -452,7 +452,7 @@ def creator_recent_check(
     description=(
         "Return retained evidence for one research-queue item. Use representative frames/screenshots first; "
         "when a Story screenshot remains inconclusive and raw_media_available=true, call mode=RAW_MEDIA. "
-        "Set include_binary=false to probe raw-media metadata without embedding the binary resource."
+        "RAW_MEDIA is metadata-only by default; set include_binary=true only when the binary resource is explicitly required."
     ),
     annotations=READ,
     structured_output=False,
@@ -461,7 +461,7 @@ def analysis_evidence_get(
     queue_id: str,
     mode: Literal["REPRESENTATIVE_FRAMES", "CONTACT_SHEET", "RAW_MEDIA"] = "REPRESENTATIVE_FRAMES",
     max_frames: int = 8,
-    include_binary: bool = True,
+    include_binary: bool = False,
 ) -> list[TextContent | ImageContent | EmbeddedResource]:
     item = _research_queue_item(queue_id)
     if item is None:
