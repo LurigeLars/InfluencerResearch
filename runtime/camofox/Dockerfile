@@ -48,8 +48,8 @@ COPY runtime/camofox/package.json runtime/camofox/package-lock.json ./
 # runtime dependency. Build only better-sqlite3 from source.
 RUN npm ci --ignore-scripts --omit=dev --omit=optional --no-audit --no-fund \
     && npm_config_build_from_source=true npm rebuild better-sqlite3 --foreground-scripts --no-audit --no-fund \
-    && node -e "const fs=require('fs');const path=require('path');const expected={'@askjo/camofox-browser':'1.17.0','camoufox-js':'0.11.5','impit-linux-x64-gnu':'0.14.5'};for(const [name,version] of Object.entries(expected)){const p=path.join('/app/node_modules',...name.split('/'),'package.json');const actual=JSON.parse(fs.readFileSync(p,'utf8')).version;if(actual!==version)throw new Error(name+': expected '+version+', got '+actual);}" \
-    && node -e "require('impit');require('express-rate-limit');" \
+    && node -e "const fs=require('fs');const path=require('path');const expected={'@askjo/camofox-browser':'1.17.0','camoufox-js':'0.11.5','impit-linux-x64-gnu':'0.14.5','ip-address':'10.7.2'};for(const [name,version] of Object.entries(expected)){const p=path.join('/app/node_modules',...name.split('/'),'package.json');const actual=JSON.parse(fs.readFileSync(p,'utf8')).version;if(actual!==version)throw new Error(name+': expected '+version+', got '+actual);}" \
+    && node -e "require('impit');require('ip-address');require('express-rate-limit');" \
     && node -e "const Database=require('better-sqlite3');const db=new Database(':memory:');if(db.prepare('select 1 as ok').get().ok!==1)process.exit(2);db.close();"
 
 # The npm package's postinstall fetch is intentionally not used because it is
