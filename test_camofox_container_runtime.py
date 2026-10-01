@@ -18,6 +18,7 @@ class CamofoxContainerRuntimeTests(TestCase):
         self.assertIn("/opt/camoufox/version.json", text)
         self.assertIn("test -d /opt/camoufox/fontconfig", text)
         self.assertIn("npm ci --ignore-scripts", text)
+        self.assertIn("require('ip-address')", text)
         self.assertIn("require('express-rate-limit')", text)
         self.assertIn("CAMOFOX_SKIP_DOWNLOAD=1", text)
         self.assertIn("USER node", text)
@@ -55,6 +56,11 @@ class CamofoxContainerRuntimeTests(TestCase):
         )
         self.assertEqual(package['dependencies']['impit-linux-x64-gnu'], '0.14.5')
         self.assertEqual(lock['packages']['']['dependencies']['impit-linux-x64-gnu'], '0.14.5')
+        self.assertEqual(package['dependencies']['ip-address'], '10.7.2')
+        self.assertEqual(lock['packages']['']['dependencies']['ip-address'], '10.7.2')
+        ip_address = lock['packages']['node_modules/ip-address']
+        self.assertEqual(ip_address['version'], '10.7.2')
+        self.assertIsNot(ip_address.get('optional'), True)
         binding = lock['packages']['node_modules/impit-linux-x64-gnu']
         self.assertEqual(binding['version'], '0.14.5')
         self.assertEqual(binding['os'], ['linux'])
