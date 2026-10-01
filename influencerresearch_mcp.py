@@ -451,8 +451,8 @@ def creator_recent_check(
 @mcp.tool(
     description=(
         "Return retained evidence for one research-queue item. Use representative frames/screenshots first; "
-        "when a Story screenshot remains inconclusive and raw_media_available=true, call mode=RAW_MEDIA "
-        "to return the retained raw video as an embedded binary resource."
+        "when a Story screenshot remains inconclusive and raw_media_available=true, call mode=RAW_MEDIA. "
+        "Set include_binary=false to probe raw-media metadata without embedding the binary resource."
     ),
     annotations=READ,
     structured_output=False,
@@ -461,6 +461,7 @@ def analysis_evidence_get(
     queue_id: str,
     mode: Literal["REPRESENTATIVE_FRAMES", "CONTACT_SHEET", "RAW_MEDIA"] = "REPRESENTATIVE_FRAMES",
     max_frames: int = 8,
+    include_binary: bool = True,
 ) -> list[TextContent | ImageContent | EmbeddedResource]:
     item = _research_queue_item(queue_id)
     if item is None:
@@ -517,9 +518,12 @@ def analysis_evidence_get(
                     "mime_type": mime_type,
                     "bytes": media_bytes,
                     "video_file": item.get("video_file"),
+                    "binary_embedded": bool(include_binary),
                 }),
             )
         )
+        if not include_binary:
+            return content
         content.append(
             EmbeddedResource(
                 type="resource",
