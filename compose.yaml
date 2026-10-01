@@ -230,6 +230,12 @@ services:
       - -c
       - >-
         while [ ! -s /run/camofox-proxy-secrets/access_key ] || [ ! -s /run/camofox-proxy-secrets/admin_key ] || [ ! -s /run/camofox-proxy-secrets/proxy_username ] || [ ! -s /run/camofox-proxy-secrets/proxy_password ]; do sleep 0.05; done;
+        test -r /opt/camoufox/version.json;
+        test -d /opt/camoufox/fontconfig;
+        mkdir -p /run/camofox-proxy/install;
+        ln -sf /opt/camoufox/version.json /run/camofox-proxy/install/version.json;
+        rm -rf /run/camofox-proxy/install/fontconfig;
+        ln -s /opt/camoufox/fontconfig /run/camofox-proxy/install/fontconfig;
         export CAMOFOX_ACCESS_KEY="$$(cat /run/camofox-proxy-secrets/access_key)";
         export CAMOFOX_ADMIN_KEY="$$(cat /run/camofox-proxy-secrets/admin_key)";
         export PROXY_USERNAME="$$(cat /run/camofox-proxy-secrets/proxy_username)";
