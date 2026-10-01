@@ -45,6 +45,12 @@ class CamofoxContainerRuntimeTests(TestCase):
         lock = json.loads(
             (BASE / 'runtime' / 'camofox' / 'package-lock.json').read_text(encoding='utf-8')
         )
+        self.assertEqual(package['dependencies']['express-rate-limit'], '8.6.1')
+        self.assertEqual(lock['packages']['']['dependencies']['express-rate-limit'], '8.6.1')
+        limiter = lock['packages']['node_modules/express-rate-limit']
+        self.assertEqual(limiter['version'], '8.6.1')
+        self.assertIsNot(limiter.get('optional'), True)
+        self.assertIsNot(lock['packages']['node_modules/ip-address'].get('optional'), True)
         self.assertEqual(package['dependencies']['impit-linux-x64-gnu'], '0.14.5')
         self.assertEqual(lock['packages']['']['dependencies']['impit-linux-x64-gnu'], '0.14.5')
         binding = lock['packages']['node_modules/impit-linux-x64-gnu']
@@ -55,6 +61,8 @@ class CamofoxContainerRuntimeTests(TestCase):
 
         dockerfile = (BASE / 'runtime' / 'camofox' / 'Dockerfile').read_text(encoding='utf-8')
         self.assertIn('--omit=optional', dockerfile)
+        self.assertIn("express-rate-limit':'8.6.1", dockerfile)
+        self.assertIn("require('express-rate-limit')", dockerfile)
         self.assertIn("impit-linux-x64-gnu':'0.14.5", dockerfile)
         self.assertIn("require('impit')", dockerfile)
 
