@@ -308,6 +308,8 @@ class EvidenceToolContractTests(unittest.TestCase):
         self.assertIn("screenshot_file", rendered)
         self.assertIn("STORY_SCREENSHOT", rendered)
         self.assertIn("RAW_MEDIA", rendered)
+        self.assertIn("include_binary", rendered)
+        self.assertIn("binary_embedded", rendered)
         self.assertIn("EmbeddedResource", rendered)
         self.assertIn("BlobResourceContents", rendered)
         self.assertIn("video_file", rendered)
