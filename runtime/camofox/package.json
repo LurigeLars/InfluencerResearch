@@ -7,6 +7,7 @@
   },
   "dependencies": {
     "@askjo/camofox-browser": "https://github.com/LurigeLars/camofox-browser/archive/23a032ef1ef3db6142dd3870b5a5fe7e9ed6499a.tar.gz",
-    "impit-linux-x64-gnu": "0.14.5"
+    "impit-linux-x64-gnu": "0.14.5",
+    "ip-address": "10.7.2"
   }
 }
