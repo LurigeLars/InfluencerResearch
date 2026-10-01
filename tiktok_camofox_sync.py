@@ -29,7 +29,7 @@ from transcription_backend import extract_visible_text_gemini, transcribe_video
 from video_visual_evidence import VISUAL_REVIEW_POLICY_VERSION, capture_local_video_visual_evidence
 
 
-APP_VERSION = "0.8.10"
+APP_VERSION = "0.8.11"
 CONTENT_EXTRACTION_VERSION = 1
 MIN_ANALYSIS_TRANSCRIPT_WORDS = 8
 MIN_ANALYSIS_TRANSCRIPT_CHARS = 48
@@ -81,9 +81,21 @@ CAMOUFOX_BROWSER_EXECUTABLE_SHA256 = {
 }
 
 _CAMOFOX_FALLBACK_SERVER: dict[str, Any] | None = None
+_CAMOFOX_PUBLIC_PROXY_SERVER: dict[str, Any] | None = None
+_CAMOFOX_PROXY_USERS: set[str] = set()
+_CAMOFOX_PROXY_ROUTE_LOCK = threading.Lock()
+_CAMOFOX_PROXY_METRICS_LOCK = threading.Lock()
 _TIKTOK_RUN_LOCK_HANDLE: Any | None = None
 _TIKTOK_RUN_LOCK_GUARD = threading.Lock()
 _NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+_CAMOFOX_PROXY_METRIC_KEYS = (
+    "direct_blocked",
+    "proxy_attempts",
+    "proxy_success",
+    "proxy_exhausted",
+    "proxy_unavailable",
+)
 
 
 def utc_now() -> str:
@@ -198,14 +210,107 @@ class CamoFoxHttpError(RuntimeError):
         super().__init__(f"CamoFox HTTP {self.status} {path}:{suffix} {detail[:1000]}".strip())
 
 
-def request_json(method: str, path: str, body: dict | None = None, timeout: int = 30) -> Any:
-    """Use the constrained Camofox browser service for TikTok discovery/metadata.
+def _public_proxy_metrics_path() -> Path:
+    return _runtime_dir() / "camofox_public_proxy_metrics.json"
 
-    Only explicitly retryable tab-admission/browser-lifecycle failures are
-    retried, at most twice, against the same overall timeout budget.
-    """
-    deadline = time.monotonic() + max(0.1, float(timeout))
-    server = _ensure_fallback_server(deadline=deadline)
+
+def _read_public_proxy_metrics() -> dict[str, int]:
+    raw: Any = {}
+    path = _public_proxy_metrics_path()
+    if path.is_file():
+        with contextlib.suppress(OSError, json.JSONDecodeError):
+            raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raw = {}
+    out: dict[str, int] = {}
+    for key in _CAMOFOX_PROXY_METRIC_KEYS:
+        try:
+            value = int(raw.get(key, 0))
+        except (TypeError, ValueError):
+            value = 0
+        out[key] = max(0, value)
+    return out
+
+
+def _increment_public_proxy_metric(key: str, by: int = 1) -> None:
+    if key not in _CAMOFOX_PROXY_METRIC_KEYS:
+        raise ValueError("Unknown public proxy metric")
+    with _CAMOFOX_PROXY_METRICS_LOCK:
+        metrics = _read_public_proxy_metrics()
+        metrics[key] = max(0, int(metrics[key]) + int(by))
+        atomic_json(_public_proxy_metrics_path(), metrics)
+
+
+def _proxy_hosts() -> tuple[str, ...]:
+    raw = os.environ.get(
+        "INFLUENCER_RESEARCH_CAMOFOX_PROXY_HOSTS",
+        "tiktok.com,instagram.com",
+    )
+    return tuple(
+        host.strip().casefold().rstrip(".")
+        for host in raw.split(",")
+        if host.strip()
+    )
+
+
+def _public_proxy_attempts() -> int:
+    raw = os.environ.get("INFLUENCER_RESEARCH_CAMOFOX_PROXY_ATTEMPTS", "3")
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 3
+    return min(5, max(1, value))
+
+
+def _public_proxy_eligible_url(value: Any) -> bool:
+    try:
+        parsed = urllib.parse.urlparse(str(value or "").strip())
+    except ValueError:
+        return False
+    if parsed.scheme.casefold() not in {"http", "https"}:
+        return False
+    if parsed.username or parsed.password or not parsed.hostname:
+        return False
+    hostname = parsed.hostname.casefold().rstrip(".")
+    return any(hostname == host or hostname.endswith("." + host) for host in _proxy_hosts())
+
+
+def _request_user_id(path: str, body: dict | None) -> str | None:
+    if isinstance(body, dict):
+        value = str(body.get("userId") or "").strip()
+        if value:
+            return value
+    parsed = urllib.parse.urlsplit(path)
+    values = urllib.parse.parse_qs(parsed.query).get("userId") or []
+    if values and str(values[0]).strip():
+        return str(values[0]).strip()
+    match = re.fullmatch(r"/sessions/([^/?]+)", parsed.path)
+    if match:
+        return urllib.parse.unquote(match.group(1))
+    return None
+
+
+def _target_http_status(value: Any) -> int | None:
+    if not isinstance(value, dict):
+        return None
+    raw = value.get("httpStatus")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _request_on_server(
+    server: dict[str, Any],
+    method: str,
+    path: str,
+    body: dict | None,
+    *,
+    deadline: float,
+    timeout_cap: float,
+) -> Any:
     max_attempts = 3 if method.upper() == "POST" and path == "/tabs" else 1
     retry_codes = {"admission_rejected", "browser_unavailable", "session_expired"}
 
@@ -217,7 +322,7 @@ def request_json(method: str, path: str, body: dict | None = None, timeout: int 
                 path,
                 body,
                 deadline=deadline,
-                timeout_cap=max(0.1, float(timeout)),
+                timeout_cap=timeout_cap,
             )
         except CamoFoxHttpError as exc:
             should_retry = (
@@ -236,10 +341,131 @@ def request_json(method: str, path: str, body: dict | None = None, timeout: int 
     raise RuntimeError("unreachable CamoFox request retry state")
 
 
+def _cleanup_server_session(
+    server: dict[str, Any],
+    user_id: str,
+    *,
+    deadline: float,
+) -> None:
+    with contextlib.suppress(Exception):
+        _fallback_request_json(
+            server,
+            "DELETE",
+            f"/sessions/{urllib.parse.quote(user_id, safe='')}",
+            deadline=deadline,
+            timeout_cap=2.0,
+        )
+
+
+def _proxy_user_enabled(user_id: str | None) -> bool:
+    if not user_id:
+        return False
+    with _CAMOFOX_PROXY_ROUTE_LOCK:
+        return user_id in _CAMOFOX_PROXY_USERS
+
+
+def _set_proxy_user(user_id: str, enabled: bool) -> None:
+    with _CAMOFOX_PROXY_ROUTE_LOCK:
+        if enabled:
+            _CAMOFOX_PROXY_USERS.add(user_id)
+        else:
+            _CAMOFOX_PROXY_USERS.discard(user_id)
+
+
+def request_json(method: str, path: str, body: dict | None = None, timeout: int = 30) -> Any:
+    """Use direct Camofox first and proxy only blocked public browser discovery.
+
+    A fresh, isolated proxied Camofox runtime is eligible only for initial
+    public TikTok/Instagram tab navigation that returns target HTTP 403/429.
+    Target cookies/auth state are never copied from the direct runtime.
+    """
+    deadline = time.monotonic() + max(0.1, float(timeout))
+    timeout_cap = max(0.1, float(timeout))
+    direct_server = _ensure_fallback_server(deadline=deadline)
+    user_id = _request_user_id(path, body)
+    method_upper = method.upper()
+
+    if _proxy_user_enabled(user_id):
+        try:
+            proxy_server = _ensure_public_proxy_server(deadline=deadline)
+            result = _request_on_server(
+                proxy_server,
+                method,
+                path,
+                body,
+                deadline=deadline,
+                timeout_cap=timeout_cap,
+            )
+        except Exception:
+            if method_upper == "DELETE" and path.startswith("/sessions/") and user_id:
+                _set_proxy_user(user_id, False)
+            raise
+        if method_upper == "DELETE" and path.startswith("/sessions/") and user_id:
+            _set_proxy_user(user_id, False)
+        return result
+
+    direct_result = _request_on_server(
+        direct_server,
+        method,
+        path,
+        body,
+        deadline=deadline,
+        timeout_cap=timeout_cap,
+    )
+
+    eligible_create = (
+        method_upper == "POST"
+        and path == "/tabs"
+        and isinstance(body, dict)
+        and user_id is not None
+        and _public_proxy_eligible_url(body.get("url"))
+    )
+    if not eligible_create or _target_http_status(direct_result) not in {403, 429}:
+        return direct_result
+
+    _increment_public_proxy_metric("direct_blocked")
+    _cleanup_server_session(direct_server, user_id, deadline=deadline)
+
+    try:
+        proxy_server = _ensure_public_proxy_server(deadline=deadline)
+    except Exception:
+        _increment_public_proxy_metric("proxy_unavailable")
+        return direct_result
+
+    final_result: Any = direct_result
+    attempts = _public_proxy_attempts()
+    for attempt in range(attempts):
+        try:
+            final_result = _request_on_server(
+                proxy_server,
+                method,
+                path,
+                body,
+                deadline=deadline,
+                timeout_cap=timeout_cap,
+            )
+        except Exception:
+            _increment_public_proxy_metric("proxy_unavailable")
+            return direct_result
+
+        _increment_public_proxy_metric("proxy_attempts")
+        status = _target_http_status(final_result)
+        if status not in {403, 429}:
+            _set_proxy_user(user_id, True)
+            _increment_public_proxy_metric("proxy_success")
+            return final_result
+
+        if attempt + 1 < attempts:
+            _cleanup_server_session(proxy_server, user_id, deadline=deadline)
+
+    _set_proxy_user(user_id, True)
+    _increment_public_proxy_metric("proxy_exhausted")
+    return final_result
+
 def _runtime_is_available(server: dict[str, Any] | None) -> bool:
     if not server:
         return False
-    if server.get("runtime_mode") == "container":
+    if server.get("runtime_mode") in {"container", "container_proxy"}:
         return True
     proc = server.get("proc")
     return proc is not None and proc.poll() is None
@@ -292,9 +518,13 @@ def start_server() -> dict:
 
 def stop_server(*, deadline: float | None = None) -> None:
     """Release this run's Camofox handle; legacy-local mode also stops its process."""
+    global _CAMOFOX_PUBLIC_PROXY_SERVER
     end = deadline if deadline is not None else time.monotonic() + 8.0
     try:
         _stop_fallback_server(force=False, deadline=end)
+        _CAMOFOX_PUBLIC_PROXY_SERVER = None
+        with _CAMOFOX_PROXY_ROUTE_LOCK:
+            _CAMOFOX_PROXY_USERS.clear()
     finally:
         _release_tiktok_run_lock()
 
@@ -1126,6 +1356,78 @@ def _ensure_container_camofox_server(*, deadline: float) -> dict[str, Any]:
         deadline=deadline,
         timeout_cap=2.0,
     )
+    return server
+
+
+def _ensure_public_proxy_server(*, deadline: float) -> dict[str, Any]:
+    global _CAMOFOX_PUBLIC_PROXY_SERVER
+    mode = (
+        os.environ.get("INFLUENCER_RESEARCH_CAMOFOX_MODE", "container")
+        .strip()
+        .casefold()
+    )
+    if mode != "container":
+        raise RuntimeError("Public proxy fallback is available only in container mode")
+
+    current = _CAMOFOX_PUBLIC_PROXY_SERVER
+    if (
+        current
+        and current.get("runtime_mode") == "container_proxy"
+        and _fallback_health(current, deadline=deadline)
+    ):
+        return current
+
+    cfg = camofox_container_config.load_config()
+    base_url = str(cfg.get("proxy_base_url") or "").strip()
+    if not base_url:
+        raise RuntimeError("Public proxy Camofox runtime is not configured")
+
+    server: dict[str, Any] = {
+        "proc": None,
+        "root": None,
+        "profile_dir": None,
+        "cookies_dir": None,
+        "base_url": base_url,
+        "port": int(urllib.parse.urlparse(base_url).port or 9377),
+        "access_key": str(cfg["access_key"]),
+        "admin_key": str(cfg["admin_key"]),
+        "log_handle": None,
+        "runtime_mode": "container_proxy",
+        "provenance": {
+            "runtime_mode": "container_proxy",
+            "source_commit": CAMOFOX_CONTAINER_SOURCE_COMMIT,
+            "camofox_version": CAMOFOX_FALLBACK_EXPECTED_CAMOFOX_VERSION,
+            "camoufox_js_version": CAMOFOX_FALLBACK_EXPECTED_CAMOUFOX_JS_VERSION,
+            "browser": dict(CAMOUFOX_BROWSER_VERSION_FIELDS),
+        },
+    }
+    if not _fallback_health(server, deadline=deadline):
+        raise RuntimeError("Public proxy Camofox service is not healthy")
+
+    unauth = urllib.request.Request(
+        f"{server['base_url']}/tabs?userId=container-proxy-auth-probe",
+        method="GET",
+        headers={"Accept": "application/json"},
+    )
+    try:
+        with _NO_PROXY_OPENER.open(
+            unauth, timeout=_remaining_timeout(deadline, 2.0)
+        ):
+            raise RuntimeError("Public proxy Camofox access-key gate is not enforced")
+    except urllib.error.HTTPError as exc:
+        if exc.code != 401:
+            raise RuntimeError(
+                f"Unexpected unauthenticated proxy Camofox status: {exc.code}"
+            ) from exc
+
+    _fallback_request_json(
+        server,
+        "GET",
+        "/tabs?userId=container-proxy-auth-probe",
+        deadline=deadline,
+        timeout_cap=2.0,
+    )
+    _CAMOFOX_PUBLIC_PROXY_SERVER = server
     return server
 
 
