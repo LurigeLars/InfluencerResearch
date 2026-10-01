@@ -15,7 +15,13 @@ from typing import Literal
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp.types import ImageContent, TextContent, ToolAnnotations
+from mcp.types import (
+    BlobResourceContents,
+    EmbeddedResource,
+    ImageContent,
+    TextContent,
+    ToolAnnotations,
+)
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -31,6 +37,7 @@ STATE_DIR = Path("/research/state")
 JOB_STATE_PATH = Path("/research/state/mcp_job_status.json")
 JOB_REQUEST_PATH = Path("/research/state/mcp_job_request.json")
 MCP_PORT = int(os.environ.get("INFLUENCER_RESEARCH_MCP_PORT", "8770"))
+MAX_EMBEDDED_RAW_MEDIA_BYTES = 32 * 1024 * 1024
 
 
 def utc_now() -> str:
@@ -67,6 +74,15 @@ def _safe_evidence_path(value: str | None) -> Path | None:
         return path
     except OSError:
         return None
+
+
+def _video_mime_type(path: Path) -> str:
+    return {
+        ".mp4": "video/mp4",
+        ".webm": "video/webm",
+        ".mov": "video/quicktime",
+        ".mkv": "video/x-matroska",
+    }.get(path.suffix.casefold(), "application/octet-stream")
 
 
 def _research_queue_item(queue_id: str) -> dict | None:
@@ -434,18 +450,18 @@ def creator_recent_check(
 
 @mcp.tool(
     description=(
-        "Return retained visual evidence for one research-queue item so the analysis agent can inspect frames directly. "
-        "Use when visual_review_recommended is true, when transcript evidence appears visually incomplete, "
-        "or when a Story provider failure was routed to AGENT_VISUAL_FALLBACK."
+        "Return retained evidence for one research-queue item. Use representative frames/screenshots first; "
+        "when a Story screenshot remains inconclusive and raw_media_available=true, call mode=RAW_MEDIA "
+        "to return the retained raw video as an embedded binary resource."
     ),
     annotations=READ,
     structured_output=False,
 )
 def analysis_evidence_get(
     queue_id: str,
-    mode: Literal["REPRESENTATIVE_FRAMES", "CONTACT_SHEET"] = "REPRESENTATIVE_FRAMES",
+    mode: Literal["REPRESENTATIVE_FRAMES", "CONTACT_SHEET", "RAW_MEDIA"] = "REPRESENTATIVE_FRAMES",
     max_frames: int = 8,
-) -> list[TextContent | ImageContent]:
+) -> list[TextContent | ImageContent | EmbeddedResource]:
     item = _research_queue_item(queue_id)
     if item is None:
         return [TextContent(type="text", text=as_text({"ok": False, "error": "QUEUE_ITEM_NOT_FOUND", "queue_id": queue_id}))]
@@ -463,10 +479,58 @@ def analysis_evidence_get(
         "creator_visual_prior": bundle.get("creator_visual_prior"),
         "chart_signal_ratio": bundle.get("chart_signal_ratio"),
         "chart_signal_frame_count": bundle.get("chart_signal_frame_count"),
+        "raw_media_available": bool(item.get("raw_media_available")),
     }
-    content: list[TextContent | ImageContent] = [
+    content: list[TextContent | ImageContent | EmbeddedResource] = [
         TextContent(type="text", text=as_text(metadata))
     ]
+
+    if mode == "RAW_MEDIA":
+        raw_media = _safe_evidence_path(item.get("video_file"))
+        if raw_media is None:
+            content.append(
+                TextContent(
+                    type="text",
+                    text=as_text({"warning": "RAW_MEDIA_NOT_AVAILABLE"}),
+                )
+            )
+            return content
+        media_bytes = raw_media.stat().st_size
+        if media_bytes > MAX_EMBEDDED_RAW_MEDIA_BYTES:
+            content.append(
+                TextContent(
+                    type="text",
+                    text=as_text({
+                        "warning": "RAW_MEDIA_TOO_LARGE",
+                        "bytes": media_bytes,
+                        "max_bytes": MAX_EMBEDDED_RAW_MEDIA_BYTES,
+                    }),
+                )
+            )
+            return content
+        mime_type = _video_mime_type(raw_media)
+        content.append(
+            TextContent(
+                type="text",
+                text=as_text({
+                    "fallback": "RAW_MEDIA",
+                    "mime_type": mime_type,
+                    "bytes": media_bytes,
+                    "video_file": item.get("video_file"),
+                }),
+            )
+        )
+        content.append(
+            EmbeddedResource(
+                type="resource",
+                resource=BlobResourceContents(
+                    uri=f"influencerresearch://evidence/{queue_id}/raw-media",
+                    mime_type=mime_type,
+                    blob=base64.b64encode(raw_media.read_bytes()).decode("ascii"),
+                ),
+            )
+        )
+        return content
 
     if mode == "CONTACT_SHEET":
         contact = _safe_evidence_path(bundle.get("contact_sheet"))
