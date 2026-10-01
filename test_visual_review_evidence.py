@@ -307,6 +307,10 @@ class EvidenceToolContractTests(unittest.TestCase):
         self.assertIn("max_frames", rendered)
         self.assertIn("screenshot_file", rendered)
         self.assertIn("STORY_SCREENSHOT", rendered)
+        self.assertIn("RAW_MEDIA", rendered)
+        self.assertIn("EmbeddedResource", rendered)
+        self.assertIn("BlobResourceContents", rendered)
+        self.assertIn("video_file", rendered)
 
 
 if __name__ == "__main__":

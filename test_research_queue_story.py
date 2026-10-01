@@ -22,6 +22,9 @@ class ResearchQueueStoryTests(unittest.TestCase):
             shot = root / "output" / "creator" / "stories" / "screenshots" / "abc.png"
             shot.parent.mkdir(parents=True)
             shot.write_bytes(b"png")
+            video = root / "output" / "creator" / "stories" / "videos" / "abc.mp4"
+            video.parent.mkdir(parents=True)
+            video.write_bytes(b"video")
 
             manifest = {
                 "schema_version": 1,
@@ -47,6 +50,8 @@ class ResearchQueueStoryTests(unittest.TestCase):
                         "visual_description_provider": "gemini",
                         "visual_description_model": "gemini-3.8-flash",
                         "screenshot_file": str(shot.relative_to(root)),
+                        "video_file": str(video.relative_to(root)),
+                        "full_video_persisted": True,
                         "visual_evidence_status": "DONE",
                         "visual_evidence_index": str(shot.relative_to(root)),
                         "visual_frame_count": 1,
@@ -82,6 +87,8 @@ class ResearchQueueStoryTests(unittest.TestCase):
             self.assertIn("Brent-WTI", packet["visual_description"])
             self.assertIn("Brent-WTI", packet["analysis_evidence_text"])
             self.assertEqual(packet["screenshot_file"], str(shot.relative_to(root)))
+            self.assertEqual(packet["video_file"], str(video.relative_to(root)))
+            self.assertTrue(packet["raw_media_available"])
 
 
     def test_story_visual_provider_error_is_not_mislabeled_insufficient(self) -> None:

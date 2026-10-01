@@ -842,6 +842,22 @@ def _story_transcript_path(root: Path, handle: str, identity: str) -> Path | Non
     return path if path.exists() else None
 
 
+def _story_video_path(root: Path, handle: str, identity: str) -> Path | None:
+    video_dir = root / "output" / handle / "stories" / "videos"
+    if not video_dir.is_dir():
+        return None
+    preferred = video_dir / f"{identity}.mp4"
+    if preferred.is_file():
+        return preferred
+    allowed = {".mp4", ".webm", ".mkv", ".mov"}
+    candidates = sorted(
+        path
+        for path in video_dir.glob(f"{identity}.*")
+        if path.is_file() and path.suffix.casefold() in allowed
+    )
+    return candidates[0] if candidates else None
+
+
 def _promote_story_items(
     root: Path,
     profile: dict,
@@ -955,9 +971,11 @@ def _promote_story_items(
         screenshot_rel = str(item.get("screenshot_file") or "").strip()
         screenshot_path = root / screenshot_rel if screenshot_rel else None
         transcript_path = _story_transcript_path(root, handle, identity)
+        video_path = _story_video_path(root, handle, identity)
         has_screenshot = bool(screenshot_path and screenshot_path.exists())
         has_transcript = transcript_path is not None
-        if not has_screenshot and not has_transcript:
+        has_video = video_path is not None
+        if not has_screenshot and not has_transcript and not has_video:
             continue
 
         matching_aliases: list[tuple[str, dict]] = []
@@ -1028,6 +1046,10 @@ def _promote_story_items(
                 "visual_description_error": item.get("visual_description_error"),
                 "visual_description_deferred_reason": item.get("visual_description_deferred_reason"),
                 "visual_description_retry_after": item.get("visual_description_retry_after"),
+                "video_file": (
+                    str(video_path.relative_to(root)) if video_path is not None else None
+                ),
+                "full_video_persisted": has_video,
             }
             for field, value in evidence_updates.items():
                 if existing.get(field) != value:
@@ -1059,6 +1081,9 @@ def _promote_story_items(
                 str(transcript_path.relative_to(root)) if transcript_path is not None else None
             ),
             "transcript_source": "STORY_VIDEO" if has_transcript else None,
+            "video_file": (
+                str(video_path.relative_to(root)) if video_path is not None else None
+            ),
             "browser_text": str(item.get("browser_text") or alias_source.get("browser_text") or ""),
             "visual_description": str(item.get("visual_description") or alias_source.get("visual_description") or ""),
             "visual_description_status": item.get("visual_description_status") or alias_source.get("visual_description_status"),
@@ -1075,7 +1100,7 @@ def _promote_story_items(
             "visual_evidence_index": screenshot_rel or None,
             "visual_frame_count": 1 if has_screenshot else 0,
             "visual_capture_strategy": "INSTAGRAM_STORY_SCREENSHOT",
-            "full_video_persisted": bool(has_transcript),
+            "full_video_persisted": has_video,
             "media_retention": "EPHEMERAL_CAPTURE",
             "permanent_source": True,
             "research_status": "PENDING",
