@@ -9,7 +9,7 @@ This directory defines the reviewed Camofox/Camoufox container used by the Influ
 
 `package-lock.json` is the project-specific reviewed runtime baseline resolved from the exact commit-pinned Camofox tarball above. The lockfile records the artifact integrity; it is not a byte-for-byte copy of upstream's development lockfile.
 
-The Docker build disables npm lifecycle scripts during dependency resolution, explicitly builds the required `better-sqlite3` native binding, and bakes the exact reviewed Linux Camoufox release into the image after verifying the release artifact. The dynamic Camofox postinstall browser fetch is not used.
+The Docker build disables npm lifecycle scripts during dependency resolution, explicitly builds the required `better-sqlite3` native binding, and bakes the exact reviewed Linux Camoufox release into the image after verifying the release artifact. The dynamic Camofox postinstall browser fetch is not used. The currently reviewed Camofox pin has a fixed 10 s GeoIP setup timeout; the image applies one exact, fail-closed source replacement to 30 s so a cold GeoLite download can complete. The build fails if that reviewed source marker is no longer present, preventing the patch from silently drifting.
 
 Direct Camofox is a separate service in the root `compose.yaml`. It is reachable only from the Compose `runtime` network at `http://camofox:9377`; port 9377 is not published to the Windows host. The `influencerresearch` service authenticates to it with generated access/admin keys.
 
