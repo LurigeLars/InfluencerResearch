@@ -183,6 +183,12 @@ def assess_analysis_content(
     elif visible_text_words >= MIN_TRANSCRIPT_WORDS or len(visible_text) >= MIN_TRANSCRIPT_CHARS:
         status = "READY"
         reason = "VISIBLE_TEXT"
+    elif agent_visual_fallback_available and visual_status in {"DEFERRED", "ERROR"}:
+        # Prefer the retained screenshot over weak browser/caption fallbacks when
+        # provider extraction failed. The analysis agent can inspect the pixels
+        # directly via analysis_evidence_get.
+        status = "READY"
+        reason = "AGENT_VISUAL_FALLBACK"
     elif browser_text_words >= MIN_FALLBACK_TEXT_WORDS or len(browser_text) >= MIN_FALLBACK_TEXT_CHARS:
         status = "READY"
         reason = "BROWSER_TEXT"
@@ -190,13 +196,7 @@ def assess_analysis_content(
         status = "READY"
         reason = "METADATA_TEXT"
     else:
-        if agent_visual_fallback_available and visual_status in {"DEFERRED", "ERROR"}:
-            # The retained Story screenshot is itself analyzable evidence. Provider
-            # extraction failure should route to the analysis agent's vision fallback
-            # instead of stranding the item in deferred/error state.
-            status = "READY"
-            reason = "AGENT_VISUAL_FALLBACK"
-        elif visual_status == "DEFERRED":
+        if visual_status == "DEFERRED":
             status = "DEFERRED_EXTRACTION"
             reason = str(
                 item.get("visual_description_deferred_reason")
