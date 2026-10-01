@@ -174,7 +174,7 @@ services:
       CAMOFOX_LOCALE: sv-SE
       CAMOFOX_TIMEZONE: Europe/Stockholm
       CAMOUFOX_EXECUTABLE: /opt/camoufox/camoufox-bin
-      CAMOUFOX_INSTALL_DIR: /opt/camoufox
+      CAMOUFOX_INSTALL_DIR: /run/camofox-proxy/install
       HOME: /run/camofox-proxy
       XDG_CACHE_HOME: /run/camofox-proxy/cache
       CAMOFOX_PROFILE_DIR: /run/camofox-proxy/profiles
