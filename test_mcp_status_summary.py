@@ -26,6 +26,29 @@ class McpStatusSummaryTests(unittest.TestCase):
         self.assertEqual(summary["error"], "RuntimeError: fixture failure")
         self.assertNotIn("internal_debug", summary)
 
+    def test_failed_evaluation_exposes_failure_details(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "status.json"
+            path.write_text(
+                json.dumps({
+                    "state": "FAILED",
+                    "failure_count": 1,
+                    "failures": [{
+                        "video_id": "abc123",
+                        "stage": "visual_capture",
+                        "detail": "yt-dlp fixture failure",
+                    }],
+                    "internal_debug": "must stay private",
+                }),
+                encoding="utf-8",
+            )
+            summary = summarize_status(path)
+
+        self.assertEqual(summary["failure_count"], 1)
+        self.assertEqual(summary["failures"][0]["stage"], "visual_capture")
+        self.assertEqual(summary["failures"][0]["detail"], "yt-dlp fixture failure")
+        self.assertNotIn("internal_debug", summary)
+
     def test_timings_preserve_compact_ingestion_pipeline(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "status.json"
