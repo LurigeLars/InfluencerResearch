@@ -381,7 +381,6 @@ def request_json(method: str, path: str, body: dict | None = None, timeout: int 
     """
     deadline = time.monotonic() + max(0.1, float(timeout))
     timeout_cap = max(0.1, float(timeout))
-    direct_server = _ensure_fallback_server(deadline=deadline)
     user_id = _request_user_id(path, body)
     method_upper = method.upper()
 
@@ -404,6 +403,7 @@ def request_json(method: str, path: str, body: dict | None = None, timeout: int 
             _set_proxy_user(user_id, False)
         return result
 
+    direct_server = _ensure_fallback_server(deadline=deadline)
     direct_result = _request_on_server(
         direct_server,
         method,
@@ -424,7 +424,6 @@ def request_json(method: str, path: str, body: dict | None = None, timeout: int 
         return direct_result
 
     _increment_public_proxy_metric("direct_blocked")
-    _cleanup_server_session(direct_server, user_id, deadline=deadline)
 
     try:
         proxy_server = _ensure_public_proxy_server(deadline=deadline)
@@ -445,12 +444,14 @@ def request_json(method: str, path: str, body: dict | None = None, timeout: int 
                 timeout_cap=timeout_cap,
             )
         except Exception:
+            _cleanup_server_session(proxy_server, user_id, deadline=deadline)
             _increment_public_proxy_metric("proxy_unavailable")
             return direct_result
 
         _increment_public_proxy_metric("proxy_attempts")
         status = _target_http_status(final_result)
         if status not in {403, 429}:
+            _cleanup_server_session(direct_server, user_id, deadline=deadline)
             _set_proxy_user(user_id, True)
             _increment_public_proxy_metric("proxy_success")
             return final_result
@@ -458,6 +459,7 @@ def request_json(method: str, path: str, body: dict | None = None, timeout: int 
         if attempt + 1 < attempts:
             _cleanup_server_session(proxy_server, user_id, deadline=deadline)
 
+    _cleanup_server_session(direct_server, user_id, deadline=deadline)
     _set_proxy_user(user_id, True)
     _increment_public_proxy_metric("proxy_exhausted")
     return final_result
