@@ -29,7 +29,8 @@ class PublicProxyFallbackTests(unittest.TestCase):
 
     def test_direct_success_never_touches_proxy(self) -> None:
         direct = {"base_url": "http://direct"}
-        with tempfile.TemporaryDirectory() as td, (
+        with (
+            tempfile.TemporaryDirectory() as td,
             self._metric_patch(Path(td)),
             mock.patch.object(sync, "_ensure_fallback_server", return_value=direct),
             mock.patch.object(sync, "_ensure_public_proxy_server") as ensure_proxy,
@@ -74,7 +75,8 @@ class PublicProxyFallbackTests(unittest.TestCase):
                 return {"snapshot": "ok"}
             return {"ok": True}
 
-        with tempfile.TemporaryDirectory() as td, (
+        with (
+            tempfile.TemporaryDirectory() as td,
             self._metric_patch(Path(td)),
             mock.patch.object(sync, "_ensure_fallback_server", return_value=direct),
             mock.patch.object(sync, "_ensure_public_proxy_server", return_value=proxy),
@@ -105,7 +107,8 @@ class PublicProxyFallbackTests(unittest.TestCase):
 
     def test_non_allowlisted_429_stays_direct(self) -> None:
         direct = {"base_url": "http://direct"}
-        with tempfile.TemporaryDirectory() as td, (
+        with (
+            tempfile.TemporaryDirectory() as td,
             self._metric_patch(Path(td)),
             mock.patch.object(sync, "_ensure_fallback_server", return_value=direct),
             mock.patch.object(sync, "_ensure_public_proxy_server") as ensure_proxy,
@@ -146,7 +149,8 @@ class PublicProxyFallbackTests(unittest.TestCase):
                 }
             return {"ok": True}
 
-        with tempfile.TemporaryDirectory() as td, (
+        with (
+            tempfile.TemporaryDirectory() as td,
             self._metric_patch(Path(td)),
             mock.patch.dict(
                 sync.os.environ,
@@ -182,7 +186,8 @@ class PublicProxyFallbackTests(unittest.TestCase):
             calls.append((method, path))
             return {"tabId": "direct-tab", "httpStatus": 429, "navigationOk": False}
 
-        with tempfile.TemporaryDirectory() as td, (
+        with (
+            tempfile.TemporaryDirectory() as td,
             self._metric_patch(Path(td)),
             mock.patch.object(sync, "_ensure_fallback_server", return_value=direct),
             mock.patch.object(
@@ -225,7 +230,8 @@ class PublicProxyFallbackTests(unittest.TestCase):
         self.assertIs(request.call_args.args[0], proxy)
 
     def test_metrics_persist_only_aggregate_numeric_counters(self) -> None:
-        with tempfile.TemporaryDirectory() as td, self._metric_patch(Path(td)):
+        with tempfile.TemporaryDirectory() as td:
+            with self._metric_patch(Path(td)):
             sync._increment_public_proxy_metric("direct_blocked")
             sync._increment_public_proxy_metric("proxy_attempts", 2)
             path = sync._public_proxy_metrics_path()
