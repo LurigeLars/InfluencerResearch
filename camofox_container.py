@@ -46,8 +46,12 @@ def load_config(env: dict[str, str] | None = None) -> dict[str, object]:
         service_admin_key = _read_container_secret(
             CAMOFOX_CONTAINER_ADMIN_SECRET, "admin"
         )
+        proxy_base_url = str(
+            source.get("INFLUENCER_RESEARCH_CAMOFOX_PROXY_BASE_URL") or ""
+        ).strip()
         return {
             "base_url": "http://camofox:9377",
+            "proxy_base_url": proxy_base_url or None,
             "access_key": service_access_key,
             "admin_key": service_admin_key,
             "config_path": None,
@@ -77,6 +81,7 @@ def load_config(env: dict[str, str] | None = None) -> dict[str, object]:
 
     return {
         "base_url": CAMOFOX_CONTAINER_BASE_URL,
+        "proxy_base_url": None,
         "access_key": access_key,
         "admin_key": admin_key,
         "config_path": path,
