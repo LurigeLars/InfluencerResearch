@@ -1633,8 +1633,8 @@ def _run_discovery_batch(
                     phase="SOURCE_COMPLETE",
                     completed_sources=completed_sources,
                     total_sources=len(futures),
-                    current_creator=str(result["profile"]["creator_key"]),
-                    current_platform=str(result["platform"]),
+                    last_completed_creator=str(result["profile"]["creator_key"]),
+                    last_completed_platform=str(result["platform"]),
                     discovered_items=len(discovery.get("items") or []),
                     had_error=bool(result.get("error")),
                 )
