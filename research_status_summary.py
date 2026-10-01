@@ -43,6 +43,7 @@ def summarize_status(path: Path | None) -> dict | None:
         "completed_ids",
         "failed_ids",
         "failure_count",
+        "failures",
         "recent_found_count",
         "selected_for_ingestion_count",
         "selected_standard_ingestion_count",
