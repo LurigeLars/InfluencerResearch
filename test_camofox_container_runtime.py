@@ -44,6 +44,10 @@ class CamofoxContainerRuntimeTests(TestCase):
             rate_limit["integrity"],
             "sha512-0D493aP61w0TJ2A0wy27riRsO7FMQ7FK+KUHOKCSfPvYo0R55aiC6emCVgFUeShH0fq0ICPVzNcgoS+BsbXQCA==",
         )
+        self.assertIsNot(rate_limit.get("optional"), True)
+        ip_address = lock["packages"]["node_modules/ip-address"]
+        self.assertEqual(ip_address["version"], "10.7.2")
+        self.assertIsNot(ip_address.get("optional"), True)
         self.assertEqual(sync.CAMOFOX_CONTAINER_SOURCE_COMMIT, "23a032ef1ef3db6142dd3870b5a5fe7e9ed6499a")
 
     def test_runtime_manifest_pins_required_impit_linux_binding(self) -> None:
