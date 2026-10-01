@@ -145,8 +145,13 @@ def keyword_tags(text: str) -> list[str]:
 
 
 
-def assess_analysis_content(item: dict, transcript: str) -> dict:
-    """Fail closed when the extracted evidence is too thin for model analysis."""
+def assess_analysis_content(
+    item: dict,
+    transcript: str,
+    *,
+    agent_visual_fallback_available: bool = False,
+) -> dict:
+    """Fail closed unless text evidence or a retained Story screenshot is analyzable."""
     transcript = str(transcript or "").strip()
     caption = str(item.get("caption") or "").strip()
     browser_text = str(item.get("browser_text") or "").strip()
@@ -185,7 +190,13 @@ def assess_analysis_content(item: dict, transcript: str) -> dict:
         status = "READY"
         reason = "METADATA_TEXT"
     else:
-        if visual_status == "DEFERRED":
+        if agent_visual_fallback_available and visual_status in {"DEFERRED", "ERROR"}:
+            # The retained Story screenshot is itself analyzable evidence. Provider
+            # extraction failure should route to the analysis agent's vision fallback
+            # instead of stranding the item in deferred/error state.
+            status = "READY"
+            reason = "AGENT_VISUAL_FALLBACK"
+        elif visual_status == "DEFERRED":
             status = "DEFERRED_EXTRACTION"
             reason = str(
                 item.get("visual_description_deferred_reason")
@@ -239,20 +250,34 @@ def build_packet(
     raw_visual_description = str(item.get("visual_description") or "").strip()
     visual_description = raw_visual_description if visual_status == "DONE" else ""
     visual_bundle = item.get("agent_visual_bundle") if isinstance(item.get("agent_visual_bundle"), dict) else {}
+    agent_visual_fallback = (
+        str(item.get("analysis_content_reason") or "") == "AGENT_VISUAL_FALLBACK"
+    )
     visual_review_recommended = bool(
-        item.get("visual_review_recommended")
+        agent_visual_fallback
+        or item.get("visual_review_recommended")
         or visual_bundle.get("visual_review_recommended")
     )
     analysis_mode_recommended = str(
         item.get("analysis_mode_recommended")
         or visual_bundle.get("analysis_mode_recommended")
-        or ("TRANSCRIPT_PLUS_VISUAL_REVIEW" if visual_review_recommended else "TRANSCRIPT_ONLY")
+        or (
+            "VISUAL_REVIEW_REQUIRED"
+            if agent_visual_fallback
+            else (
+                "TRANSCRIPT_PLUS_VISUAL_REVIEW"
+                if visual_review_recommended
+                else "TRANSCRIPT_ONLY"
+            )
+        )
     )
     visual_review_reason = list(
         item.get("visual_review_reason")
         or visual_bundle.get("visual_review_reason")
         or []
     )
+    if agent_visual_fallback and "AGENT_VISUAL_FALLBACK" not in visual_review_reason:
+        visual_review_reason.append("AGENT_VISUAL_FALLBACK")
     evidence_parts = [
         x
         for x in (transcript, visual_description, visible_text, browser_text, caption)
@@ -286,6 +311,7 @@ def build_packet(
         "analysis_status": "PENDING_ANALYSIS",
         "analysis_content_status": item.get("analysis_content_status"),
         "analysis_content_reason": item.get("analysis_content_reason"),
+        "agent_visual_fallback_available": item.get("agent_visual_fallback_available"),
         "analysis_mode_recommended": analysis_mode_recommended,
         "visual_review_recommended": visual_review_recommended,
         "visual_review_reason": visual_review_reason,
@@ -371,6 +397,7 @@ def build_packet(
                 "Cross-platform reposts are one evidence lineage, not independent confirmations.",
                 "For YouTube items, use transcript plus retained timestamped visual evidence when available; visual frames are supporting evidence, not execution truth.",
                 "If visual_review_recommended=true, inspect representative visual evidence before concluding; TRANSCRIPT alone is not sufficient for that item.",
+                "If analysis_content_reason=AGENT_VISUAL_FALLBACK, call analysis_evidence_get and inspect the retained Story screenshot directly; provider extraction failure is not evidence of insufficient content.",
                 "visual_review_recommended is decided per video. Creator history may bias priority but must never prevent an unflagged creator's chart-heavy video from escalating to visual review.",
                 "If semantic duplication is plausible but not deterministically provable, use duplicate_basis=POSSIBLE_SEMANTIC_DUPLICATE and let Ekonomi decide.",
                 "A TEST_CANDIDATE or BACKLOG_CANDIDATE does not change system state; material implementation requires a new HANDOFF-XXX.",
@@ -496,7 +523,19 @@ def main() -> int:
         else:
             transcript = read_text(transcript_path)
 
-        readiness = assess_analysis_content(item, transcript)
+        story_screenshot_path = (
+            normalize_manifest_path(root, item.get("screenshot_file"))
+            if is_visual_story
+            else None
+        )
+        agent_visual_fallback_available = bool(
+            story_screenshot_path is not None and story_screenshot_path.is_file()
+        )
+        readiness = assess_analysis_content(
+            item,
+            transcript,
+            agent_visual_fallback_available=agent_visual_fallback_available,
+        )
         if transcript_missing and readiness["status"] == "INSUFFICIENT_CONTENT":
             readiness["reason"] = "TRANSCRIPT_FILE_MISSING"
 
@@ -509,6 +548,7 @@ def main() -> int:
             "visible_text_word_count": readiness["visible_text_word_count"],
             "visual_description_word_count": readiness["visual_description_word_count"],
             "has_visual_evidence": readiness["has_visual_evidence"],
+            "agent_visual_fallback_available": agent_visual_fallback_available,
         }
         for key, value in desired_content_meta.items():
             if item.get(key) != value:
