@@ -16,8 +16,6 @@ from typing import Literal
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import (
-    BlobResourceContents,
-    EmbeddedResource,
     ImageContent,
     TextContent,
     ToolAnnotations,
@@ -37,7 +35,6 @@ STATE_DIR = Path("/research/state")
 JOB_STATE_PATH = Path("/research/state/mcp_job_status.json")
 JOB_REQUEST_PATH = Path("/research/state/mcp_job_request.json")
 MCP_PORT = int(os.environ.get("INFLUENCER_RESEARCH_MCP_PORT", "8770"))
-MAX_EMBEDDED_RAW_MEDIA_BYTES = 32 * 1024 * 1024
 
 
 def utc_now() -> str:
@@ -463,8 +460,8 @@ def creator_recent_check(
 @mcp.tool(
     description=(
         "Return retained evidence for one research-queue item. Use representative frames/screenshots first; "
-        "when a Story screenshot remains inconclusive and raw_media_available=true, call mode=RAW_MEDIA. "
-        "RAW_MEDIA is metadata-only by default; set include_binary=true only when the binary resource is explicitly required."
+        "when a Story screenshot remains inconclusive and raw_media_available=true, call mode=RAW_MEDIA for metadata. "
+        "Raw video bytes stay outside model context; include_binary is retained for compatibility but never embeds media."
     ),
     annotations=READ,
     structured_output=False,
@@ -474,7 +471,7 @@ def analysis_evidence_get(
     mode: Literal["REPRESENTATIVE_FRAMES", "CONTACT_SHEET", "RAW_MEDIA"] = "REPRESENTATIVE_FRAMES",
     max_frames: int = 8,
     include_binary: bool = False,
-) -> list[TextContent | ImageContent | EmbeddedResource]:
+) -> list[TextContent | ImageContent]:
     item = _research_queue_item(queue_id)
     if item is None:
         return [TextContent(type="text", text=as_text({"ok": False, "error": "QUEUE_ITEM_NOT_FOUND", "queue_id": queue_id}))]
@@ -494,7 +491,7 @@ def analysis_evidence_get(
         "chart_signal_frame_count": bundle.get("chart_signal_frame_count"),
         "raw_media_available": bool(item.get("raw_media_available")),
     }
-    content: list[TextContent | ImageContent | EmbeddedResource] = [
+    content: list[TextContent | ImageContent] = [
         TextContent(type="text", text=as_text(metadata))
     ]
 
@@ -509,18 +506,6 @@ def analysis_evidence_get(
             )
             return content
         media_bytes = raw_media.stat().st_size
-        if media_bytes > MAX_EMBEDDED_RAW_MEDIA_BYTES:
-            content.append(
-                TextContent(
-                    type="text",
-                    text=as_text({
-                        "warning": "RAW_MEDIA_TOO_LARGE",
-                        "bytes": media_bytes,
-                        "max_bytes": MAX_EMBEDDED_RAW_MEDIA_BYTES,
-                    }),
-                )
-            )
-            return content
         mime_type = _video_mime_type(raw_media)
         content.append(
             TextContent(
@@ -530,20 +515,11 @@ def analysis_evidence_get(
                     "mime_type": mime_type,
                     "bytes": media_bytes,
                     "video_file": item.get("video_file"),
-                    "binary_embedded": bool(include_binary),
+                    "binary_embedded": False,
+                    "binary_inline_available": False,
+                    "warning": "RAW_MEDIA_BINARY_INLINE_DISABLED" if include_binary else None,
+                    "next_step": "Use REPRESENTATIVE_FRAMES or CONTACT_SHEET for bounded model-visible evidence.",
                 }),
-            )
-        )
-        if not include_binary:
-            return content
-        content.append(
-            EmbeddedResource(
-                type="resource",
-                resource=BlobResourceContents(
-                    uri=f"influencerresearch://evidence/{queue_id}/raw-media",
-                    mime_type=mime_type,
-                    blob=base64.b64encode(raw_media.read_bytes()).decode("ascii"),
-                ),
             )
         )
         return content
