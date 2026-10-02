@@ -158,6 +158,7 @@ services:
       start_period: 30s
     networks:
       - runtime
+      - browser_egress
 
   camofox-public-proxy:
     profiles:
@@ -270,3 +271,6 @@ volumes:
 networks:
   runtime:
     driver: bridge
+  browser_egress:
+    driver: bridge
+    enable_ipv6: true
