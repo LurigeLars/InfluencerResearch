@@ -10,7 +10,7 @@ google-genai==2.25.0
 tzdata==2026.4
 
 # Explicitly pin transitive packages with known fixes surfaced by Docker Scout.
-msgpack==1.2.1
+msgpack==1.2.2
 setuptools==83.0.0
 
 # TikTok browser-impersonation dependencies are installed separately in the Docker image,
