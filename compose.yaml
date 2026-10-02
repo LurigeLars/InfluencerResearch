@@ -111,9 +111,6 @@ services:
       TEMP: /tmp
     expose:
       - "9377"
-    dns:
-      - 172.64.36.1
-      - 172.64.36.2
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,size=256m,mode=1777
@@ -161,7 +158,6 @@ services:
       start_period: 30s
     networks:
       - runtime
-      - browser_egress
 
   camofox-public-proxy:
     profiles:
@@ -274,6 +270,3 @@ volumes:
 networks:
   runtime:
     driver: bridge
-  browser_egress:
-    driver: bridge
-    enable_ipv6: true
