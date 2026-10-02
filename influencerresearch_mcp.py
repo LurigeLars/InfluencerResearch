@@ -25,7 +25,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from creator_registry import get_creator, load_registry, register_creator
-from research_status_summary import summarize_status
+from research_status_summary import compact_job_status, summarize_status
 
 
 SERVER_NAME = "InfluencerResearch"
@@ -595,8 +595,10 @@ def analysis_evidence_get(
     annotations=READ,
     structured_output=False,
 )
-def research_status() -> str:
-    return as_text(jobs.status())
+def research_status(include_details: bool = False) -> str:
+    """Get current or last research job status. Compact by default; set include_details=true for full retained detail."""
+    value = jobs.status()
+    return as_text(value if include_details else compact_job_status(value))
 
 
 @mcp.tool(
