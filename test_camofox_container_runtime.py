@@ -110,6 +110,8 @@ class CamofoxContainerRuntimeTests(TestCase):
 
         self.assertIn("- browser_egress", direct)
         self.assertNotIn("- browser_egress", proxy)
+        self.assertIn("dns:\n      - 172.64.36.1\n      - 172.64.36.2", direct)
+        self.assertNotIn("dns:\n      - 172.64.36.1\n      - 172.64.36.2", proxy)
         self.assertIn(
             "browser_egress:\n    driver: bridge\n    enable_ipv6: true",
             text,
