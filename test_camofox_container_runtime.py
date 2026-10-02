@@ -101,6 +101,20 @@ class CamofoxContainerRuntimeTests(TestCase):
         self.assertIn("/run/camofox-secrets/admin_key", text)
         self.assertIn("post_start:", text)
 
+    def test_direct_camofox_has_scoped_dual_stack_egress(self) -> None:
+        text = (BASE / "compose.yaml").read_text(encoding="utf-8")
+        start = text.index("  camofox:")
+        end = text.index("  camofox-public-proxy:")
+        direct = text[start:end]
+        proxy = text[end:text.index("\nvolumes:")]
+
+        self.assertIn("- browser_egress", direct)
+        self.assertNotIn("- browser_egress", proxy)
+        self.assertIn(
+            "browser_egress:\n    driver: bridge\n    enable_ipv6: true",
+            text,
+        )
+
     def test_public_proxy_camofox_is_isolated_and_profile_gated(self) -> None:
         text = (BASE / "compose.yaml").read_text(encoding="utf-8")
         start = text.index("  camofox-public-proxy:")
