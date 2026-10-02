@@ -3,6 +3,8 @@ playwright==1.63.0
 yt-dlp==2026.8.19
 yt-dlp-ejs==0.8.0
 faster-whisper==1.2.1
+# PyAV 19 removed av.open(metadata_errors=...), which faster-whisper 1.2.1 still calls.
+av==18.1.0
 imageio-ffmpeg==0.6.0
 google-genai==2.25.0
 tzdata==2026.4
