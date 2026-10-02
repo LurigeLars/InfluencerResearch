@@ -183,6 +183,18 @@ class JobManager:
             if kind not in self.STATUS_FILES:
                 return {"ok": False, "error": "UNKNOWN_JOB_KIND"}
 
+            # Status files represent the currently running job of each kind.
+            # Remove the previous run's file before spawning so research_status()
+            # cannot expose stale progress/failure data while the new worker starts.
+            status_path = self.STATUS_FILES[kind]
+            try:
+                status_path.unlink(missing_ok=True)
+            except OSError as exc:
+                return {
+                    "ok": False,
+                    "error": f"STATUS_RESET_FAILED:{type(exc).__name__}",
+                }
+
             job_id = uuid.uuid4().hex
             request = {
                 "schema_version": 1,
@@ -206,7 +218,7 @@ class JobManager:
                 "started_at": utc_now(),
                 "finished_at": None,
                 "returncode": None,
-                "status_path": self.STATUS_FILES[kind],
+                "status_path": status_path,
                 "status": None,
                 "proc": proc,
             }
