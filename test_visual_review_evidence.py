@@ -311,8 +311,9 @@ class EvidenceToolContractTests(unittest.TestCase):
         self.assertIn("include_binary", rendered)
         self.assertIn("include_binary:bool=False", rendered.replace(" ", ""))
         self.assertIn("binary_embedded", rendered)
-        self.assertIn("EmbeddedResource", rendered)
-        self.assertIn("BlobResourceContents", rendered)
+        self.assertIn("RAW_MEDIA_BINARY_INLINE_DISABLED", rendered)
+        self.assertNotIn("EmbeddedResource", rendered)
+        self.assertNotIn("BlobResourceContents", rendered)
         self.assertIn("video_file", rendered)
 
 
