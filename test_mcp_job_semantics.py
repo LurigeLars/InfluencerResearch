@@ -35,6 +35,64 @@ class MCPJobSemanticsTests(unittest.TestCase):
             self.assertFalse(status_path.exists())
             self.assertIsNone(result["job"].get("status"))
 
+    def test_research_stop_persists_nested_stopped_state_atomically(self) -> None:
+        class FakeProc:
+            pid = 4242
+
+            def __init__(self):
+                self.returncode = None
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                self.returncode = -15
+                return self.returncode
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            status_path = root / "creator_recent_check_status.json"
+            request_path = root / "mcp_job_request.json"
+            state_path = root / "mcp_job_status.json"
+            status_path.write_text(
+                '{"schema_version":1,"state":"RUNNING","progress":{"stage":"INGESTION","phase":"GROUP_RUNNING"}}',
+                encoding="utf-8",
+            )
+            manager = irm.JobManager()
+            manager.STATUS_FILES = {"creator_recent_check": status_path}
+            proc = FakeProc()
+            with (
+                patch.object(irm, "JOB_REQUEST_PATH", request_path),
+                patch.object(irm, "JOB_STATE_PATH", state_path),
+                patch.object(irm.subprocess, "Popen", return_value=proc),
+                patch.object(irm.os, "killpg"),
+            ):
+                started = manager.start(
+                    "creator_recent_check",
+                    {
+                        "scope": "ALL_REGISTERED",
+                        "creator_keys": ["fixture"],
+                        "window": "LAST_N_DAYS",
+                        "lookback_days": 1,
+                        "max_items": 1,
+                    },
+                )
+                self.assertTrue(started["ok"])
+                # JobManager.start intentionally resets stale status; emulate live progress.
+                status_path.write_text(
+                    '{"schema_version":1,"state":"RUNNING","progress":{"stage":"INGESTION","phase":"GROUP_RUNNING"}}',
+                    encoding="utf-8",
+                )
+                stopped = manager.stop()
+
+            persisted = __import__("json").loads(status_path.read_text(encoding="utf-8"))
+            self.assertEqual(stopped["job"]["state"], "STOPPED")
+            self.assertEqual(stopped["job"]["status"]["state"], "STOPPED")
+            self.assertEqual(persisted["state"], "STOPPED")
+            self.assertEqual(persisted["progress"]["phase"], "STOPPED")
+            self.assertEqual(persisted["transitions"][-1]["final_state"], "STOPPED")
+
+
     def test_recent_partial_remains_partial_even_with_nonzero_exit(self) -> None:
         self.assertEqual(
             irm.resolve_job_state("creator_recent_check", 1, {"state": "PARTIAL"}),
