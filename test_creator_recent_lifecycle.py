@@ -171,7 +171,7 @@ class CreatorRecentLifecycleTests(unittest.TestCase):
                     },
                 }
 
-            def fake_queue(_root):
+            def fake_queue(_root, **_kwargs):
                 queue_path = root / "state" / "research_queue.json"
                 queue_path.write_text(
                     json.dumps({
