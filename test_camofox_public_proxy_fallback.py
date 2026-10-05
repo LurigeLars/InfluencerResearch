@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import json
 import tempfile
-import unittest
+import unittest.mock
 from pathlib import Path
-from unittest import mock
 
 import tiktok_camofox_sync as sync
 
