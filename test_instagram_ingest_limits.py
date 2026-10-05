@@ -53,6 +53,36 @@ class InstagramIngestLimitTests(unittest.TestCase):
             ["new"],
         )
 
+    def test_exact_shortcodes_recover_known_incomplete_items_even_in_new_only_mode(self) -> None:
+        manifest = {
+            "items": {
+                "requested_pending": {
+                    "download_status": "DONE",
+                    "video_file": "output/x/requested_pending.mp4",
+                    "transcription_status": "PENDING",
+                },
+                "requested_done": {
+                    "download_status": "DONE",
+                    "video_file": "output/x/requested_done.mp4",
+                    "transcription_status": "DONE",
+                },
+                "unrelated_pending": {
+                    "download_status": "DONE",
+                    "video_file": "output/x/unrelated_pending.mp4",
+                    "transcription_status": "PENDING",
+                },
+            }
+        }
+        self.assertEqual(
+            ig.select_transcription_keys(
+                manifest,
+                [],
+                new_only=True,
+                only_shortcodes={"requested_pending", "requested_done"},
+            ),
+            ["requested_pending"],
+        )
+
     def test_ephemeral_context_uses_new_context_not_persistent_profile(self) -> None:
         context = unittest.mock.Mock()
         browser = unittest.mock.Mock()
