@@ -42,6 +42,7 @@ jobs:
         run: >-
           python -m py_compile
           transcription_backend.py
+          camofox_container.py
           tiktok_camofox_sync.py
           research_queue.py
           creator_monitor.py
@@ -54,6 +55,8 @@ jobs:
         run: >-
           python -m unittest -v
           test_camofox_container_config
+          test_camofox_container_runtime
+          test_camofox_public_proxy_fallback
           test_instagram_path_segments
           test_local_runtime_namespace
           test_mcp_contract
@@ -62,6 +65,7 @@ jobs:
           test_story_local_ocr
           test_story_ollama_backend
           test_tiktok_content_fallback
+          test_tiktok_camofox_retries
           test_transcription_backend
           test_creator_monitor
           test_creator_recent_analysis_targets

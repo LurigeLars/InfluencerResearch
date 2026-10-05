@@ -104,7 +104,17 @@ class RecentDiscoveryParallelismTests(unittest.TestCase):
                 with guard:
                     active_browser -= 1
 
-        def fake_instagram(profile, source, cutoff, end, discovery_limit, *, run_index=1):
+        def fake_instagram(
+            profile,
+            source,
+            cutoff,
+            end,
+            discovery_limit,
+            *,
+            run_index=1,
+            root=None,
+        ):
+            self.assertIsNotNone(root)
             instagram_run_indexes.append(run_index)
             return browser_result(profile, "INSTAGRAM")
 
@@ -162,6 +172,57 @@ class RecentDiscoveryParallelismTests(unittest.TestCase):
             len([row for row in timings if row["stage"] == "DISCOVERY"]),
             5,
         )
+
+    def test_tiktok_discovery_timings_expose_browser_diagnostics(self):
+        selected = [
+            (
+                {"creator_key": "beta"},
+                [{"platform": "TIKTOK", "profile_url": "https://tiktok.example/@beta"}],
+            )
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.object(crc.tts, "start_server"),
+                patch.object(
+                    crc,
+                    "discover_tiktok",
+                    return_value={
+                        "creator_key": "beta",
+                        "platform": "TIKTOK",
+                        "items": [],
+                        "missing_publish_time_ids": [],
+                        "window_complete": True,
+                        "discovery": {
+                            "tab_create_ms": 1200.5,
+                            "profile_ready_wait_ms": 450.0,
+                            "profile_ready_attempts": 2,
+                            "profile_ready": True,
+                            "readiness_seed_count": 15,
+                            "initial_url_count": 15,
+                            "rounds": 0,
+                            "source": "readiness_dom",
+                            "links_endpoint_errors": 0,
+                        },
+                    },
+                ),
+            ):
+                _, errors, _, timings, _ = crc._run_discovery_batch(
+                    Path(tmp),
+                    selected,
+                    datetime(2026, 9, 28, tzinfo=timezone.utc),
+                    datetime(2026, 9, 29, tzinfo=timezone.utc),
+                    15,
+                )
+
+        self.assertEqual(errors, [])
+        timing = next(row for row in timings if row["platform"] == "TIKTOK")
+        self.assertEqual(timing["tab_create_ms"], 1200.5)
+        self.assertEqual(timing["readiness_seed_count"], 15)
+        self.assertEqual(timing["initial_url_count"], 15)
+        self.assertEqual(timing["browser_rounds"], 0)
+        self.assertEqual(timing["browser_source"], "readiness_dom")
+        self.assertEqual(timing["links_endpoint_errors"], 0)
 
     def test_story_capture_overlaps_discovery(self):
         story_started = threading.Event()

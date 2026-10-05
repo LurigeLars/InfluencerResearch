@@ -194,6 +194,58 @@ class ResearchQueueContentSufficiencyTests(unittest.TestCase):
                 "ig_story_123",
             )
 
+    def test_atomic_write_json_if_changed_skips_identical_packet(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "packet.json"
+            data = {"queue_id": "x", "value": 1}
+
+            self.assertTrue(research_queue.atomic_write_json_if_changed(path, data))
+            first_mtime = path.stat().st_mtime_ns
+            self.assertFalse(research_queue.atomic_write_json_if_changed(path, data))
+            self.assertEqual(path.stat().st_mtime_ns, first_mtime)
+
+            self.assertTrue(
+                research_queue.atomic_write_json_if_changed(
+                    path,
+                    {"queue_id": "x", "value": 2},
+                )
+            )
+            self.assertEqual(
+                json.loads(path.read_text(encoding="utf-8"))["value"],
+                2,
+            )
+
+    def test_build_packet_reuses_supplied_transcript_text(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            transcript = root / "transcript.txt"
+            transcript.write_text("disk copy should not be reread", encoding="utf-8")
+            item = {
+                "creator": "creator",
+                "source_platform": "TIKTOK",
+                "caption": "Market update",
+            }
+            with mock.patch.object(
+                research_queue,
+                "read_text",
+                side_effect=AssertionError("unexpected second transcript read"),
+            ):
+                packet = research_queue.build_packet(
+                    root,
+                    "tt_123",
+                    item,
+                    transcript,
+                    evidence_lineage_id="EL-test",
+                    duplicate_of=None,
+                    duplicate_basis=None,
+                    transcript_text="reused transcript from manifest scan",
+                )
+
+            self.assertEqual(
+                packet["transcript_text"],
+                "reused transcript from manifest scan",
+            )
+
     def test_build_packet_excludes_stale_deferred_visual_text(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

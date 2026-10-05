@@ -11,16 +11,10 @@ on:
       - "**/Dockerfile"
       - "**/Dockerfile.*"
       - ".github/workflows/**"
+  # Branch protection requires the security-gate check on every PR.
+  # Do not path-filter pull_request runs or Python-only PRs can never satisfy it.
   pull_request:
     branches: [main]
-    paths:
-      - "**/*.ps1"
-      - "**/*.psm1"
-      - "**/*.psd1"
-      - "**/*.sh"
-      - "**/Dockerfile"
-      - "**/Dockerfile.*"
-      - ".github/workflows/**"
   workflow_dispatch:
 
 permissions:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from unittest import mock
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -101,6 +102,40 @@ class RecentAnalysisTargetTests(unittest.TestCase):
                 crc.MAX_ANALYSIS_EVIDENCE_CHARS,
             )
             self.assertTrue(target["analysis_evidence_truncated"])
+
+    def test_tiktok_ingest_defers_queue_refresh_to_central_stage(self) -> None:
+        profile = {"creator_key": "nicholascrown"}
+        source = {
+            "profile_url": "https://www.tiktok.com/@nicholas_crown",
+            "max_catalog": 1000,
+        }
+        completed_id = "7690974941457534222"
+        with (
+            mock.patch.object(crc.tts, "start_server"),
+            mock.patch.object(
+                crc.tts,
+                "process_source",
+                return_value={
+                    "completed": [{"video_id": completed_id}],
+                    "failures": [],
+                    "discovery_skipped_for_exact_ids": True,
+                    "timings_ms": {"total": 123.4},
+                },
+            ),
+            mock.patch.object(crc.tts, "run_research_queue") as queue,
+        ):
+            result = crc._ingest_tiktok(
+                Path("."),
+                profile,
+                source,
+                [completed_id],
+                15,
+            )
+
+        queue.assert_not_called()
+        self.assertEqual(result["completed_ids"], [completed_id])
+        self.assertEqual(result["returncode"], 0)
+        self.assertTrue(result["discovery_skipped_for_exact_ids"])
 
     def test_deferred_provider_state_does_not_make_scan_partial(self) -> None:
         state, readiness = crc._recent_check_final_state(

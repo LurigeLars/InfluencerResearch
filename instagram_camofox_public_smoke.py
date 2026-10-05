@@ -273,13 +273,125 @@ def dismiss_profile_media_auth_gate(tab_id: str, user_id: str) -> dict[str, Any]
     return result
 
 
+def _wait_for_profile_ready(
+    tab_id: str,
+    user_id: str,
+    handle: str,
+    *,
+    max_wait_seconds: float = 5.0,
+    poll_seconds: float = 0.25,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    deadline = started + max(0.0, max_wait_seconds)
+    attempts = 0
+    last_error = None
+    last_dom: dict[str, Any] | None = None
+    while True:
+        attempts += 1
+        try:
+            last_dom = dom_probe(tab_id, user_id, handle)
+            ready = bool(
+                last_dom.get("reel_links")
+                or last_dom.get("media_links")
+                or last_dom.get("cookie_consent_visible")
+                or last_dom.get("media_auth_gate_visible")
+                or (
+                    last_dom.get("handle_visible")
+                    and int(last_dom.get("body_text_length") or 0) > 200
+                )
+            )
+            if ready:
+                return {
+                    "ready": True,
+                    "attempts": attempts,
+                    "wait_ms": round((time.perf_counter() - started) * 1000, 1),
+                    "dom": last_dom,
+                    "last_error": last_error,
+                }
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"[:1000]
+
+        remaining = deadline - time.perf_counter()
+        if remaining <= 0:
+            return {
+                "ready": False,
+                "attempts": attempts,
+                "wait_ms": round((time.perf_counter() - started) * 1000, 1),
+                "dom": last_dom,
+                "last_error": last_error,
+            }
+        time.sleep(min(poll_seconds, remaining))
+
+
+def _instagram_reel_shortcode(url: str) -> str | None:
+    reels = extract_reel_urls(str(url or ""))
+    if not reels:
+        return None
+    return reels[0].rstrip("/").rsplit("/", 1)[-1] or None
+
+
+def _wait_for_reel_published_at(
+    tab_id: str,
+    user_id: str,
+    *,
+    max_wait_seconds: float = 2.0,
+    poll_seconds: float = 0.2,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    deadline = started + max(0.0, max_wait_seconds)
+    attempts = 0
+    last_error = None
+    while True:
+        attempts += 1
+        try:
+            response = request_json(
+                "POST",
+                f"/tabs/{urllib.parse.quote(tab_id)}/evaluate",
+                {
+                    "userId": user_id,
+                    "expression": (
+                        "(() => { const t = document.querySelector('time[datetime]'); "
+                        "return {published_at: t ? t.getAttribute('datetime') : null, href: location.href}; })()"
+                    ),
+                },
+                timeout=20,
+            )
+            value = response.get("result") if isinstance(response, dict) else None
+            if isinstance(value, dict) and value.get("published_at"):
+                return {
+                    "published_at": value.get("published_at"),
+                    "attempts": attempts,
+                    "wait_ms": round((time.perf_counter() - started) * 1000, 1),
+                    "last_error": last_error,
+                }
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"[:1000]
+
+        remaining = deadline - time.perf_counter()
+        if remaining <= 0:
+            return {
+                "published_at": None,
+                "attempts": attempts,
+                "wait_ms": round((time.perf_counter() - started) * 1000, 1),
+                "last_error": last_error,
+            }
+        time.sleep(min(poll_seconds, remaining))
+
+
 def probe_public_session(
     profile_url: str,
     handle: str,
     run_index: int,
     *,
     inspect_reel_times: bool = False,
+    known_reel_times: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    probe_started = time.perf_counter()
+    known_reel_times = {
+        str(key): str(value)
+        for key, value in (known_reel_times or {}).items()
+        if key and value
+    }
     user_id = f"influencerresearch-instagram-public-smoke-{run_index}"
     session_key = f"public-{handle}-{run_index}-{int(time.time())}"
     tab_id: str | None = None
@@ -287,6 +399,7 @@ def probe_public_session(
     all_reels: list[str] = []
 
     try:
+        tab_started = time.perf_counter()
         tab = request_json(
             "POST",
             "/tabs",
@@ -298,10 +411,12 @@ def probe_public_session(
             },
             timeout=60,
         )
+        tab_create_ms = round((time.perf_counter() - tab_started) * 1000, 1)
         if not isinstance(tab, dict) or not tab.get("tabId"):
             raise RuntimeError(f"Unexpected Camofox create-tab response: {tab}")
         tab_id = str(tab["tabId"])
-        time.sleep(5)
+        readiness = _wait_for_profile_ready(tab_id, user_id, handle)
+        initial_dom = readiness.get("dom") if isinstance(readiness.get("dom"), dict) else None
 
         for round_index in range(3):
             snap = request_json(
@@ -327,7 +442,10 @@ def probe_public_session(
             dom = None
             dom_error = None
             try:
-                dom = dom_probe(tab_id, user_id, handle)
+                if round_index == 0 and initial_dom is not None:
+                    dom = initial_dom
+                else:
+                    dom = dom_probe(tab_id, user_id, handle)
                 for url in extract_reel_urls(dom.get("reel_links", [])):
                     if url not in all_reels:
                         all_reels.append(url)
@@ -420,7 +538,7 @@ def probe_public_session(
                 }
             )
 
-            if all_reels:
+            if all_reels or round_index >= 2:
                 break
 
             request_json(
@@ -432,38 +550,52 @@ def probe_public_session(
             time.sleep(1.5)
 
         reel_items: list[dict[str, Any]] = []
+        reel_time_cache_hits = 0
+        reel_time_network_probes = 0
+        reel_time_probe_ms = 0.0
         if inspect_reel_times:
             for reel_url in all_reels[:20]:
                 published_at = None
                 error = None
-                try:
-                    request_json(
-                        "POST",
-                        f"/tabs/{urllib.parse.quote(tab_id)}/navigate",
-                        {"userId": user_id, "url": reel_url},
-                        timeout=30,
-                    )
-                    time.sleep(1.0)
-                    response = request_json(
-                        "POST",
-                        f"/tabs/{urllib.parse.quote(tab_id)}/evaluate",
-                        {
-                            "userId": user_id,
-                            "expression": (
-                                "(() => { const t = document.querySelector('time[datetime]'); "
-                                "return {published_at: t ? t.getAttribute('datetime') : null, href: location.href}; })()"
-                            ),
-                        },
-                        timeout=20,
-                    )
-                    value = response.get("result") if isinstance(response, dict) else None
-                    if isinstance(value, dict):
-                        published_at = value.get("published_at")
-                except Exception as exc:
-                    error = f"{type(exc).__name__}: {exc}"[:1000]
-                reel_items.append({"url": reel_url, "published_at": published_at, "error": error})
+                published_at_source = None
+                shortcode = _instagram_reel_shortcode(reel_url)
+                cached = known_reel_times.get(shortcode or "")
+                if cached:
+                    published_at = cached
+                    published_at_source = "LOCAL_MANIFEST_CACHE"
+                    reel_time_cache_hits += 1
+                else:
+                    reel_time_network_probes += 1
+                    try:
+                        request_json(
+                            "POST",
+                            f"/tabs/{urllib.parse.quote(tab_id)}/navigate",
+                            {"userId": user_id, "url": reel_url},
+                            timeout=30,
+                        )
+                        timestamp_probe = _wait_for_reel_published_at(tab_id, user_id)
+                        reel_time_probe_ms += float(timestamp_probe.get("wait_ms") or 0.0)
+                        published_at = timestamp_probe.get("published_at")
+                        error = timestamp_probe.get("last_error")
+                        published_at_source = "LIVE_REEL_TIME_ELEMENT"
+                    except Exception as exc:
+                        error = f"{type(exc).__name__}: {exc}"[:1000]
+                reel_items.append({
+                    "url": reel_url,
+                    "published_at": published_at,
+                    "published_at_source": published_at_source,
+                    "error": error,
+                })
         else:
-            reel_items = [{"url": url, "published_at": None, "error": None} for url in all_reels[:20]]
+            reel_items = [
+                {
+                    "url": url,
+                    "published_at": None,
+                    "published_at_source": None,
+                    "error": None,
+                }
+                for url in all_reels[:20]
+            ]
 
         blocked = any(row["block_hits"] for row in rounds)
         handle_visible = any(
@@ -487,6 +619,17 @@ def probe_public_session(
             "reel_items": reel_items,
             "reel_discovery_ok": bool(all_reels),
             "rounds": rounds,
+            "timings": {
+                "tab_create_ms": tab_create_ms,
+                "profile_ready_wait_ms": round(float(readiness.get("wait_ms") or 0.0), 1),
+                "profile_ready_attempts": int(readiness.get("attempts") or 0),
+                "profile_ready": bool(readiness.get("ready")),
+                "reel_time_cache_hits": reel_time_cache_hits,
+                "reel_time_network_probes": reel_time_network_probes,
+                "reel_time_probe_ms": round(reel_time_probe_ms, 1),
+                "discovery_rounds": len(rounds),
+                "total_ms": round((time.perf_counter() - probe_started) * 1000, 1),
+            },
         }
     finally:
         if tab_id:

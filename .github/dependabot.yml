@@ -18,14 +18,8 @@ updates:
         update-types:
           - "minor"
           - "patch"
-    # These packages belong to the separately installed, wheel-only,
-    # hash-locked TikTok impersonation runtime. Keep that reviewed lock
-    # out of routine version-update automation.
-    ignore:
-      - dependency-name: "curl_cffi"
-      - dependency-name: "cffi"
-      - dependency-name: "pycparser"
-      - dependency-name: "certifi"
+    # The TikTok impersonation lock remains hash-pinned. Dependabot may propose
+    # updates, but every change stays manual-review-only and must pass the lock/runtime tests.
 
   # Container images referenced by compose.yaml and compose.public.yaml.
   - package-ecosystem: "docker-compose"
@@ -75,9 +69,11 @@ updates:
           - "patch"
 
 
-  # Base image used by /runtime/influencerresearch/Dockerfile.
+  # Base images used by both reviewed runtime Dockerfiles.
   - package-ecosystem: "docker"
-    directory: "/runtime/influencerresearch"
+    directories:
+      - "/runtime/influencerresearch"
+      - "/runtime/camofox"
     schedule:
       interval: "weekly"
       day: "monday"

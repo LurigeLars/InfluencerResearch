@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
+import instagram_ingest as ig
 from instagram_ingest import resolve_creators, resolve_max_new_per_creator, select_transcription_keys
 
 
@@ -50,6 +54,217 @@ class InstagramIngestLimitTests(unittest.TestCase):
             select_transcription_keys(manifest, summaries, new_only=True),
             ["new"],
         )
+
+    def test_ephemeral_context_uses_new_context_not_persistent_profile(self) -> None:
+        context = mock.Mock()
+        browser = mock.Mock()
+        browser.new_context.return_value = context
+        playwright = SimpleNamespace(
+            chromium=SimpleNamespace(launch=mock.Mock(return_value=browser))
+        )
+
+        with (
+            mock.patch.dict(
+                os.environ,
+                {"INFLUENCER_RESEARCH_CONTAINER": "1"},
+                clear=False,
+            ),
+            mock.patch.object(ig, "load_instagram_cookies") as load_cookies,
+        ):
+            actual_browser, actual_context = ig.launch_instagram_ephemeral_context(
+                playwright
+            )
+
+        self.assertIs(actual_browser, browser)
+        self.assertIs(actual_context, context)
+        playwright.chromium.launch.assert_called_once_with(headless=True)
+        browser.new_context.assert_called_once_with(
+            viewport={"width": 1440, "height": 1200}
+        )
+        load_cookies.assert_called_once_with(context)
+
+    def test_authenticated_discovery_reuses_cached_reel_timestamp(self) -> None:
+        class FakePlaywrightContext:
+            def __enter__(self):
+                return object()
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        page = mock.Mock()
+        context = mock.Mock()
+        context.new_page.return_value = page
+        browser = mock.Mock()
+        reel_url = "https://www.instagram.com/reel/RECENT123/"
+
+        with (
+            mock.patch.object(
+                ig,
+                "sync_playwright",
+                return_value=FakePlaywrightContext(),
+            ),
+            mock.patch.object(
+                ig,
+                "launch_instagram_ephemeral_context",
+                return_value=(browser, context),
+            ),
+            mock.patch.object(ig, "verify_logged_in"),
+            mock.patch.object(
+                ig,
+                "_wait_for_instagram_profile_ready",
+                return_value={
+                    "ready": True,
+                    "attempts": 1,
+                    "wait_ms": 10.0,
+                    "blocked": False,
+                    "media_auth_gated": False,
+                },
+            ),
+            mock.patch.object(
+                ig,
+                "_collect_loaded_reel_urls",
+                return_value=([reel_url], 1),
+            ),
+            mock.patch.object(ig, "_reel_published_at") as live_time,
+        ):
+            result = ig.discover_reels_authenticated(
+                "example",
+                max_scan=15,
+                known_reel_times={
+                    "RECENT123": "2026-09-29T15:10:53+00:00"
+                },
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["authenticated"])
+        self.assertEqual(result["reel_count"], 1)
+        self.assertEqual(
+            result["reel_items"][0]["published_at_source"],
+            "LOCAL_MANIFEST_CACHE",
+        )
+        self.assertEqual(result["timings"]["reel_time_cache_hits"], 1)
+        self.assertEqual(result["timings"]["reel_time_network_probes"], 0)
+        live_time.assert_not_called()
+        page.goto.assert_called_once_with(
+            "https://www.instagram.com/example/reels/",
+            wait_until="domcontentloaded",
+            timeout=60000,
+        )
+        context.close.assert_called_once()
+        browser.close.assert_called_once()
+
+    def test_instagram_error_page_is_marked_unavailable(self) -> None:
+        body = mock.Mock()
+        body.inner_text.return_value = "Sorry, something went wrong"
+        page = mock.Mock()
+        page.url = "https://www.instagram.com/example/reels/"
+        page.locator.return_value = body
+
+        state = ig._instagram_page_access_state(page, "example")
+
+        self.assertTrue(state["unavailable"])
+        self.assertFalse(state["media_auth_gated"])
+        self.assertFalse(state["blocked"])
+
+    def test_authenticated_discovery_closes_browser_before_playwright_exit(self) -> None:
+        events = []
+
+        class FakePlaywrightContext:
+            def __enter__(self):
+                return object()
+
+            def __exit__(self, exc_type, exc, tb):
+                events.append("playwright_exit")
+                return False
+
+        page = mock.Mock()
+        context = mock.Mock()
+        context.new_page.return_value = page
+        context.close.side_effect = lambda: events.append("context_close")
+        browser = mock.Mock()
+        browser.close.side_effect = lambda: events.append("browser_close")
+
+        with (
+            mock.patch.object(
+                ig,
+                "sync_playwright",
+                return_value=FakePlaywrightContext(),
+            ),
+            mock.patch.object(
+                ig,
+                "launch_instagram_ephemeral_context",
+                return_value=(browser, context),
+            ),
+            mock.patch.object(ig, "verify_logged_in"),
+            mock.patch.object(
+                ig,
+                "_wait_for_instagram_profile_ready",
+                return_value={
+                    "ready": True,
+                    "attempts": 1,
+                    "wait_ms": 1.0,
+                    "blocked": False,
+                    "media_auth_gated": False,
+                    "unavailable": False,
+                },
+            ),
+            mock.patch.object(
+                ig,
+                "_collect_loaded_reel_urls",
+                return_value=([], 1),
+            ),
+        ):
+            result = ig.discover_reels_authenticated("example", max_scan=15)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            events,
+            ["context_close", "browser_close", "playwright_exit"],
+        )
+
+    def test_authenticated_discovery_fails_closed_without_session(self) -> None:
+        class FakePlaywrightContext:
+            def __enter__(self):
+                return object()
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        context = mock.Mock()
+        browser = mock.Mock()
+        with (
+            mock.patch.object(
+                ig,
+                "sync_playwright",
+                return_value=FakePlaywrightContext(),
+            ),
+            mock.patch.object(
+                ig,
+                "launch_instagram_ephemeral_context",
+                return_value=(browser, context),
+            ),
+            mock.patch.object(
+                ig,
+                "verify_logged_in",
+                side_effect=RuntimeError("not authenticated"),
+            ),
+            mock.patch.object(
+                ig,
+                "_collect_loaded_reel_urls",
+            ) as collect,
+        ):
+            result = ig.discover_reels_authenticated(
+                "example",
+                max_scan=15,
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["authenticated"])
+        self.assertTrue(result["media_auth_gated"])
+        self.assertEqual(result["error"], "INSTAGRAM_SESSION_NOT_AUTHENTICATED")
+        collect.assert_not_called()
+        context.close.assert_called_once()
+        browser.close.assert_called_once()
 
     def test_default_transcription_includes_all_pending_items(self) -> None:
         manifest = {

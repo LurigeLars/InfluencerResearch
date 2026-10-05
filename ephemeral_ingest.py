@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 from datetime import datetime, timedelta, timezone
@@ -17,6 +18,7 @@ from urllib.parse import urlsplit
 
 from playwright.sync_api import sync_playwright
 
+from story_capture_readiness import wait_for_story_media_ready
 from transcription_backend import (
     DEFAULT_GEMINI_VISUAL_MODEL,
     DEFAULT_OLLAMA_BASE_URL,
@@ -35,7 +37,7 @@ from transcription_backend import (
 )
 
 
-APP_VERSION = "0.5.1"
+APP_VERSION = "0.5.2"
 STORY_URL_RE = re.compile(r"/stories/(?P<user>[^/]+)/(?P<id>\d+)/?")
 HIGHLIGHT_URL_RE = re.compile(r"/stories/highlights/(?P<id>\d+)/?")
 STRICT_STORY_ROOT_PATH_RE = re.compile(r"^/stories/[A-Za-z0-9._-]{1,64}/?$")
@@ -414,6 +416,78 @@ def visible_story_media_url(page) -> str | None:
         return None
 
 
+def _story_navigation_identity(page) -> str | None:
+    """Return a stable token for the currently visible Story frame."""
+    current_url = str(getattr(page, "url", "") or "")
+    match = STORY_URL_RE.search(current_url)
+    story_id = match.group("id") if match else None
+    media_path = _normalized_media_identity_path(visible_story_media_url(page))
+    if not story_id and not media_path:
+        return None
+    return f"story:{story_id or ''}|media:{media_path or ''}"
+
+
+def wait_for_story_advance(
+    page,
+    previous_identity: str | None,
+    *,
+    max_wait_ms: int = 1000,
+    poll_ms: int = 100,
+) -> dict[str, Any]:
+    """Wait adaptively for the Story viewer to move to the next frame.
+
+    The old path always slept 1000 ms after ArrowRight and another 900 ms at the
+    start of the next iteration. This helper keeps the same effective fallback
+    budget: if no change is observed within 1000 ms, the existing 900 ms pre-frame
+    wait still runs on the next loop.
+    """
+    started = time.perf_counter()
+    attempts = 0
+    max_wait_ms = max(0, int(max_wait_ms))
+    poll_ms = max(25, int(poll_ms))
+
+    while True:
+        attempts += 1
+        current_url = str(getattr(page, "url", "") or "")
+        if "/stories/" not in current_url:
+            return {
+                "changed": True,
+                "exited": True,
+                "timed_out": False,
+                "identity": None,
+                "attempts": attempts,
+                "wait_ms": round((time.perf_counter() - started) * 1000, 1),
+            }
+
+        current_identity = _story_navigation_identity(page)
+        if current_identity and (
+            previous_identity is None
+            or current_identity != previous_identity
+        ):
+            return {
+                "changed": True,
+                "exited": False,
+                "timed_out": False,
+                "identity": current_identity,
+                "attempts": attempts,
+                "wait_ms": round((time.perf_counter() - started) * 1000, 1),
+            }
+
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        remaining_ms = max_wait_ms - elapsed_ms
+        if remaining_ms <= 0:
+            return {
+                "changed": False,
+                "exited": False,
+                "timed_out": True,
+                "identity": current_identity,
+                "attempts": attempts,
+                "wait_ms": round((time.perf_counter() - started) * 1000, 1),
+            }
+
+        page.wait_for_timeout(min(poll_ms, max(1, int(remaining_ms))))
+
+
 def extract_story_identity(
     url: str,
     screenshot_bytes: bytes,
@@ -731,17 +805,60 @@ def capture_story_frames(
     consecutive_unchanged = 0
     previous_marker = None
     stop_reason = "OK"
+    story_frame_ready = False
+    story_advance_wait_ms = 0.0
+    story_advance_attempts = 0
+    story_advance_ready_count = 0
+    story_advance_timeout_count = 0
+    story_capture_ready_wait_ms = 0.0
+    story_capture_ready_attempts = 0
+    story_capture_ready_count = 0
+    story_capture_not_ready_count = 0
 
     for _ in range(max_items):
         if "/stories/" not in page.url:
             stop_reason = "ENDED_OR_EXITED_STORY_VIEW"
             break
 
-        page.wait_for_timeout(900)
+        if source_type != "STORY" or not story_frame_ready:
+            page.wait_for_timeout(900)
+        story_frame_ready = False
 
         if instagram_story_error_present(page):
             stop_reason = "INSTAGRAM_ERROR_PAGE_DURING_TRAVERSAL"
             break
+
+        if source_type == "STORY":
+            capture_ready = wait_for_story_media_ready(
+                page,
+                max_wait_ms=4000,
+                poll_ms=100,
+            )
+            story_capture_ready_wait_ms += float(capture_ready.get("wait_ms") or 0.0)
+            story_capture_ready_attempts += int(capture_ready.get("attempts") or 0)
+            if capture_ready.get("ready"):
+                story_capture_ready_count += 1
+            else:
+                story_capture_not_ready_count += 1
+                if capture_ready.get("exited"):
+                    stop_reason = "ENDED_OR_EXITED_STORY_VIEW"
+                    break
+                previous_identity = _story_navigation_identity(page)
+                page.keyboard.press("ArrowRight")
+                advance = wait_for_story_advance(
+                    page,
+                    previous_identity,
+                    max_wait_ms=1000,
+                    poll_ms=100,
+                )
+                story_advance_wait_ms += float(advance.get("wait_ms") or 0.0)
+                story_advance_attempts += int(advance.get("attempts") or 0)
+                if advance.get("changed"):
+                    story_advance_ready_count += 1
+                    story_frame_ready = True
+                else:
+                    story_advance_timeout_count += 1
+                continue
 
         screenshot = page.screenshot(full_page=False)
         media_url = visible_story_media_url(page) if source_type == "STORY" else None
@@ -751,6 +868,11 @@ def capture_story_frames(
             media_url,
         )
         media_identity_path = _normalized_media_identity_path(media_url)
+        navigation_identity = (
+            f"story:{story_id or ''}|media:{media_identity_path or ''}"
+            if story_id or media_identity_path
+            else None
+        )
         identity_aliases_retired += len(
             retire_root_media_aliases_for_numeric_story(
                 manifest,
@@ -816,7 +938,22 @@ def capture_story_frames(
 
         # Instagram's story viewer normally responds to right-arrow navigation.
         page.keyboard.press("ArrowRight")
-        page.wait_for_timeout(1000)
+        if source_type == "STORY":
+            advance = wait_for_story_advance(
+                page,
+                navigation_identity,
+                max_wait_ms=1000,
+                poll_ms=100,
+            )
+            story_advance_wait_ms += float(advance.get("wait_ms") or 0.0)
+            story_advance_attempts += int(advance.get("attempts") or 0)
+            if advance.get("changed"):
+                story_advance_ready_count += 1
+                story_frame_ready = True
+            else:
+                story_advance_timeout_count += 1
+        else:
+            page.wait_for_timeout(1000)
 
     return {
         "captured_new": captured_new,
@@ -825,6 +962,14 @@ def capture_story_frames(
         "identity_aliases_retired": identity_aliases_retired,
         "visited_item_keys": visited_item_keys,
         "visited_frames": visited,
+        "story_advance_wait_ms": round(story_advance_wait_ms, 1),
+        "story_advance_attempts": story_advance_attempts,
+        "story_advance_ready_count": story_advance_ready_count,
+        "story_advance_timeout_count": story_advance_timeout_count,
+        "story_capture_ready_wait_ms": round(story_capture_ready_wait_ms, 1),
+        "story_capture_ready_attempts": story_capture_ready_attempts,
+        "story_capture_ready_count": story_capture_ready_count,
+        "story_capture_not_ready_count": story_capture_not_ready_count,
         "view_confirmation_was_present": confirmation_was_present,
         "view_confirmation_dismissed": confirmation_dismissed,
         "reason": stop_reason,
@@ -1553,7 +1698,9 @@ def run_ytdlp(context, root: Path, creator: str, source_type: str, source_url: s
     video_dir = root / "output" / creator / source_dir / "videos"
     video_dir.mkdir(parents=True, exist_ok=True)
 
-    cookie_path = secret_dir() / "instagram_ephemeral_ytdlp_cookies.txt"
+    fd, cookie_path_raw = tempfile.mkstemp(prefix="instagram_ephemeral_ytdlp_", suffix=".txt")
+    os.close(fd)
+    cookie_path = Path(cookie_path_raw)
     write_netscape_cookiefile(context, cookie_path)
 
     cmd = [
@@ -2028,6 +2175,32 @@ def run_one(
             "total_ms": round((time.perf_counter() - run_clock) * 1000, 1),
             "browser_total_ms": round(browser_total_ms, 1),
             "capture_ms": round(capture_duration_ms, 1),
+            "story_advance_wait_ms": round(
+                float(capture.get("story_advance_wait_ms") or 0.0),
+                1,
+            ),
+            "story_advance_attempts": int(
+                capture.get("story_advance_attempts") or 0
+            ),
+            "story_advance_ready_count": int(
+                capture.get("story_advance_ready_count") or 0
+            ),
+            "story_advance_timeout_count": int(
+                capture.get("story_advance_timeout_count") or 0
+            ),
+            "story_capture_ready_wait_ms": round(
+                float(capture.get("story_capture_ready_wait_ms") or 0.0),
+                1,
+            ),
+            "story_capture_ready_attempts": int(
+                capture.get("story_capture_ready_attempts") or 0
+            ),
+            "story_capture_ready_count": int(
+                capture.get("story_capture_ready_count") or 0
+            ),
+            "story_capture_not_ready_count": int(
+                capture.get("story_capture_not_ready_count") or 0
+            ),
             "ytdlp_ms": round(ytdlp_duration_ms, 1),
             "visual_enrichment_ms": round(visual_enrichment_duration_ms, 1),
             "transcription_ms": round(transcription_duration_ms, 1),

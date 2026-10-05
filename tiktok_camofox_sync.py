@@ -29,28 +29,29 @@ from transcription_backend import extract_visible_text_gemini, transcribe_video
 from video_visual_evidence import VISUAL_REVIEW_POLICY_VERSION, capture_local_video_visual_evidence
 
 
-APP_VERSION = "0.8.10"
+APP_VERSION = "0.8.11"
 CONTENT_EXTRACTION_VERSION = 1
 MIN_ANALYSIS_TRANSCRIPT_WORDS = 8
 MIN_ANALYSIS_TRANSCRIPT_CHARS = 48
 CAMOFOX_FALLBACK_EXPECTED_NODE_VERSION = "v22.23.2"
 CAMOFOX_FALLBACK_EXPECTED_CAMOFOX_VERSION = "1.17.0"
+CAMOFOX_CONTAINER_EXPECTED_CAMOFOX_VERSION = "1.18.0"
 CAMOFOX_FALLBACK_EXPECTED_CAMOUFOX_JS_VERSION = "0.11.5"
 CAMOFOX_FALLBACK_EXPECTED_GIT_BLOBS = {
-    "package.json": "0360fa0f47b7048903768c19ae14591a1b124519",
+    "package.json": "11dc4ab85830d21042dd38dd8be997deb60ac008",
     "camofox.config.json": "da28c876d8864f3f25e44a2dc813c48e1e82ed9f",
-    "server.js": "80d5190990c06166aa0df257d7d6da98a39a2221",
-    "lib/auth.js": "cc881a14207191ef84382cf940b75bc3e9e8100d",
-    "lib/config.js": "5f5a6f845f62ac17a99e6ee5c5f743f75aadef88",
-    "lib/downloads.js": "bf1697b8dcc329d42151bce5d36222991ca67ad0",
+    "server.js": "ddee8624516ae414a5cb835ebc4741825b437989",
+    "lib/auth.js": "9f3985b01c41d41e10cfa48ca15224ac47ad58c1",
+    "lib/config.js": "4c86f82f5acd564c299bf1fbed3c811ecb079a40",
+    "lib/downloads.js": "83cd9a6b93d67a12d81f67d77a4a440f497d899b",
     "lib/persistence.js": "c8c6ffc70bdbac6c8b453ef1c91b6fbc88aded66",
     "lib/plugins.js": "282eeb37e434bb384b77916fbe15c1c44bf9dbf6",
     "lib/launcher.js": "faa50e51a94abdd6c817c116b43542287ef6f039",
-    "lib/camoufox-executable.js": "142f16922c6e8ad6a9b0d02488f0350009b0eeee",
+    "lib/camoufox-executable.js": "3fd06e95bd328a81843c2af2dc22f7bc7e73a41a",
     "plugins/persistence/index.js": "7c5199d3b00c39325b660699581f4298a334808e",
 }
 CAMOFOX_FALLBACK_SOURCE_COMMIT = "389c996ae3c7d42e539295a336ee6f975847f066"
-CAMOFOX_CONTAINER_SOURCE_COMMIT = "011faad7a88797e780556321d328bdd00b8f68b7"
+CAMOFOX_CONTAINER_SOURCE_COMMIT = "6916ebccec152f940d2ed1d63c6ce080c5c4abaa"
 CAMOUFOX_JS_SOURCE_COMMIT = "3fe80d8448653d8dc1a2c186c7506f89e74c4ed4"
 CAMOFOX_ACCEPTED_ROOT_PACKAGE_NAME = "influencerresearch-camofox-runtime"
 CAMOFOX_ACCEPTED_ROOT_DEPENDENCIES = {
@@ -81,9 +82,21 @@ CAMOUFOX_BROWSER_EXECUTABLE_SHA256 = {
 }
 
 _CAMOFOX_FALLBACK_SERVER: dict[str, Any] | None = None
+_CAMOFOX_PUBLIC_PROXY_SERVER: dict[str, Any] | None = None
+_CAMOFOX_PROXY_USERS: set[str] = set()
+_CAMOFOX_PROXY_ROUTE_LOCK = threading.Lock()
+_CAMOFOX_PROXY_METRICS_LOCK = threading.Lock()
 _TIKTOK_RUN_LOCK_HANDLE: Any | None = None
 _TIKTOK_RUN_LOCK_GUARD = threading.Lock()
 _NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+_CAMOFOX_PROXY_METRIC_KEYS = (
+    "direct_blocked",
+    "proxy_attempts",
+    "proxy_success",
+    "proxy_exhausted",
+    "proxy_unavailable",
+)
 
 
 def utc_now() -> str:
@@ -198,14 +211,107 @@ class CamoFoxHttpError(RuntimeError):
         super().__init__(f"CamoFox HTTP {self.status} {path}:{suffix} {detail[:1000]}".strip())
 
 
-def request_json(method: str, path: str, body: dict | None = None, timeout: int = 30) -> Any:
-    """Use the constrained Camofox browser service for TikTok discovery/metadata.
+def _public_proxy_metrics_path() -> Path:
+    return _runtime_dir() / "camofox_public_proxy_metrics.json"
 
-    Only explicitly retryable tab-admission/browser-lifecycle failures are
-    retried, at most twice, against the same overall timeout budget.
-    """
-    deadline = time.monotonic() + max(0.1, float(timeout))
-    server = _ensure_fallback_server(deadline=deadline)
+
+def _read_public_proxy_metrics() -> dict[str, int]:
+    raw: Any = {}
+    path = _public_proxy_metrics_path()
+    if path.is_file():
+        with contextlib.suppress(OSError, json.JSONDecodeError):
+            raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raw = {}
+    out: dict[str, int] = {}
+    for key in _CAMOFOX_PROXY_METRIC_KEYS:
+        try:
+            value = int(raw.get(key, 0))
+        except (TypeError, ValueError):
+            value = 0
+        out[key] = max(0, value)
+    return out
+
+
+def _increment_public_proxy_metric(key: str, by: int = 1) -> None:
+    if key not in _CAMOFOX_PROXY_METRIC_KEYS:
+        raise ValueError("Unknown public proxy metric")
+    with _CAMOFOX_PROXY_METRICS_LOCK:
+        metrics = _read_public_proxy_metrics()
+        metrics[key] = max(0, int(metrics[key]) + int(by))
+        atomic_json(_public_proxy_metrics_path(), metrics)
+
+
+def _proxy_hosts() -> tuple[str, ...]:
+    raw = os.environ.get(
+        "INFLUENCER_RESEARCH_CAMOFOX_PROXY_HOSTS",
+        "tiktok.com,instagram.com",
+    )
+    return tuple(
+        host.strip().casefold().rstrip(".")
+        for host in raw.split(",")
+        if host.strip()
+    )
+
+
+def _public_proxy_attempts() -> int:
+    raw = os.environ.get("INFLUENCER_RESEARCH_CAMOFOX_PROXY_ATTEMPTS", "3")
+    try:
+        value = int(raw)
+    except ValueError:
+        value = 3
+    return min(5, max(1, value))
+
+
+def _public_proxy_eligible_url(value: Any) -> bool:
+    try:
+        parsed = urllib.parse.urlparse(str(value or "").strip())
+    except ValueError:
+        return False
+    if parsed.scheme.casefold() not in {"http", "https"}:
+        return False
+    if parsed.username or parsed.password or not parsed.hostname:
+        return False
+    hostname = parsed.hostname.casefold().rstrip(".")
+    return any(hostname == host or hostname.endswith("." + host) for host in _proxy_hosts())
+
+
+def _request_user_id(path: str, body: dict | None) -> str | None:
+    if isinstance(body, dict):
+        value = str(body.get("userId") or "").strip()
+        if value:
+            return value
+    parsed = urllib.parse.urlsplit(path)
+    values = urllib.parse.parse_qs(parsed.query).get("userId") or []
+    if values and str(values[0]).strip():
+        return str(values[0]).strip()
+    match = re.fullmatch(r"/sessions/([^/?]+)", parsed.path)
+    if match:
+        return urllib.parse.unquote(match.group(1))
+    return None
+
+
+def _target_http_status(value: Any) -> int | None:
+    if not isinstance(value, dict):
+        return None
+    raw = value.get("httpStatus")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _request_on_server(
+    server: dict[str, Any],
+    method: str,
+    path: str,
+    body: dict | None,
+    *,
+    deadline: float,
+    timeout_cap: float,
+) -> Any:
     max_attempts = 3 if method.upper() == "POST" and path == "/tabs" else 1
     retry_codes = {"admission_rejected", "browser_unavailable", "session_expired"}
 
@@ -217,7 +323,7 @@ def request_json(method: str, path: str, body: dict | None = None, timeout: int 
                 path,
                 body,
                 deadline=deadline,
-                timeout_cap=max(0.1, float(timeout)),
+                timeout_cap=timeout_cap,
             )
         except CamoFoxHttpError as exc:
             should_retry = (
@@ -236,10 +342,133 @@ def request_json(method: str, path: str, body: dict | None = None, timeout: int 
     raise RuntimeError("unreachable CamoFox request retry state")
 
 
+def _cleanup_server_session(
+    server: dict[str, Any],
+    user_id: str,
+    *,
+    deadline: float,
+) -> None:
+    with contextlib.suppress(Exception):
+        _fallback_request_json(
+            server,
+            "DELETE",
+            f"/sessions/{urllib.parse.quote(user_id, safe='')}",
+            deadline=deadline,
+            timeout_cap=2.0,
+        )
+
+
+def _proxy_user_enabled(user_id: str | None) -> bool:
+    if not user_id:
+        return False
+    with _CAMOFOX_PROXY_ROUTE_LOCK:
+        return user_id in _CAMOFOX_PROXY_USERS
+
+
+def _set_proxy_user(user_id: str, enabled: bool) -> None:
+    with _CAMOFOX_PROXY_ROUTE_LOCK:
+        if enabled:
+            _CAMOFOX_PROXY_USERS.add(user_id)
+        else:
+            _CAMOFOX_PROXY_USERS.discard(user_id)
+
+
+def request_json(method: str, path: str, body: dict | None = None, timeout: int = 30) -> Any:
+    """Use direct Camofox first and proxy only blocked public browser discovery.
+
+    A fresh, isolated proxied Camofox runtime is eligible only for initial
+    public TikTok/Instagram tab navigation that returns target HTTP 403/429.
+    Target cookies/auth state are never copied from the direct runtime.
+    """
+    deadline = time.monotonic() + max(0.1, float(timeout))
+    timeout_cap = max(0.1, float(timeout))
+    user_id = _request_user_id(path, body)
+    method_upper = method.upper()
+
+    if _proxy_user_enabled(user_id):
+        try:
+            proxy_server = _ensure_public_proxy_server(deadline=deadline)
+            result = _request_on_server(
+                proxy_server,
+                method,
+                path,
+                body,
+                deadline=deadline,
+                timeout_cap=timeout_cap,
+            )
+        except Exception:
+            if method_upper == "DELETE" and path.startswith("/sessions/") and user_id:
+                _set_proxy_user(user_id, False)
+            raise
+        if method_upper == "DELETE" and path.startswith("/sessions/") and user_id:
+            _set_proxy_user(user_id, False)
+        return result
+
+    direct_server = _ensure_fallback_server(deadline=deadline)
+    direct_result = _request_on_server(
+        direct_server,
+        method,
+        path,
+        body,
+        deadline=deadline,
+        timeout_cap=timeout_cap,
+    )
+
+    eligible_create = (
+        method_upper == "POST"
+        and path == "/tabs"
+        and isinstance(body, dict)
+        and user_id is not None
+        and _public_proxy_eligible_url(body.get("url"))
+    )
+    if not eligible_create or _target_http_status(direct_result) not in {403, 429}:
+        return direct_result
+
+    _increment_public_proxy_metric("direct_blocked")
+
+    try:
+        proxy_server = _ensure_public_proxy_server(deadline=deadline)
+    except Exception:
+        _increment_public_proxy_metric("proxy_unavailable")
+        return direct_result
+
+    final_result: Any = direct_result
+    attempts = _public_proxy_attempts()
+    for attempt in range(attempts):
+        try:
+            final_result = _request_on_server(
+                proxy_server,
+                method,
+                path,
+                body,
+                deadline=deadline,
+                timeout_cap=timeout_cap,
+            )
+        except Exception:
+            _cleanup_server_session(proxy_server, user_id, deadline=deadline)
+            _increment_public_proxy_metric("proxy_unavailable")
+            return direct_result
+
+        _increment_public_proxy_metric("proxy_attempts")
+        status = _target_http_status(final_result)
+        if status not in {403, 429}:
+            _cleanup_server_session(direct_server, user_id, deadline=deadline)
+            _set_proxy_user(user_id, True)
+            _increment_public_proxy_metric("proxy_success")
+            return final_result
+
+        if attempt + 1 < attempts:
+            _cleanup_server_session(proxy_server, user_id, deadline=deadline)
+
+    _cleanup_server_session(direct_server, user_id, deadline=deadline)
+    _set_proxy_user(user_id, True)
+    _increment_public_proxy_metric("proxy_exhausted")
+    return final_result
+
 def _runtime_is_available(server: dict[str, Any] | None) -> bool:
     if not server:
         return False
-    if server.get("runtime_mode") == "container":
+    if server.get("runtime_mode") in {"container", "container_proxy"}:
         return True
     proc = server.get("proc")
     return proc is not None and proc.poll() is None
@@ -292,9 +521,13 @@ def start_server() -> dict:
 
 def stop_server(*, deadline: float | None = None) -> None:
     """Release this run's Camofox handle; legacy-local mode also stops its process."""
+    global _CAMOFOX_PUBLIC_PROXY_SERVER
     end = deadline if deadline is not None else time.monotonic() + 8.0
     try:
         _stop_fallback_server(force=False, deadline=end)
+        _CAMOFOX_PUBLIC_PROXY_SERVER = None
+        with _CAMOFOX_PROXY_ROUTE_LOCK:
+            _CAMOFOX_PROXY_USERS.clear()
     finally:
         _release_tiktok_run_lock()
 
@@ -336,6 +569,74 @@ def flatten_video_links(obj: Any, handle: str) -> list[str]:
     return out
 
 
+def _wait_for_tiktok_profile_ready(
+    tab_id: str,
+    *,
+    user_id: str,
+    target: int = 1,
+    max_wait_seconds: float = 3.0,
+    poll_seconds: float = 0.25,
+) -> dict[str, Any]:
+    started = time.perf_counter()
+    deadline = started + max(0.0, max_wait_seconds)
+    attempts = 0
+    last_error = None
+    last_value: dict[str, Any] | None = None
+    expression = """(() => {
+      const videoLinks = Array.from(
+        document.querySelectorAll('a[href*="/video/"]')
+      ).map(a => a.href).filter(Boolean).slice(0, 250);
+      return {
+        readyState: document.readyState,
+        bodyTextLength: (document.body?.innerText || '').length,
+        videoLinkCount: videoLinks.length,
+        videoLinks,
+        href: location.href
+      };
+    })()"""
+    while True:
+        attempts += 1
+        try:
+            response = request_json(
+                "POST",
+                f"/tabs/{urllib.parse.quote(tab_id)}/evaluate",
+                {"userId": user_id, "expression": expression},
+                timeout=20,
+            )
+            value = response.get("result") if isinstance(response, dict) else None
+            if isinstance(value, dict):
+                last_value = value
+                ready_state = str(value.get("readyState") or "").casefold()
+                link_count = int(value.get("videoLinkCount") or 0)
+                target_reached = link_count >= max(1, int(target))
+                if target_reached:
+                    return {
+                        "ready": True,
+                        "target_reached": True,
+                        "attempts": attempts,
+                        "wait_ms": round((time.perf_counter() - started) * 1000, 1),
+                        "last_value": last_value,
+                        "last_error": last_error,
+                    }
+        except Exception as exc:
+            last_error = f"{type(exc).__name__}: {exc}"[:1000]
+
+        remaining = deadline - time.perf_counter()
+        if remaining <= 0:
+            return {
+                "ready": bool(
+                    isinstance(last_value, dict)
+                    and int(last_value.get("videoLinkCount") or 0) > 0
+                ),
+                "target_reached": False,
+                "attempts": attempts,
+                "wait_ms": round((time.perf_counter() - started) * 1000, 1),
+                "last_value": last_value,
+                "last_error": last_error,
+            }
+        time.sleep(min(poll_seconds, remaining))
+
+
 def collect_video_urls(
     tab_id: str,
     *,
@@ -343,35 +644,84 @@ def collect_video_urls(
     handle: str,
     target: int,
     max_scrolls: int = 120,
+    initial_urls: list[str] | None = None,
 ) -> tuple[list[str], dict]:
     found: list[str] = []
     seen: set[str] = set()
+    for url in initial_urls or []:
+        clean = str(url or "").split("?")[0].rstrip("/")
+        match = TIKTOK_VIDEO_URL_RE.fullmatch(clean)
+        if not match:
+            continue
+        if match.group("handle").casefold() != handle.casefold():
+            continue
+        if clean not in seen:
+            seen.add(clean)
+            found.append(clean)
+    initial_url_count = len(found)
     stagnant = 0
     rounds = 0
     links_endpoint_errors = 0
+    links_calls = 0
+    snapshot_calls = 0
+    links_ms = 0.0
+    snapshot_ms = 0.0
+    scroll_ms = 0.0
+
+    if len(found) >= target:
+        return found[:target], {
+            "target": target,
+            "found": len(found[:target]),
+            "rounds": 0,
+            "stagnant_rounds_at_end": 0,
+            "links_endpoint_errors": 0,
+            "links_calls": 0,
+            "snapshot_calls": 0,
+            "links_ms": 0.0,
+            "snapshot_ms": 0.0,
+            "scroll_ms": 0.0,
+            "initial_url_count": initial_url_count,
+            "source": "readiness_dom",
+        }
 
     for round_idx in range(max_scrolls + 1):
         rounds += 1
         before = len(found)
 
-        snap = request_json(
-            "GET",
-            f"/tabs/{urllib.parse.quote(tab_id)}/snapshot?"
-            + urllib.parse.urlencode({"userId": user_id, "format": "text"}),
-            timeout=30,
-        )
-        candidates = flatten_video_links(snap, handle)
-
+        candidates: list[str] = []
         try:
+            links_started = time.perf_counter()
             links = request_json(
                 "GET",
                 f"/tabs/{urllib.parse.quote(tab_id)}/links?"
                 + urllib.parse.urlencode({"userId": user_id, "limit": 250}),
                 timeout=20,
             )
+            links_ms += (time.perf_counter() - links_started) * 1000
+            links_calls += 1
             candidates.extend(flatten_video_links(links, handle))
         except Exception:
             links_endpoint_errors += 1
+
+        for url in candidates:
+            clean = url.split("?")[0].rstrip("/")
+            if clean not in seen:
+                seen.add(clean)
+                found.append(clean)
+
+        if len(found) >= target:
+            break
+
+        snapshot_started = time.perf_counter()
+        snap = request_json(
+            "GET",
+            f"/tabs/{urllib.parse.quote(tab_id)}/snapshot?"
+            + urllib.parse.urlencode({"userId": user_id, "format": "text"}),
+            timeout=30,
+        )
+        snapshot_ms += (time.perf_counter() - snapshot_started) * 1000
+        snapshot_calls += 1
+        candidates = flatten_video_links(snap, handle)
 
         for url in candidates:
             clean = url.split("?")[0].rstrip("/")
@@ -390,12 +740,14 @@ def collect_video_urls(
         if stagnant >= 5:
             break
 
+        scroll_started = time.perf_counter()
         request_json(
             "POST",
             f"/tabs/{urllib.parse.quote(tab_id)}/scroll",
             {"userId": user_id, "direction": "down", "amount": 1200},
             timeout=20,
         )
+        scroll_ms += (time.perf_counter() - scroll_started) * 1000
         time.sleep(1.0)
 
     return found[:target], {
@@ -404,6 +756,13 @@ def collect_video_urls(
         "rounds": rounds,
         "stagnant_rounds_at_end": stagnant,
         "links_endpoint_errors": links_endpoint_errors,
+        "links_calls": links_calls,
+        "snapshot_calls": snapshot_calls,
+        "links_ms": round(links_ms, 1),
+        "snapshot_ms": round(snapshot_ms, 1),
+        "scroll_ms": round(scroll_ms, 1),
+        "initial_url_count": initial_url_count,
+        "source": "browser_scan",
     }
 
 
@@ -968,7 +1327,7 @@ def _ensure_container_camofox_server(*, deadline: float) -> dict[str, Any]:
         "provenance": {
             "runtime_mode": "container",
             "source_commit": CAMOFOX_CONTAINER_SOURCE_COMMIT,
-            "camofox_version": CAMOFOX_FALLBACK_EXPECTED_CAMOFOX_VERSION,
+            "camofox_version": CAMOFOX_CONTAINER_EXPECTED_CAMOFOX_VERSION,
             "camoufox_js_version": CAMOFOX_FALLBACK_EXPECTED_CAMOUFOX_JS_VERSION,
             "browser": dict(CAMOUFOX_BROWSER_VERSION_FIELDS),
         },
@@ -1000,6 +1359,78 @@ def _ensure_container_camofox_server(*, deadline: float) -> dict[str, Any]:
         deadline=deadline,
         timeout_cap=2.0,
     )
+    return server
+
+
+def _ensure_public_proxy_server(*, deadline: float) -> dict[str, Any]:
+    global _CAMOFOX_PUBLIC_PROXY_SERVER
+    mode = (
+        os.environ.get("INFLUENCER_RESEARCH_CAMOFOX_MODE", "container")
+        .strip()
+        .casefold()
+    )
+    if mode != "container":
+        raise RuntimeError("Public proxy fallback is available only in container mode")
+
+    current = _CAMOFOX_PUBLIC_PROXY_SERVER
+    if (
+        current
+        and current.get("runtime_mode") == "container_proxy"
+        and _fallback_health(current, deadline=deadline)
+    ):
+        return current
+
+    cfg = camofox_container_config.load_config()
+    base_url = str(cfg.get("proxy_base_url") or "").strip()
+    if not base_url:
+        raise RuntimeError("Public proxy Camofox runtime is not configured")
+
+    server: dict[str, Any] = {
+        "proc": None,
+        "root": None,
+        "profile_dir": None,
+        "cookies_dir": None,
+        "base_url": base_url,
+        "port": int(urllib.parse.urlparse(base_url).port or 9377),
+        "access_key": str(cfg["access_key"]),
+        "admin_key": str(cfg["admin_key"]),
+        "log_handle": None,
+        "runtime_mode": "container_proxy",
+        "provenance": {
+            "runtime_mode": "container_proxy",
+            "source_commit": CAMOFOX_CONTAINER_SOURCE_COMMIT,
+            "camofox_version": CAMOFOX_CONTAINER_EXPECTED_CAMOFOX_VERSION,
+            "camoufox_js_version": CAMOFOX_FALLBACK_EXPECTED_CAMOUFOX_JS_VERSION,
+            "browser": dict(CAMOUFOX_BROWSER_VERSION_FIELDS),
+        },
+    }
+    if not _fallback_health(server, deadline=deadline):
+        raise RuntimeError("Public proxy Camofox service is not healthy")
+
+    unauth = urllib.request.Request(
+        f"{server['base_url']}/tabs?userId=container-proxy-auth-probe",
+        method="GET",
+        headers={"Accept": "application/json"},
+    )
+    try:
+        with _NO_PROXY_OPENER.open(
+            unauth, timeout=_remaining_timeout(deadline, 2.0)
+        ):
+            raise RuntimeError("Public proxy Camofox access-key gate is not enforced")
+    except urllib.error.HTTPError as exc:
+        if exc.code != 401:
+            raise RuntimeError(
+                f"Unexpected unauthenticated proxy Camofox status: {exc.code}"
+            ) from exc
+
+    _fallback_request_json(
+        server,
+        "GET",
+        "/tabs?userId=container-proxy-auth-probe",
+        deadline=deadline,
+        timeout_cap=2.0,
+    )
+    _CAMOFOX_PUBLIC_PROXY_SERVER = server
     return server
 
 
@@ -1647,23 +2078,53 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
         session_key = f"{creator_key}-feed"
         tab_id = None
         try:
+            tab_started = time.perf_counter()
             tab = request_json("POST", "/tabs", {
                 "userId": user_id,
                 "sessionKey": session_key,
                 "url": profile_url,
                 "trace": False,
             }, timeout=60)
+            tab_create_ms = round((time.perf_counter() - tab_started) * 1000, 1)
             if not isinstance(tab, dict) or not tab.get("tabId"):
                 raise RuntimeError(f"Unexpected CamoFox create-tab response: {tab}")
             tab_id = str(tab["tabId"])
-            time.sleep(3)
+            readiness = _wait_for_tiktok_profile_ready(
+                tab_id,
+                user_id=user_id,
+                target=discovery_target,
+            )
 
+            readiness_value = (
+                readiness.get("last_value")
+                if isinstance(readiness.get("last_value"), dict)
+                else {}
+            )
+            readiness_urls = [
+                str(url)
+                for url in (readiness_value.get("videoLinks") or [])
+                if str(url).strip()
+            ]
             discovered, discovery_diag = collect_video_urls(
                 tab_id,
                 user_id=user_id,
                 handle=handle,
                 target=discovery_target,
+                initial_urls=readiness_urls,
             )
+            discovery_diag["tab_create_ms"] = tab_create_ms
+            discovery_diag["profile_ready_wait_ms"] = round(
+                float(readiness.get("wait_ms") or 0.0),
+                1,
+            )
+            discovery_diag["profile_ready_attempts"] = int(
+                readiness.get("attempts") or 0
+            )
+            discovery_diag["profile_ready"] = bool(readiness.get("ready"))
+            discovery_diag["profile_ready_target_reached"] = bool(
+                readiness.get("target_reached")
+            )
+            discovery_diag["readiness_seed_count"] = len(readiness_urls)
             catalog = merge_catalog(catalog, discovered, profile_url=profile_url)
             atomic_json(catalog_path, catalog)
         finally:
