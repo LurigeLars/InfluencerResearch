@@ -397,9 +397,14 @@ def transcribe_gemini_bounded(
                 "Gemini transcription exceeded the hard provider deadline."
             ) from exc
 
+        worker_lines = [
+            line.strip()
+            for line in (proc.stdout or "").splitlines()
+            if line.strip()
+        ]
         try:
-            payload = json.loads((proc.stdout or "").strip())
-        except json.JSONDecodeError as exc:
+            payload = json.loads(worker_lines[-1] if worker_lines else "")
+        except (IndexError, json.JSONDecodeError) as exc:
             raise RuntimeError("Gemini transcription worker returned invalid output.") from exc
         if proc.returncode != 0 or not payload.get("ok"):
             raise RuntimeError(
