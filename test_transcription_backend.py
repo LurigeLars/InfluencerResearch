@@ -43,6 +43,14 @@ class TranscriptionBackendTests(unittest.TestCase):
         self.assertEqual(tb.bounded_story_gemini_timeout_ms(1_000), 5_000)
         self.assertEqual(tb.bounded_story_gemini_timeout_ms(90_000), 30_000)
 
+    def test_transcription_provider_limits_are_stricter_than_generic_gemini(self) -> None:
+        self.assertEqual(tb.bounded_transcription_gemini_timeout_ms(), 15_000)
+        self.assertEqual(tb.bounded_transcription_gemini_timeout_ms(1_000), 5_000)
+        self.assertEqual(tb.bounded_transcription_gemini_timeout_ms(90_000), 30_000)
+        self.assertEqual(tb.bounded_transcription_audio_timeout_seconds(), 60)
+        self.assertEqual(tb.bounded_transcription_audio_timeout_seconds(1), 15)
+        self.assertEqual(tb.bounded_transcription_audio_timeout_seconds(999), 120)
+
     def test_story_image_path_uses_inline_bytes_not_files_api(self) -> None:
         source = Path(tb.__file__).read_text(encoding="utf-8")
         start = source.index("def extract_image_evidence_gemini(")
@@ -139,6 +147,31 @@ class TranscriptionBackendTests(unittest.TestCase):
             result = tb.transcribe_video(Path("video.mp4"), {"provider": "auto"})
         self.assertEqual(result["provider"], "faster-whisper")
         local.assert_called_once()
+
+    def test_auto_passes_bounded_transcription_limits_to_gemini(self) -> None:
+        with patch.object(tb, "read_gemini_api_key", return_value="secret"), patch.object(
+            tb,
+            "transcribe_gemini",
+            return_value={"provider": "gemini", "text": "ok"},
+        ) as gemini:
+            result = tb.transcribe_video(
+                Path("video.mp4"),
+                {
+                    "provider": "auto",
+                    "gemini_transcription_timeout_ms": 999_999,
+                    "gemini_transcription_retry_attempts": 99,
+                    "audio_extract_timeout_seconds": 999,
+                },
+            )
+
+        self.assertEqual(result["provider"], "gemini")
+        gemini.assert_called_once_with(
+            Path("video.mp4"),
+            model=tb.DEFAULT_GEMINI_MODEL,
+            timeout_ms=30_000,
+            retry_attempts=2,
+            audio_timeout_seconds=120,
+        )
 
     def test_auto_falls_back_when_gemini_fails(self) -> None:
         with patch.object(tb, "read_gemini_api_key", return_value="secret"), patch.object(
