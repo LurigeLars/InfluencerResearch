@@ -14,7 +14,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import camofox_container as camofox_container_config
 import tiktok_camofox_sync as tts
 
 
