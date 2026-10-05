@@ -109,6 +109,24 @@ class LocalRuntimeNamespaceTests(unittest.TestCase):
         smoke = runtime.split('"Smoke" {', 1)[1]
         self.assertIn("Import-AvailableRuntimeSecrets", smoke)
 
+    def test_camofox_restart_secret_recovery_is_supervisor_backed(self) -> None:
+        runtime = (BASE / "scripts/runtime.ps1").read_text(encoding="utf-8")
+        self.assertIn('"RehydrateSecrets"', runtime)
+        self.assertIn("function Rehydrate-CamofoxRuntimeSecrets", runtime)
+        self.assertIn("function Update-RuntimeSupervisorConfig", runtime)
+        self.assertIn('name = "influencerresearch"', runtime)
+        self.assertIn('arguments = @("RehydrateSecrets")', runtime)
+        self.assertIn("/run/camofox-secrets/access_key", runtime)
+        self.assertIn("/run/camofox-proxy-secrets/proxy_password", runtime)
+        self.assertIn("/run/influencerresearch-secrets/camofox_access_key", runtime)
+        self.assertIn("Invoke-DockerWithExactStdin", runtime)
+
+    def test_restart_recovery_does_not_put_secrets_in_docker_arguments(self) -> None:
+        runtime = (BASE / "scripts/runtime.ps1").read_text(encoding="utf-8")
+        self.assertIn('$process.StandardInput.Write($InputText)', runtime)
+        self.assertIn('"exec", "-i", $Container', runtime)
+        self.assertNotIn('"sh", "-c", "printf', runtime)
+
     def test_tiktok_host_fallback_uses_new_namespace(self) -> None:
         text = (BASE / "tiktok_camofox_sync.py").read_text(encoding="utf-8")
         self.assertIn(
