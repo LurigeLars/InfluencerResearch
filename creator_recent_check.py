@@ -2898,16 +2898,34 @@ def _main_impl() -> int:
             for item in recent_content_items
             if item.get("item_key")
         }
-        analysis_missing_items = [
+        analysis_state_by_key: dict[str, str] = {}
+        for coverage_key, state_name in (
+            ("queued", "QUEUED"),
+            ("explicit_nonready", "NONREADY"),
+            ("finalized", "FINALIZED"),
+            ("duplicate", "DUPLICATE"),
+            ("missing", "MISSING"),
+        ):
+            for item_key in analysis_candidate_coverage[coverage_key]:
+                analysis_state_by_key[item_key] = state_name
+        analysis_candidate_states = [
             {
                 "item_key": item_key,
                 "creator_key": (recent_content_by_key.get(item_key) or {}).get("creator_key"),
                 "platform": (recent_content_by_key.get(item_key) or {}).get("platform"),
                 "source_id": (recent_content_by_key.get(item_key) or {}).get("source_id"),
                 "published_at": (recent_content_by_key.get(item_key) or {}).get("published_at"),
+                "analysis_state": analysis_state_by_key.get(item_key, "MISSING"),
+            }
+            for item_key in sorted(analysis_candidate_keys)
+        ]
+        analysis_missing_items = [
+            {
+                **item,
                 "reason": "NOT_QUEUED_NOT_NONREADY_NOT_FINALIZED_NOT_DUPLICATE",
             }
-            for item_key in analysis_candidate_coverage["missing"]
+            for item in analysis_candidate_states
+            if item["analysis_state"] == "MISSING"
         ]
         if analysis_missing_items:
             errors.append({
@@ -3161,6 +3179,7 @@ def _main_impl() -> int:
                 key: len(value)
                 for key, value in analysis_candidate_coverage.items()
             },
+            "analysis_candidate_states": analysis_candidate_states[:100],
             "analysis_readiness_complete": analysis_readiness_complete,
             "story_visual_enrichment": story_visual_enrichment,
             "insufficient_content_count": len(insufficient_recent),
