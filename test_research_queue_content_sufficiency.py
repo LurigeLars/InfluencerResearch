@@ -108,7 +108,7 @@ class ResearchQueueContentSufficiencyTests(unittest.TestCase):
             self.assertEqual(queue["items"][0]["analysis_content_reason"], "TRANSCRIPT")
 
 
-    def test_explicit_include_creator_bypasses_screening_allowlist_only_for_that_run(self) -> None:
+    def test_exact_must_include_bypasses_screening_allowlist_only_for_that_item(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             transcript = root / "output" / "thetradingfraternity" / "youtube" / "transcripts" / "abc.txt"
@@ -160,8 +160,8 @@ class ResearchQueueContentSufficiencyTests(unittest.TestCase):
                     "research_queue.py",
                     "--root",
                     str(root),
-                    "--include-creator",
-                    "thetradingfraternity",
+                    "--must-include-shortcode",
+                    "yt_abc",
                 ],
             ):
                 self.assertEqual(research_queue.main(), 0)
