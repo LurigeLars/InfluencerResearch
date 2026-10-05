@@ -30,15 +30,16 @@ InfluencerResearch is a standalone research-ingestion and evaluation toolkit for
 
 ## Runtime architecture
 
-The canonical runtime is Docker Compose with two always-on services plus one optional public-proxy browser service on the same private `runtime` network:
+The canonical runtime is Docker Compose with a networkless secret-holder, two always-on application services, and one optional public-proxy browser service:
 
+- `secret-holder` — networkless non-root helper that receives DPAPI-decrypted values from the host and writes them into tmpfs-backed Docker volumes.
 - `influencerresearch` — Python 3.12 workers plus the official MCP Python SDK. Streamable HTTP MCP is published to the Windows host only at `http://127.0.0.1:8770/mcp`.
 - `camofox` — direct isolated Camofox/Camoufox browser service reachable only inside Compose at `http://camofox:9377`.
 - `camofox-public-proxy` — optional internal-only Camofox service enabled by the `public-proxy` profile when the existing Firecrawl Webshare DPAPI credentials are available.
 
 Neither Camofox service has a host-published port or MCP surface. Public TikTok/Instagram browser discovery goes direct first; only target HTTP 403/429 on allowlisted hosts triggers up to three bounded proxy attempts. Successful takeover keeps that browser session on the proxy runtime. Authenticated Instagram Playwright ingestion and TikTok media downloads do not use this browser proxy fallback.
 
-Persistent research data uses narrow bind mounts for the existing parent-root `control/`, `state/`, `output/` and `logs/` directories. Browser cache uses the `influencerresearch-runtime` Docker volume. Camofox service keys, the Instagram portable session export and the Gemini API key are protected on the Windows host with DPAPI and injected only into per-container tmpfs at runtime. The optional browser fallback reuses the DPAPI-protected Webshare username/password from `%LOCALAPPDATA%\FirecrawlLocal\secrets`; those credentials are injected only into proxy-Camofox and are never exposed to direct Camofox.
+Persistent research data uses narrow bind mounts for the existing parent-root `control/`, `state/`, `output/` and `logs/` directories. Browser cache uses the `influencerresearch-runtime` Docker volume. Camofox service keys, the Instagram portable session export and the Gemini API key are protected on the Windows host with DPAPI and materialized only into tmpfs-backed secret volumes through the networkless secret-holder. Consumer containers mount only the secret volume they need, read-only. The optional browser fallback reuses the DPAPI-protected Webshare username/password from `%LOCALAPPDATA%\FirecrawlLocal\secrets`; those credentials are exposed only to proxy-Camofox and are never exposed to direct Camofox.
 
 The runtime expects the host control directory one level above the repository (for example `<redacted-workspace>\control`). On a fresh installation, initialize the required settings file from the tracked non-secret template:
 
@@ -196,7 +197,7 @@ When the Docker runtime is already running, import/refresh the session with:
 pwsh -NoProfile -File scripts\runtime.ps1 -Action ImportInstagramAuth
 ```
 
-On `-Action Up`, the runtime decrypts the DPAPI blob in memory and streams the cookie JSON into `/run/influencerresearch-secrets/instagram_cookies.json`. That path is tmpfs-backed, so the portable Instagram session is absent from Docker container metadata and the persistent runtime volume and disappears when the container is recreated.
+On `-Action Up`, the runtime decrypts the DPAPI blob in memory and streams the cookie JSON through the networkless secret-holder into a tmpfs-backed secret volume mounted read-only at `/run/influencerresearch-secrets/instagram_cookies.json`. The session is absent from Docker container metadata and persistent disk. It survives recreation of the consumer container while the secret-holder volume remains mounted; after a Docker/tmpfs reset the runtime supervisor rehydrates it from DPAPI.
 
 ## Camofox service secrets
 
@@ -209,7 +210,7 @@ The encrypted host blobs live at:
 %LOCALAPPDATA%\InfluencerResearch\secrets\camofox_admin_key.dpapi
 ```
 
-On `runtime.ps1 -Action Up`, the host decrypts them only for the Compose startup operation. Compose `post_start` hooks write the values into tmpfs-backed files for the Python service and the Camofox service. The Camofox process exports the values only inside its own process immediately before starting the reviewed server.
+On `runtime.ps1 -Action Up`, the host decrypts them in memory and streams them into isolated tmpfs-backed secret volumes through the networkless secret-holder. The Python and Camofox services receive read-only mounts, and the Camofox process exports the values only inside its own process immediately before starting the reviewed server. The registered runtime-supervisor recovery path can rehydrate these volumes after a Docker restart without placing the plaintext values in Compose environment or container metadata.
 
 Existing installations are migrated automatically: a schema-v1 `docker-runtime.json` containing `camofox_access_key` / `camofox_admin_key` is copied into DPAPI-backed blobs, verified, and rewritten as schema v2 containing only non-secret runtime configuration such as the MCP port.
 
@@ -229,13 +230,13 @@ The encrypted DPAPI blob is written to:
 %LOCALAPPDATA%\InfluencerResearch\secrets\gemini_api_key.dpapi
 ```
 
-It is bound to the current Windows user by DPAPI. On `runtime.ps1 -Action Up`, the host decrypts the key in memory and streams it into the running container at:
+It is bound to the current Windows user by DPAPI. On `runtime.ps1 -Action Up`, the host decrypts the key in memory and streams it through the secret-holder into the tmpfs-backed secret volume mounted read-only at:
 
 ```text
 /run/influencerresearch-secrets/gemini_api_key
 ```
 
-That path is backed by tmpfs and disappears with the container. To refresh an already-running container after rotating the key:
+That path is backed by tmpfs and remains available across recreation of the consumer container while the secret-holder volume stays mounted. After a Docker/tmpfs reset the runtime supervisor rehydrates it from DPAPI. To refresh it after rotating the key:
 
 ```powershell
 pwsh -NoProfile -File scripts\runtime.ps1 -Action ImportGeminiKey
