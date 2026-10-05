@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("Up", "Redeploy", "Down", "Status", "Smoke", "InstagramPublicSmoke", "ImportInstagramAuth", "ImportGeminiKey")]
+    [ValidateSet("Up", "Redeploy", "Recover", "Down", "Status", "Smoke", "InstagramPublicSmoke", "ImportInstagramAuth", "ImportGeminiKey")]
     [string]$Action = "Up",
     [string]$InstagramProfileUrl = "https://www.instagram.com/rikatillsammans/",
     [string]$InstagramHandle = "rikatillsammans",
@@ -25,6 +25,9 @@ $FirecrawlPublicProxyUsernameDpapiPath = Join-Path $env:LOCALAPPDATA "FirecrawlL
 $FirecrawlPublicProxyPasswordDpapiPath = Join-Path $env:LOCALAPPDATA "FirecrawlLocal\secrets\public_proxy_password.dpapi"
 $InstagramDpapiPath = Join-Path $SecretDir "instagram_cookies.dpapi"
 $LegacyInstagramPath = Join-Path $SecretDir "instagram_cookies.json"
+$SupervisorConfigPath = Join-Path $env:LOCALAPPDATA "DockerLocalMCP\runtime-supervisor.local.json"
+$SecretHolder = "influencerresearch-secret-holder"
+$RuntimeScriptPath = (Resolve-Path -LiteralPath $PSCommandPath).Path
 
 New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
 New-Item -ItemType Directory -Force -Path $SecretDir | Out-Null
@@ -226,7 +229,7 @@ function Test-InfluencerResearchContainerRunning {
 }
 
 function Ensure-HostMcpPort($Config) {
-    if ($Action -notin @("Up", "Redeploy", "Smoke", "InstagramPublicSmoke")) {
+    if ($Action -notin @("Up", "Redeploy", "Recover", "Smoke", "InstagramPublicSmoke")) {
         return
     }
 
@@ -254,7 +257,7 @@ function Ensure-HostMcpPort($Config) {
     throw "MCP host port $configuredPort is already in use and no free fallback port was found in 8771-8799."
 }
 
-$needsCamofoxSecrets = $Action -in @("Up", "Redeploy", "Smoke", "InstagramPublicSmoke")
+$needsCamofoxSecrets = $Action -in @("Up", "Redeploy", "Recover", "Smoke", "InstagramPublicSmoke")
 $publicProxyConfigured = Test-PublicProxyConfigured
 
 if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
@@ -304,16 +307,67 @@ function Compose([string[]]$ComposeArgs) {
     if ($LASTEXITCODE -ne 0) { throw "docker compose failed with exit code $LASTEXITCODE" }
 }
 
-function Invoke-ComposeUp([bool]$ForceRecreate = $false) {
-    $accessWasSet = Test-Path Env:INFLUENCER_CAMOFOX_ACCESS_SECRET
-    $adminWasSet = Test-Path Env:INFLUENCER_CAMOFOX_ADMIN_SECRET
-    $proxyUserWasSet = Test-Path Env:INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET
-    $proxyPassWasSet = Test-Path Env:INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET
-    $oldAccess = if ($accessWasSet) { $env:INFLUENCER_CAMOFOX_ACCESS_SECRET } else { $null }
-    $oldAdmin = if ($adminWasSet) { $env:INFLUENCER_CAMOFOX_ADMIN_SECRET } else { $null }
-    $oldProxyUser = if ($proxyUserWasSet) { $env:INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET } else { $null }
-    $oldProxyPass = if ($proxyPassWasSet) { $env:INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET } else { $null }
+function Invoke-DockerWithExactStdin {
+    param(
+        [Parameter(Mandatory)][string]$InputText,
+        [Parameter(Mandatory)][string[]]$Arguments
+    )
 
+    $dockerCommand = Get-Command docker.exe -ErrorAction SilentlyContinue
+    if (-not $dockerCommand) {
+        $dockerCommand = Get-Command docker -ErrorAction Stop
+    }
+
+    $psi = [Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = $dockerCommand.Source
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+
+    foreach ($argument in $Arguments) {
+        [void]$psi.ArgumentList.Add([string]$argument)
+    }
+
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $psi
+    try {
+        [void]$process.Start()
+        $process.StandardInput.Write($InputText)
+        $process.StandardInput.Close()
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0) {
+            throw "Docker stdin operation failed with exit code $($process.ExitCode): $stderr"
+        }
+        return $stdout
+    }
+    finally {
+        if (-not $process.HasExited) {
+            try { $process.Kill($true) } catch {}
+        }
+        $process.Dispose()
+    }
+}
+
+function Write-SecretHolderFile([string]$Value, [string]$Path, [string]$Label) {
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        throw "$Label secret is empty."
+    }
+    if ($Path -notmatch '^/run/secret-store/(mcp|camofox|proxy)/[A-Za-z0-9_.-]+$') {
+        throw "Unexpected runtime secret path: $Path"
+    }
+
+    [void](Invoke-DockerWithExactStdin -InputText $Value -Arguments @(
+        "exec", "-i", $SecretHolder,
+        "sh", "-c",
+        "umask 027; cat > $Path"
+    ))
+}
+
+function Materialize-CamofoxRuntimeSecrets {
     $access = $null
     $admin = $null
     $proxyUser = $null
@@ -321,47 +375,43 @@ function Invoke-ComposeUp([bool]$ForceRecreate = $false) {
     try {
         $access = Get-DpapiSecretValue -Path $CamofoxAccessDpapiPath -Label "Camofox access"
         $admin = Get-DpapiSecretValue -Path $CamofoxAdminDpapiPath -Label "Camofox admin"
-        $env:INFLUENCER_CAMOFOX_ACCESS_SECRET = $access
-        $env:INFLUENCER_CAMOFOX_ADMIN_SECRET = $admin
 
-        $composeArgs = @()
+        Write-SecretHolderFile -Value $access -Path "/run/secret-store/mcp/camofox_access_key" -Label "Camofox access"
+        Write-SecretHolderFile -Value $admin -Path "/run/secret-store/mcp/camofox_admin_key" -Label "Camofox admin"
+        Write-SecretHolderFile -Value $access -Path "/run/secret-store/camofox/access_key" -Label "Camofox access"
+        Write-SecretHolderFile -Value $admin -Path "/run/secret-store/camofox/admin_key" -Label "Camofox admin"
+
         if ($publicProxyConfigured) {
             $proxyUser = Get-PublicProxyRuntimeUsername
             $proxyPass = Get-DpapiSecretValue -Path $FirecrawlPublicProxyPasswordDpapiPath -Label "Firecrawl public proxy password"
-            $env:INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET = $proxyUser
-            $env:INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET = $proxyPass
-            $composeArgs += @("--profile", "public-proxy")
+            Write-SecretHolderFile -Value $access -Path "/run/secret-store/proxy/access_key" -Label "Camofox access"
+            Write-SecretHolderFile -Value $admin -Path "/run/secret-store/proxy/admin_key" -Label "Camofox admin"
+            Write-SecretHolderFile -Value $proxyUser -Path "/run/secret-store/proxy/proxy_username" -Label "Public proxy username"
+            Write-SecretHolderFile -Value $proxyPass -Path "/run/secret-store/proxy/proxy_password" -Label "Public proxy password"
         }
-        $composeArgs += @("up", "-d", "--build")
-        if ($ForceRecreate) { $composeArgs += "--force-recreate" }
-        Compose -ComposeArgs $composeArgs
     }
     finally {
         $access = $null
         $admin = $null
         $proxyUser = $null
         $proxyPass = $null
-        if ($accessWasSet) {
-            $env:INFLUENCER_CAMOFOX_ACCESS_SECRET = $oldAccess
-        } else {
-            Remove-Item Env:INFLUENCER_CAMOFOX_ACCESS_SECRET -ErrorAction SilentlyContinue
-        }
-        if ($adminWasSet) {
-            $env:INFLUENCER_CAMOFOX_ADMIN_SECRET = $oldAdmin
-        } else {
-            Remove-Item Env:INFLUENCER_CAMOFOX_ADMIN_SECRET -ErrorAction SilentlyContinue
-        }
-        if ($proxyUserWasSet) {
-            $env:INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET = $oldProxyUser
-        } else {
-            Remove-Item Env:INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET -ErrorAction SilentlyContinue
-        }
-        if ($proxyPassWasSet) {
-            $env:INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET = $oldProxyPass
-        } else {
-            Remove-Item Env:INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET -ErrorAction SilentlyContinue
-        }
     }
+}
+
+function Invoke-ComposeUp([bool]$Build = $true) {
+    Compose -ComposeArgs @("up", "-d", "secret-holder")
+    Materialize-CamofoxRuntimeSecrets
+    Import-AvailableRuntimeSecrets
+
+    $composeArgs = @()
+    if ($publicProxyConfigured) {
+        $composeArgs += @("--profile", "public-proxy")
+    }
+    $composeArgs += @("up", "-d")
+    if ($Build) {
+        $composeArgs += "--build"
+    }
+    Compose -ComposeArgs $composeArgs
 }
 
 function Import-InstagramAuth {
@@ -369,25 +419,21 @@ function Import-InstagramAuth {
         throw "Instagram DPAPI session is missing. Run scripts\authenticate_instagram.ps1 first."
     }
 
-    $serviceId = (& docker compose -f $Compose ps -q influencerresearch).Trim()
-    if (-not $serviceId) {
-        throw "InfluencerResearch container is not running. Run scripts\runtime.ps1 -Action Up first."
-    }
+    Compose -ComposeArgs @("up", "-d", "secret-holder")
 
     $plain = $null
     try {
         $plain = Get-DpapiSecretValue -Path $InstagramDpapiPath -Label "Instagram session"
         Test-InstagramCookieJson $plain
-        $plain |
-            & docker compose -f $Compose exec -T influencerresearch sh -c 'umask 077; cat > /run/influencerresearch-secrets/instagram_cookies.json'
-        if ($LASTEXITCODE -ne 0) { throw "Instagram auth import failed." }
+        Write-SecretHolderFile -Value $plain -Path "/run/secret-store/mcp/instagram_cookies.json" -Label "Instagram session"
     }
     finally {
         $plain = $null
     }
 
-    & docker compose -f $Compose exec -T influencerresearch python -c 'import json; p="/run/influencerresearch-secrets/instagram_cookies.json"; c=json.load(open(p,encoding="utf-8")); assert any(x.get("name")=="sessionid" for x in c); print("INSTAGRAM_AUTH_IMPORTED")'
+    & docker exec $SecretHolder test -s /run/secret-store/mcp/instagram_cookies.json
     if ($LASTEXITCODE -ne 0) { throw "Instagram auth verification failed." }
+    Write-Host "INSTAGRAM_AUTH_IMPORTED"
 }
 
 function Import-GeminiKey {
@@ -396,33 +442,20 @@ function Import-GeminiKey {
         throw "Gemini DPAPI secret is missing. Run scripts\configure_gemini.ps1 first."
     }
 
-    $serviceId = (& docker compose -f $Compose ps -q influencerresearch).Trim()
-    if (-not $serviceId) {
-        throw "InfluencerResearch container is not running. Run scripts\runtime.ps1 -Action Up first."
-    }
+    Compose -ComposeArgs @("up", "-d", "secret-holder")
 
-    $encrypted = Get-Content -LiteralPath $secretPath -Raw
-    $secure = ConvertTo-SecureString -String $encrypted
-    $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
     $plain = $null
     try {
-        $plain = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr)
-        if ([string]::IsNullOrWhiteSpace($plain)) {
-            throw "Gemini DPAPI secret decrypted to an empty value."
-        }
-
-        $plain |
-            & docker compose -f $Compose exec -T influencerresearch sh -c 'umask 077; cat > /run/influencerresearch-secrets/gemini_api_key'
-        if ($LASTEXITCODE -ne 0) { throw "Gemini key import failed." }
+        $plain = Get-DpapiSecretValue -Path $secretPath -Label "Gemini API key"
+        Write-SecretHolderFile -Value $plain -Path "/run/secret-store/mcp/gemini_api_key" -Label "Gemini API key"
     }
     finally {
-        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
         $plain = $null
-        $secure = $null
     }
 
-    & docker compose -f $Compose exec -T influencerresearch sh -c 'test -s /run/influencerresearch-secrets/gemini_api_key && printf "GEMINI_KEY_IMPORTED\n"'
+    & docker exec $SecretHolder test -s /run/secret-store/mcp/gemini_api_key
     if ($LASTEXITCODE -ne 0) { throw "Gemini key verification failed." }
+    Write-Host "GEMINI_KEY_IMPORTED"
 }
 
 function Import-AvailableRuntimeSecrets {
@@ -439,46 +472,141 @@ function Import-AvailableRuntimeSecrets {
     }
 }
 
-$outerAccessWasSet = Test-Path Env:INFLUENCER_CAMOFOX_ACCESS_SECRET
-$outerAdminWasSet = Test-Path Env:INFLUENCER_CAMOFOX_ADMIN_SECRET
-$outerProxyUserWasSet = Test-Path Env:INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET
-$outerProxyPassWasSet = Test-Path Env:INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET
-$outerAccessOriginal = if ($outerAccessWasSet) { $env:INFLUENCER_CAMOFOX_ACCESS_SECRET } else { $null }
-$outerAdminOriginal = if ($outerAdminWasSet) { $env:INFLUENCER_CAMOFOX_ADMIN_SECRET } else { $null }
-$outerProxyUserOriginal = if ($outerProxyUserWasSet) { $env:INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET } else { $null }
-$outerProxyPassOriginal = if ($outerProxyPassWasSet) { $env:INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET } else { $null }
+function Update-RuntimeSupervisorConfig([bool]$Enabled = $true) {
+    if (-not (Test-Path -LiteralPath $SupervisorConfigPath -PathType Leaf)) {
+        Write-Warning "Runtime supervisor config is unavailable; Docker-restart secret recovery is not registered."
+        return
+    }
 
-try {
-    # Compose reparses post_start interpolation for ps/exec/status/down too. Keep
-    # inert placeholders present outside up/redeploy so those commands do not
-    # require or expose the real Camofox secrets. Invoke-ComposeUp temporarily
-    # replaces these placeholders with the DPAPI-decrypted values only while
-    # the post_start hooks write them into tmpfs.
-    $env:INFLUENCER_CAMOFOX_ACCESS_SECRET = "compose-config-only"
-    $env:INFLUENCER_CAMOFOX_ADMIN_SECRET = "compose-config-only"
-    $env:INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET = "compose-config-only"
-    $env:INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET = "compose-config-only"
+    $supervisor = Get-Content -LiteralPath $SupervisorConfigPath -Raw | ConvertFrom-Json
+    if ([int]$supervisor.version -ne 1) {
+        throw "Unsupported runtime supervisor config version."
+    }
+
+    $holderRequired = @(
+        "/run/secret-store/mcp/camofox_access_key",
+        "/run/secret-store/mcp/camofox_admin_key",
+        "/run/secret-store/camofox/access_key",
+        "/run/secret-store/camofox/admin_key"
+    )
+    $mcpRequired = @(
+        "/run/influencerresearch-secrets/camofox_access_key",
+        "/run/influencerresearch-secrets/camofox_admin_key"
+    )
+
+    if (Test-Path -LiteralPath $InstagramDpapiPath -PathType Leaf) {
+        $holderRequired += "/run/secret-store/mcp/instagram_cookies.json"
+        $mcpRequired += "/run/influencerresearch-secrets/instagram_cookies.json"
+    }
+
+    $geminiPath = Join-Path $env:LOCALAPPDATA "InfluencerResearch\secrets\gemini_api_key.dpapi"
+    if (Test-Path -LiteralPath $geminiPath -PathType Leaf) {
+        $holderRequired += "/run/secret-store/mcp/gemini_api_key"
+        $mcpRequired += "/run/influencerresearch-secrets/gemini_api_key"
+    }
+
+    $eventContainers = @(
+        $SecretHolder,
+        "influencerresearch-mcp",
+        "influencerresearch-camofox"
+    )
+    $checks = @(
+        [pscustomobject]@{
+            container = $SecretHolder
+            require_healthy = $false
+            required_files = $holderRequired
+        },
+        [pscustomobject]@{
+            container = "influencerresearch-mcp"
+            require_healthy = $true
+            required_files = $mcpRequired
+        },
+        [pscustomobject]@{
+            container = "influencerresearch-camofox"
+            require_healthy = $true
+            required_files = @(
+                "/run/camofox-secrets/access_key",
+                "/run/camofox-secrets/admin_key"
+            )
+        }
+    )
+
+    if ($publicProxyConfigured) {
+        $holderRequired += @(
+            "/run/secret-store/proxy/access_key",
+            "/run/secret-store/proxy/admin_key",
+            "/run/secret-store/proxy/proxy_username",
+            "/run/secret-store/proxy/proxy_password"
+        )
+        $eventContainers += "influencerresearch-camofox-public-proxy"
+        $checks += [pscustomobject]@{
+            container = "influencerresearch-camofox-public-proxy"
+            require_healthy = $true
+            required_files = @(
+                "/run/camofox-proxy-secrets/access_key",
+                "/run/camofox-proxy-secrets/admin_key",
+                "/run/camofox-proxy-secrets/proxy_username",
+                "/run/camofox-proxy-secrets/proxy_password"
+            )
+        }
+        $checks[0].required_files = $holderRequired
+    }
+
+    $existing = @(
+        $supervisor.runtimes |
+            Where-Object { [string]$_.name -ne "influencerresearch" }
+    )
+    $runtimeEntry = [pscustomobject]@{
+        name = "influencerresearch"
+        enabled = $Enabled
+        event_containers = $eventContainers
+        health = [pscustomobject]@{
+            checks = $checks
+        }
+        recovery = [pscustomobject]@{
+            script = $RuntimeScriptPath
+            arguments = @("-Action", "Recover")
+            working_directory = $Repo
+        }
+        cooldown_seconds = 30
+        recovery_wait_seconds = 90
+    }
+
+    $supervisor.runtimes = @($existing + $runtimeEntry)
+    [IO.File]::WriteAllText(
+        $SupervisorConfigPath,
+        (($supervisor | ConvertTo-Json -Depth 10) + [Environment]::NewLine),
+        [Text.UTF8Encoding]::new($false)
+    )
+}
 
 switch ($Action) {
     "Up" {
         Invoke-ComposeUp
+        Update-RuntimeSupervisorConfig -Enabled $true
         Write-Host "INFLUENCERRESEARCH_MCP=http://127.0.0.1:$($config.mcp_port)/mcp"
         Write-Host "Camofox is internal-only at http://camofox:9377"
         if ($publicProxyConfigured) { Write-Host "Public proxy fallback is internal-only at http://camofox-public-proxy:9377" }
-        Import-AvailableRuntimeSecrets
     }
     "Redeploy" {
-        Invoke-ComposeUp -ForceRecreate $true
+        Update-RuntimeSupervisorConfig -Enabled $false
+        Invoke-ComposeUp
+        Update-RuntimeSupervisorConfig -Enabled $true
         Write-Host "INFLUENCERRESEARCH_MCP=http://127.0.0.1:$($config.mcp_port)/mcp"
         Write-Host "Camofox is internal-only at http://camofox:9377"
         if ($publicProxyConfigured) { Write-Host "Public proxy fallback is internal-only at http://camofox-public-proxy:9377" }
-        Import-AvailableRuntimeSecrets
+    }
+    "Recover" {
+        Invoke-ComposeUp -Build $false
+        Update-RuntimeSupervisorConfig -Enabled $true
     }
     "Down" {
+        Update-RuntimeSupervisorConfig -Enabled $false
         Compose -ComposeArgs @("down")
     }
     "InstagramPublicSmoke" {
         Invoke-ComposeUp
+        Update-RuntimeSupervisorConfig -Enabled $true
         & docker exec influencerresearch-mcp `
             python -m unittest -v test_instagram_camofox_public_smoke
         if ($LASTEXITCODE -ne 0) { throw "Instagram public smoke unit tests failed." }
@@ -507,7 +635,7 @@ switch ($Action) {
     }
     "Smoke" {
         Invoke-ComposeUp
-        Import-AvailableRuntimeSecrets
+        Update-RuntimeSupervisorConfig -Enabled $true
         $tests = @(
             "test_camofox_container_config",
             "test_camofox_container_runtime",
@@ -524,28 +652,5 @@ switch ($Action) {
         if ($LASTEXITCODE -ne 0) { throw "Container unit smoke failed." }
         & docker compose -f $Compose exec -T influencerresearch python tiktok_camofox_smoke.py
         if ($LASTEXITCODE -ne 0) { throw "TikTok/Camofox smoke failed." }
-    }
-}
-}
-finally {
-    if ($outerAccessWasSet) {
-        $env:INFLUENCER_CAMOFOX_ACCESS_SECRET = $outerAccessOriginal
-    } else {
-        Remove-Item Env:INFLUENCER_CAMOFOX_ACCESS_SECRET -ErrorAction SilentlyContinue
-    }
-    if ($outerAdminWasSet) {
-        $env:INFLUENCER_CAMOFOX_ADMIN_SECRET = $outerAdminOriginal
-    } else {
-        Remove-Item Env:INFLUENCER_CAMOFOX_ADMIN_SECRET -ErrorAction SilentlyContinue
-    }
-    if ($outerProxyUserWasSet) {
-        $env:INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET = $outerProxyUserOriginal
-    } else {
-        Remove-Item Env:INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET -ErrorAction SilentlyContinue
-    }
-    if ($outerProxyPassWasSet) {
-        $env:INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET = $outerProxyPassOriginal
-    } else {
-        Remove-Item Env:INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET -ErrorAction SilentlyContinue
     }
 }

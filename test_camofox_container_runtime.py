@@ -96,10 +96,14 @@ class CamofoxContainerRuntimeTests(TestCase):
         self.assertIn("pids_limit: 256", text)
         self.assertNotIn("CAMOFOX_ACCESS_KEY: ${CAMOFOX_ACCESS_KEY", text)
         self.assertNotIn("CAMOFOX_ADMIN_KEY: ${CAMOFOX_ADMIN_KEY", text)
-        self.assertIn("/run/camofox-secrets:rw,nosuid,nodev,noexec", text)
+        self.assertIn("source: influencerresearch-camofox-secrets", text)
+        self.assertIn("target: /run/camofox-secrets", text)
         self.assertIn("/run/camofox-secrets/access_key", text)
         self.assertIn("/run/camofox-secrets/admin_key", text)
-        self.assertIn("post_start:", text)
+        self.assertIn("influencerresearch-secret-holder", text)
+        self.assertIn("network_mode: none", text)
+        self.assertIn("type: tmpfs", text)
+        self.assertNotIn("post_start:", text)
 
     def test_direct_camofox_matches_ipv4_only_host_runtime(self) -> None:
         text = (BASE / "compose.yaml").read_text(encoding="utf-8")
@@ -142,8 +146,10 @@ class CamofoxContainerRuntimeTests(TestCase):
         self.assertNotIn("PROXY_HOST:", direct)
         self.assertNotIn("PROXY_USERNAME:", direct)
         self.assertNotIn("PROXY_PASSWORD:", direct)
-        self.assertIn('test -n "$$INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET"', proxy)
-        self.assertIn('test -n "$$INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET"', proxy)
+        self.assertIn("source: influencerresearch-camofox-proxy-secrets", proxy)
+        self.assertIn("target: /run/camofox-proxy-secrets", proxy)
+        self.assertNotIn("INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET", proxy)
+        self.assertNotIn("INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET", proxy)
         self.assertIn(
             'export PROXY_USERNAME="$$(cat /run/camofox-proxy-secrets/proxy_username)"',
             proxy,
@@ -152,6 +158,14 @@ class CamofoxContainerRuntimeTests(TestCase):
             'export PROXY_PASSWORD="$$(cat /run/camofox-proxy-secrets/proxy_password)"',
             proxy,
         )
+
+    def test_runtime_supervisor_recovers_secret_tmpfs_after_docker_restart(self) -> None:
+        runtime = (BASE / "scripts" / "runtime.ps1").read_text(encoding="utf-8")
+        self.assertIn('name = "influencerresearch"', runtime)
+        self.assertIn('arguments = @("-Action", "Recover")', runtime)
+        self.assertIn("required_files = $holderRequired", runtime)
+        self.assertIn("recovery_wait_seconds = 90", runtime)
+        self.assertIn('Update-RuntimeSupervisorConfig -Enabled $false', runtime)
 
     def test_runtime_reuses_dpapi_webshare_secrets_without_copying_api_key(self) -> None:
         text = (BASE / "scripts" / "runtime.ps1").read_text(encoding="utf-8")
