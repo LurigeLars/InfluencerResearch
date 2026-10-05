@@ -1,0 +1,32 @@
+name: Runtime image smoke
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "runtime/influencerresearch/Dockerfile"
+      - "requirements.txt"
+      - "requirements_tiktok_impersonation.lock.txt"
+  pull_request:
+    branches: [main]
+    paths:
+      - "runtime/influencerresearch/Dockerfile"
+      - "requirements.txt"
+      - "requirements_tiktok_impersonation.lock.txt"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime-image-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Build InfluencerResearch runtime image
+        run: docker build -f runtime/influencerresearch/Dockerfile -t influencerresearch-runtime-smoke .
+      - name: Verify Python runtime and critical imports
+        run: >-
+          docker run --rm --entrypoint python influencerresearch-runtime-smoke
+          -c "import sys, av, curl_cffi, google.genai, msgpack, playwright, faster_whisper; print(sys.version)"
