@@ -403,15 +403,37 @@ function Invoke-ComposeUp([bool]$Build = $true) {
     Materialize-CamofoxRuntimeSecrets
     Import-AvailableRuntimeSecrets
 
-    $composeArgs = @()
+    $profileArgs = @()
     if ($publicProxyConfigured) {
-        $composeArgs += @("--profile", "public-proxy")
+        $profileArgs += @("--profile", "public-proxy")
     }
-    $composeArgs += @("up", "-d")
-    if ($Build) {
-        $composeArgs += "--build"
+
+    if (-not $Build) {
+        Compose -ComposeArgs @($profileArgs + @("up", "-d"))
+        return
     }
-    Compose -ComposeArgs $composeArgs
+
+    $buildServices = @("influencerresearch", "camofox")
+    if ($publicProxyConfigured) {
+        $buildServices += "camofox-public-proxy"
+    }
+
+    Compose -ComposeArgs @($profileArgs + @("build") + $buildServices)
+
+    $camofoxServices = @("camofox")
+    if ($publicProxyConfigured) {
+        $camofoxServices += "camofox-public-proxy"
+    }
+
+    # The build can produce a new local image ID even when service configuration
+    # is unchanged. Recreate the services whose images were just built, but do
+    # not recreate secret-holder: its tmpfs volumes were hydrated immediately
+    # above and must remain intact.
+    Compose -ComposeArgs @($profileArgs + @("up", "-d", "--no-deps", "--force-recreate") + $camofoxServices)
+
+    # Normal Compose dependency handling now waits for Camofox health before
+    # recreating/starting the MCP service from its freshly built image.
+    Compose -ComposeArgs @($profileArgs + @("up", "-d", "influencerresearch"))
 }
 
 function Import-InstagramAuth {

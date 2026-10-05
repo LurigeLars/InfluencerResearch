@@ -167,6 +167,13 @@ class CamofoxContainerRuntimeTests(TestCase):
         self.assertIn("recovery_wait_seconds = 90", runtime)
         self.assertIn('Update-RuntimeSupervisorConfig -Enabled $false', runtime)
 
+    def test_redeploy_recreates_built_images_without_recreating_secret_holder(self) -> None:
+        runtime = (BASE / "scripts/runtime.ps1").read_text(encoding="utf-8")
+        self.assertIn('Compose -ComposeArgs @($profileArgs + @("build") + $buildServices)', runtime)
+        self.assertIn('Compose -ComposeArgs @($profileArgs + @("up", "-d", "--no-deps", "--force-recreate") + $camofoxServices)', runtime)
+        self.assertIn('Compose -ComposeArgs @($profileArgs + @("up", "-d", "influencerresearch"))', runtime)
+        self.assertNotIn('"--force-recreate", "secret-holder"', runtime)
+
     def test_runtime_reuses_dpapi_webshare_secrets_without_copying_api_key(self) -> None:
         text = (BASE / "scripts" / "runtime.ps1").read_text(encoding="utf-8")
         self.assertIn(
