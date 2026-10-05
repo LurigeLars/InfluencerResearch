@@ -3,11 +3,10 @@ from __future__ import annotations
 import importlib.util
 import json
 import tempfile
-import unittest
+import unittest.mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest import mock
 
 import creator_recent_check as crc
 
@@ -66,7 +65,7 @@ class RecentInstagramTests(unittest.TestCase):
                 },
             ],
         }
-        with mock.patch.object(crc.instagram, "discover_reels_authenticated", return_value=probe) as run:
+        with unittest.mock.patch.object(crc.instagram, "discover_reels_authenticated", return_value=probe) as run:
             result = crc.discover_instagram(
                 {"creator_key": "creator"},
                 {"profile_url": "https://www.instagram.com/example/"},
@@ -94,7 +93,7 @@ class RecentInstagramTests(unittest.TestCase):
             "reel_items": [],
             "timings": {},
         }
-        with mock.patch.object(
+        with unittest.mock.patch.object(
             crc.instagram,
             "discover_reels_authenticated",
             return_value=probe,
@@ -121,7 +120,7 @@ class RecentInstagramTests(unittest.TestCase):
             "reel_items": [],
             "timings": {},
         }
-        with mock.patch.object(
+        with unittest.mock.patch.object(
             crc.instagram,
             "discover_reels_authenticated",
             return_value=probe,
@@ -150,7 +149,7 @@ class RecentInstagramTests(unittest.TestCase):
             "error": "TimeoutError: profile navigation timed out",
             "timings": {},
         }
-        with mock.patch.object(
+        with unittest.mock.patch.object(
             crc.instagram,
             "discover_reels_authenticated",
             return_value=probe,
@@ -210,7 +209,7 @@ class RecentInstagramTests(unittest.TestCase):
                 }],
                 "timings": {"reel_time_cache_hits": 1},
             }
-            with mock.patch.object(
+            with unittest.mock.patch.object(
                 crc.instagram,
                 "discover_reels_authenticated",
                 return_value=probe,
@@ -265,7 +264,7 @@ class RecentInstagramTests(unittest.TestCase):
                 }],
                 "timings": {"reel_time_cache_hits": 1},
             }
-            with mock.patch.object(
+            with unittest.mock.patch.object(
                 crc.instagram,
                 "discover_reels_authenticated",
                 return_value=probe,
@@ -313,7 +312,7 @@ class RecentInstagramTests(unittest.TestCase):
                 ],
                 "timings": {"reel_time_network_probes": 2},
             }
-            with mock.patch.object(
+            with unittest.mock.patch.object(
                 crc.instagram,
                 "discover_reels_authenticated",
                 return_value=probe,
@@ -384,7 +383,7 @@ class RecentInstagramTests(unittest.TestCase):
             return {"ok": True}
 
         with (
-            mock.patch.object(
+            unittest.mock.patch.object(
                 smoke,
                 "_wait_for_profile_ready",
                 return_value={
@@ -395,12 +394,12 @@ class RecentInstagramTests(unittest.TestCase):
                     "last_error": None,
                 },
             ),
-            mock.patch.object(
+            unittest.mock.patch.object(
                 smoke,
                 "classify_snapshot",
                 return_value=classified,
             ),
-            mock.patch.object(
+            unittest.mock.patch.object(
                 smoke,
                 "request_json",
                 side_effect=fake_request,
@@ -463,7 +462,7 @@ class RecentInstagramTests(unittest.TestCase):
             return {"ok": True}
 
         with (
-            mock.patch.object(
+            unittest.mock.patch.object(
                 smoke,
                 "_wait_for_profile_ready",
                 return_value={
@@ -474,10 +473,10 @@ class RecentInstagramTests(unittest.TestCase):
                     "last_error": None,
                 },
             ),
-            mock.patch.object(smoke, "dom_probe", return_value=initial_dom),
-            mock.patch.object(smoke, "classify_snapshot", return_value=classified),
-            mock.patch.object(smoke, "request_json", side_effect=fake_request),
-            mock.patch.object(smoke.time, "sleep") as sleep,
+            unittest.mock.patch.object(smoke, "dom_probe", return_value=initial_dom),
+            unittest.mock.patch.object(smoke, "classify_snapshot", return_value=classified),
+            unittest.mock.patch.object(smoke, "request_json", side_effect=fake_request),
+            unittest.mock.patch.object(smoke.time, "sleep") as sleep,
         ):
             result = smoke.probe_public_session(
                 "https://www.instagram.com/example/",
@@ -508,7 +507,7 @@ class RecentInstagramTests(unittest.TestCase):
         spec.loader.exec_module(smoke)
 
         with (
-            mock.patch.object(
+            unittest.mock.patch.object(
                 smoke,
                 "dom_probe",
                 return_value={
@@ -520,7 +519,7 @@ class RecentInstagramTests(unittest.TestCase):
                     "body_text_length": 1200,
                 },
             ) as probe,
-            mock.patch.object(smoke.time, "sleep") as sleep,
+            unittest.mock.patch.object(smoke.time, "sleep") as sleep,
         ):
             result = smoke._wait_for_profile_ready("tab-1", "user-1", "example")
 
@@ -549,9 +548,9 @@ class RecentInstagramTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             with (
-                mock.patch.object(crc, "_capture_instagram_story_run") as capture,
-                mock.patch.object(crc, "_promote_story_items", return_value=bridge),
-                mock.patch.object(crc.tts, "run_research_queue") as queue,
+                unittest.mock.patch.object(crc, "_capture_instagram_story_run") as capture,
+                unittest.mock.patch.object(crc, "_promote_story_items", return_value=bridge),
+                unittest.mock.patch.object(crc.tts, "run_research_queue") as queue,
             ):
                 result = crc._ingest_instagram_stories(
                     Path(td),
@@ -595,8 +594,8 @@ class RecentInstagramTests(unittest.TestCase):
                 return SimpleNamespace(returncode=0, stdout="", stderr="")
 
             with (
-                mock.patch.object(crc.subprocess, "run", side_effect=fake_run),
-                mock.patch.object(crc.tts, "run_research_queue", return_value={"ok": True}),
+                unittest.mock.patch.object(crc.subprocess, "run", side_effect=fake_run),
+                unittest.mock.patch.object(crc.tts, "run_research_queue", return_value={"ok": True}),
             ):
                 result = crc._ingest_instagram(
                     root,
@@ -744,7 +743,7 @@ class RecentInstagramTests(unittest.TestCase):
                     },
                 },
             }
-            with mock.patch.object(crc, "load_registry", return_value=registry):
+            with unittest.mock.patch.object(crc, "load_registry", return_value=registry):
                 result = crc._promote_story_items(
                     root,
                     {"creator_key": "canonical-key"},

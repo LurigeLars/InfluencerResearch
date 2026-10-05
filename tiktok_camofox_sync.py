@@ -606,7 +606,6 @@ def _wait_for_tiktok_profile_ready(
             value = response.get("result") if isinstance(response, dict) else None
             if isinstance(value, dict):
                 last_value = value
-                ready_state = str(value.get("readyState") or "").casefold()
                 link_count = int(value.get("videoLinkCount") or 0)
                 target_reached = link_count >= max(1, int(target))
                 if target_reached:
@@ -1165,6 +1164,7 @@ def _fallback_request_json(
             if isinstance(parsed, dict):
                 payload = parsed
         except json.JSONDecodeError:
+            # Preserve the raw HTTP error detail when the response body is not JSON.
             pass
         raise CamoFoxHttpError(
             int(exc.code),

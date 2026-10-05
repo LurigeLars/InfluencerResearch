@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 import os
-import unittest
+import unittest.mock
 from types import SimpleNamespace
-from unittest import mock
 
 import instagram_ingest as ig
-from instagram_ingest import resolve_creators, resolve_max_new_per_creator, select_transcription_keys
 
 
 class InstagramIngestLimitTests(unittest.TestCase):
@@ -15,24 +13,24 @@ class InstagramIngestLimitTests(unittest.TestCase):
             {"handle": "alpha", "enabled": True},
             {"handle": "beta", "enabled": True},
         ]
-        self.assertEqual(resolve_creators(configured, "rikatillsammans"), ["rikatillsammans"])
+        self.assertEqual(ig.resolve_creators(configured, "rikatillsammans"), ["rikatillsammans"])
 
     def test_configured_creators_are_used_without_override(self) -> None:
         configured = [
             {"handle": "alpha", "enabled": True},
             {"handle": "beta", "enabled": False},
         ]
-        self.assertEqual(resolve_creators(configured, None), ["alpha"])
+        self.assertEqual(ig.resolve_creators(configured, None), ["alpha"])
 
     def test_max_new_override_wins(self) -> None:
         self.assertEqual(
-            resolve_max_new_per_creator({"max_new_per_creator": 10}, 1),
+            ig.resolve_max_new_per_creator({"max_new_per_creator": 10}, 1),
             1,
         )
 
     def test_max_new_rejects_non_positive_values(self) -> None:
         with self.assertRaisesRegex(ValueError, "at least 1"):
-            resolve_max_new_per_creator({"max_new_per_creator": 10}, 0)
+            ig.resolve_max_new_per_creator({"max_new_per_creator": 10}, 0)
 
     def test_new_only_transcription_excludes_old_pending_items(self) -> None:
         manifest = {
@@ -51,25 +49,25 @@ class InstagramIngestLimitTests(unittest.TestCase):
         }
         summaries = [{"creator": "x", "new_keys": ["new"]}]
         self.assertEqual(
-            select_transcription_keys(manifest, summaries, new_only=True),
+            ig.select_transcription_keys(manifest, summaries, new_only=True),
             ["new"],
         )
 
     def test_ephemeral_context_uses_new_context_not_persistent_profile(self) -> None:
-        context = mock.Mock()
-        browser = mock.Mock()
+        context = unittest.mock.Mock()
+        browser = unittest.mock.Mock()
         browser.new_context.return_value = context
         playwright = SimpleNamespace(
-            chromium=SimpleNamespace(launch=mock.Mock(return_value=browser))
+            chromium=SimpleNamespace(launch=unittest.mock.Mock(return_value=browser))
         )
 
         with (
-            mock.patch.dict(
+            unittest.mock.patch.dict(
                 os.environ,
                 {"INFLUENCER_RESEARCH_CONTAINER": "1"},
                 clear=False,
             ),
-            mock.patch.object(ig, "load_instagram_cookies") as load_cookies,
+            unittest.mock.patch.object(ig, "load_instagram_cookies") as load_cookies,
         ):
             actual_browser, actual_context = ig.launch_instagram_ephemeral_context(
                 playwright
@@ -91,25 +89,25 @@ class InstagramIngestLimitTests(unittest.TestCase):
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-        page = mock.Mock()
-        context = mock.Mock()
+        page = unittest.mock.Mock()
+        context = unittest.mock.Mock()
         context.new_page.return_value = page
-        browser = mock.Mock()
+        browser = unittest.mock.Mock()
         reel_url = "https://www.instagram.com/reel/RECENT123/"
 
         with (
-            mock.patch.object(
+            unittest.mock.patch.object(
                 ig,
                 "sync_playwright",
                 return_value=FakePlaywrightContext(),
             ),
-            mock.patch.object(
+            unittest.mock.patch.object(
                 ig,
                 "launch_instagram_ephemeral_context",
                 return_value=(browser, context),
             ),
-            mock.patch.object(ig, "verify_logged_in"),
-            mock.patch.object(
+            unittest.mock.patch.object(ig, "verify_logged_in"),
+            unittest.mock.patch.object(
                 ig,
                 "_wait_for_instagram_profile_ready",
                 return_value={
@@ -120,12 +118,12 @@ class InstagramIngestLimitTests(unittest.TestCase):
                     "media_auth_gated": False,
                 },
             ),
-            mock.patch.object(
+            unittest.mock.patch.object(
                 ig,
                 "_collect_loaded_reel_urls",
                 return_value=([reel_url], 1),
             ),
-            mock.patch.object(ig, "_reel_published_at") as live_time,
+            unittest.mock.patch.object(ig, "_reel_published_at") as live_time,
         ):
             result = ig.discover_reels_authenticated(
                 "example",
@@ -154,9 +152,9 @@ class InstagramIngestLimitTests(unittest.TestCase):
         browser.close.assert_called_once()
 
     def test_instagram_error_page_is_marked_unavailable(self) -> None:
-        body = mock.Mock()
+        body = unittest.mock.Mock()
         body.inner_text.return_value = "Sorry, something went wrong"
-        page = mock.Mock()
+        page = unittest.mock.Mock()
         page.url = "https://www.instagram.com/example/reels/"
         page.locator.return_value = body
 
@@ -177,26 +175,26 @@ class InstagramIngestLimitTests(unittest.TestCase):
                 events.append("playwright_exit")
                 return False
 
-        page = mock.Mock()
-        context = mock.Mock()
+        page = unittest.mock.Mock()
+        context = unittest.mock.Mock()
         context.new_page.return_value = page
         context.close.side_effect = lambda: events.append("context_close")
-        browser = mock.Mock()
+        browser = unittest.mock.Mock()
         browser.close.side_effect = lambda: events.append("browser_close")
 
         with (
-            mock.patch.object(
+            unittest.mock.patch.object(
                 ig,
                 "sync_playwright",
                 return_value=FakePlaywrightContext(),
             ),
-            mock.patch.object(
+            unittest.mock.patch.object(
                 ig,
                 "launch_instagram_ephemeral_context",
                 return_value=(browser, context),
             ),
-            mock.patch.object(ig, "verify_logged_in"),
-            mock.patch.object(
+            unittest.mock.patch.object(ig, "verify_logged_in"),
+            unittest.mock.patch.object(
                 ig,
                 "_wait_for_instagram_profile_ready",
                 return_value={
@@ -208,7 +206,7 @@ class InstagramIngestLimitTests(unittest.TestCase):
                     "unavailable": False,
                 },
             ),
-            mock.patch.object(
+            unittest.mock.patch.object(
                 ig,
                 "_collect_loaded_reel_urls",
                 return_value=([], 1),
@@ -230,25 +228,25 @@ class InstagramIngestLimitTests(unittest.TestCase):
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-        context = mock.Mock()
-        browser = mock.Mock()
+        context = unittest.mock.Mock()
+        browser = unittest.mock.Mock()
         with (
-            mock.patch.object(
+            unittest.mock.patch.object(
                 ig,
                 "sync_playwright",
                 return_value=FakePlaywrightContext(),
             ),
-            mock.patch.object(
+            unittest.mock.patch.object(
                 ig,
                 "launch_instagram_ephemeral_context",
                 return_value=(browser, context),
             ),
-            mock.patch.object(
+            unittest.mock.patch.object(
                 ig,
                 "verify_logged_in",
                 side_effect=RuntimeError("not authenticated"),
             ),
-            mock.patch.object(
+            unittest.mock.patch.object(
                 ig,
                 "_collect_loaded_reel_urls",
             ) as collect,
@@ -282,7 +280,7 @@ class InstagramIngestLimitTests(unittest.TestCase):
             }
         }
         self.assertEqual(
-            select_transcription_keys(manifest, [], new_only=False),
+            ig.select_transcription_keys(manifest, [], new_only=False),
             ["old"],
         )
 

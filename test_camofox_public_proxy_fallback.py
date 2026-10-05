@@ -21,7 +21,7 @@ class PublicProxyFallbackTests(unittest.TestCase):
         sync._CAMOFOX_PUBLIC_PROXY_SERVER = None
 
     def _metric_patch(self, root: Path):
-        return mock.patch.object(
+        return unittest.mock.patch.object(
             sync,
             "_public_proxy_metrics_path",
             return_value=root / "proxy-metrics.json",
@@ -32,9 +32,9 @@ class PublicProxyFallbackTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as td,
             self._metric_patch(Path(td)),
-            mock.patch.object(sync, "_ensure_fallback_server", return_value=direct),
-            mock.patch.object(sync, "_ensure_public_proxy_server") as ensure_proxy,
-            mock.patch.object(
+            unittest.mock.patch.object(sync, "_ensure_fallback_server", return_value=direct),
+            unittest.mock.patch.object(sync, "_ensure_public_proxy_server") as ensure_proxy,
+            unittest.mock.patch.object(
                 sync,
                 "_fallback_request_json",
                 return_value={
@@ -78,9 +78,9 @@ class PublicProxyFallbackTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as td,
             self._metric_patch(Path(td)),
-            mock.patch.object(sync, "_ensure_fallback_server", return_value=direct),
-            mock.patch.object(sync, "_ensure_public_proxy_server", return_value=proxy),
-            mock.patch.object(sync, "_fallback_request_json", side_effect=fake_request),
+            unittest.mock.patch.object(sync, "_ensure_fallback_server", return_value=direct),
+            unittest.mock.patch.object(sync, "_ensure_public_proxy_server", return_value=proxy),
+            unittest.mock.patch.object(sync, "_fallback_request_json", side_effect=fake_request),
         ):
             result = sync.request_json(
                 "POST",
@@ -110,9 +110,9 @@ class PublicProxyFallbackTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as td,
             self._metric_patch(Path(td)),
-            mock.patch.object(sync, "_ensure_fallback_server", return_value=direct),
-            mock.patch.object(sync, "_ensure_public_proxy_server") as ensure_proxy,
-            mock.patch.object(
+            unittest.mock.patch.object(sync, "_ensure_fallback_server", return_value=direct),
+            unittest.mock.patch.object(sync, "_ensure_public_proxy_server") as ensure_proxy,
+            unittest.mock.patch.object(
                 sync,
                 "_fallback_request_json",
                 return_value={"tabId": "direct-tab", "httpStatus": 429, "navigationOk": False},
@@ -152,14 +152,14 @@ class PublicProxyFallbackTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as td,
             self._metric_patch(Path(td)),
-            mock.patch.dict(
+            unittest.mock.patch.dict(
                 sync.os.environ,
                 {"INFLUENCER_RESEARCH_CAMOFOX_PROXY_ATTEMPTS": "3"},
                 clear=False,
             ),
-            mock.patch.object(sync, "_ensure_fallback_server", return_value=direct),
-            mock.patch.object(sync, "_ensure_public_proxy_server", return_value=proxy),
-            mock.patch.object(sync, "_fallback_request_json", side_effect=fake_request),
+            unittest.mock.patch.object(sync, "_ensure_fallback_server", return_value=direct),
+            unittest.mock.patch.object(sync, "_ensure_public_proxy_server", return_value=proxy),
+            unittest.mock.patch.object(sync, "_fallback_request_json", side_effect=fake_request),
         ):
             result = sync.request_json(
                 "POST",
@@ -189,13 +189,13 @@ class PublicProxyFallbackTests(unittest.TestCase):
         with (
             tempfile.TemporaryDirectory() as td,
             self._metric_patch(Path(td)),
-            mock.patch.object(sync, "_ensure_fallback_server", return_value=direct),
-            mock.patch.object(
+            unittest.mock.patch.object(sync, "_ensure_fallback_server", return_value=direct),
+            unittest.mock.patch.object(
                 sync,
                 "_ensure_public_proxy_server",
                 side_effect=RuntimeError("proxy down"),
             ),
-            mock.patch.object(sync, "_fallback_request_json", side_effect=fake_request),
+            unittest.mock.patch.object(sync, "_fallback_request_json", side_effect=fake_request),
         ):
             result = sync.request_json(
                 "POST",
@@ -218,9 +218,9 @@ class PublicProxyFallbackTests(unittest.TestCase):
         sync._set_proxy_user("u", True)
 
         with (
-            mock.patch.object(sync, "_ensure_fallback_server", return_value=direct) as ensure_direct,
-            mock.patch.object(sync, "_ensure_public_proxy_server", return_value=proxy),
-            mock.patch.object(sync, "_fallback_request_json", return_value={"ok": True}) as request,
+            unittest.mock.patch.object(sync, "_ensure_fallback_server", return_value=direct) as ensure_direct,
+            unittest.mock.patch.object(sync, "_ensure_public_proxy_server", return_value=proxy),
+            unittest.mock.patch.object(sync, "_fallback_request_json", return_value={"ok": True}) as request,
         ):
             result = sync.request_json("DELETE", "/sessions/u")
 

@@ -51,7 +51,7 @@ class ResearchQueueContentSufficiencyTests(unittest.TestCase):
             }
             self._write_common(root, manifest)
 
-            with mock.patch.object(sys, "argv", ["research_queue.py", "--root", str(root)]):
+            with unittest.mock.patch.object(sys, "argv", ["research_queue.py", "--root", str(root)]):
                 self.assertEqual(research_queue.main(), 0)
 
             queue = json.loads((root / "state" / "research_queue.json").read_text(encoding="utf-8"))
@@ -99,7 +99,7 @@ class ResearchQueueContentSufficiencyTests(unittest.TestCase):
             }
             self._write_common(root, manifest)
 
-            with mock.patch.object(sys, "argv", ["research_queue.py", "--root", str(root)]):
+            with unittest.mock.patch.object(sys, "argv", ["research_queue.py", "--root", str(root)]):
                 self.assertEqual(research_queue.main(), 0)
 
             queue = json.loads((root / "state" / "research_queue.json").read_text(encoding="utf-8"))
@@ -140,7 +140,7 @@ class ResearchQueueContentSufficiencyTests(unittest.TestCase):
             }
             self._write_common(root, manifest)
 
-            with mock.patch.object(sys, "argv", ["research_queue.py", "--root", str(root)]):
+            with unittest.mock.patch.object(sys, "argv", ["research_queue.py", "--root", str(root)]):
                 self.assertEqual(research_queue.main(), 0)
 
             queue = json.loads((root / "state" / "research_queue.json").read_text(encoding="utf-8"))
@@ -183,7 +183,7 @@ class ResearchQueueContentSufficiencyTests(unittest.TestCase):
             }
             self._write_common(root, manifest)
 
-            with mock.patch.object(sys, "argv", ["research_queue.py", "--root", str(root)]):
+            with unittest.mock.patch.object(sys, "argv", ["research_queue.py", "--root", str(root)]):
                 self.assertEqual(research_queue.main(), 0)
 
             queue = json.loads((root / "state" / "research_queue.json").read_text(encoding="utf-8"))
@@ -225,7 +225,7 @@ class ResearchQueueContentSufficiencyTests(unittest.TestCase):
                 "source_platform": "TIKTOK",
                 "caption": "Market update",
             }
-            with mock.patch.object(
+            with unittest.mock.patch.object(
                 research_queue,
                 "read_text",
                 side_effect=AssertionError("unexpected second transcript read"),

@@ -26,13 +26,13 @@ class VisualReviewClassifierTests(unittest.TestCase):
         return rows
 
     def test_visual_ocr_timeout_is_nonfatal(self) -> None:
-        with mock.patch("youtube_creator_evaluation.subprocess.run", side_effect=TimeoutError("timeout")):
+        with unittest.mock.patch("youtube_creator_evaluation.subprocess.run", side_effect=TimeoutError("timeout")):
             self.assertEqual(yte._ocr_visual_frame(Path("/tmp/frame.jpg")), "")
 
     def test_shared_visual_ocr_retries_block_layout_when_sparse_layout_is_empty(self) -> None:
-        empty = mock.Mock(returncode=0, stdout="")
-        caption = mock.Mock(returncode=0, stdout="Cheap oil doesn't mean cheap energy\n")
-        with mock.patch("video_visual_evidence.subprocess.run", side_effect=[empty, caption]) as run:
+        empty = unittest.mock.Mock(returncode=0, stdout="")
+        caption = unittest.mock.Mock(returncode=0, stdout="Cheap oil doesn't mean cheap energy\n")
+        with unittest.mock.patch("video_visual_evidence.subprocess.run", side_effect=[empty, caption]) as run:
             text = vve._ocr_visual_frame(Path("/tmp/frame.jpg"))
         self.assertEqual(text, "Cheap oil doesn't mean cheap energy")
         self.assertEqual(run.call_count, 2)
@@ -40,9 +40,9 @@ class VisualReviewClassifierTests(unittest.TestCase):
         self.assertIn("6", run.call_args_list[1].args[0])
 
     def test_youtube_visual_ocr_retries_block_layout_when_sparse_layout_is_empty(self) -> None:
-        empty = mock.Mock(returncode=0, stdout="")
-        caption = mock.Mock(returncode=0, stdout="Cheap oil doesn't mean cheap energy\n")
-        with mock.patch("youtube_creator_evaluation.subprocess.run", side_effect=[empty, caption]) as run:
+        empty = unittest.mock.Mock(returncode=0, stdout="")
+        caption = unittest.mock.Mock(returncode=0, stdout="Cheap oil doesn't mean cheap energy\n")
+        with unittest.mock.patch("youtube_creator_evaluation.subprocess.run", side_effect=[empty, caption]) as run:
             text = yte._ocr_visual_frame(Path("/tmp/frame.jpg"))
         self.assertEqual(text, "Cheap oil doesn't mean cheap energy")
         self.assertEqual(run.call_count, 2)
@@ -50,8 +50,8 @@ class VisualReviewClassifierTests(unittest.TestCase):
         self.assertIn("6", run.call_args_list[1].args[0])
 
     def test_visual_ocr_does_not_retry_when_sparse_layout_succeeds(self) -> None:
-        detected = mock.Mock(returncode=0, stdout="NASDAQ QQQ 500\n")
-        with mock.patch("video_visual_evidence.subprocess.run", return_value=detected) as run:
+        detected = unittest.mock.Mock(returncode=0, stdout="NASDAQ QQQ 500\n")
+        with unittest.mock.patch("video_visual_evidence.subprocess.run", return_value=detected) as run:
             text = vve._ocr_visual_frame(Path("/tmp/frame.jpg"))
         self.assertEqual(text, "NASDAQ QQQ 500")
         self.assertEqual(run.call_count, 1)
@@ -62,7 +62,7 @@ class VisualReviewClassifierTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             records = self._records(root, count=vve.VISUAL_OCR_MAX_FRAMES)
-            with mock.patch.object(vve, "_ocr_visual_frame") as ocr, mock.patch.object(
+            with unittest.mock.patch.object(vve, "_ocr_visual_frame") as ocr, unittest.mock.patch.object(
                 vve, "_make_contact_sheet", return_value=None
             ):
                 bundle = vve.build_agent_visual_bundle(
@@ -93,11 +93,11 @@ class VisualReviewClassifierTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             records = self._records(root, count=vve.VISUAL_OCR_MAX_FRAMES)
-            with mock.patch.object(
+            with unittest.mock.patch.object(
                 vve,
                 "_ocr_visual_frame",
                 return_value="plain visual evidence",
-            ) as ocr, mock.patch.object(vve, "_make_contact_sheet", return_value=None):
+            ) as ocr, unittest.mock.patch.object(vve, "_make_contact_sheet", return_value=None):
                 bundle = vve.build_agent_visual_bundle(
                     root,
                     "nicholascrown",
@@ -140,7 +140,7 @@ class VisualReviewClassifierTests(unittest.TestCase):
                 }],
             }), encoding="utf-8")
 
-            with mock.patch.object(vve, "_ffmpeg_exe", return_value="ffmpeg"), mock.patch.object(
+            with unittest.mock.patch.object(vve, "_ffmpeg_exe", return_value="ffmpeg"), unittest.mock.patch.object(
                 vve,
                 "build_agent_visual_bundle",
                 return_value={
@@ -151,7 +151,7 @@ class VisualReviewClassifierTests(unittest.TestCase):
                     "creator_visual_prior": "NEUTRAL",
                     "representative_frames": [],
                 },
-            ), mock.patch("video_visual_evidence.subprocess.run") as run:
+            ), unittest.mock.patch("video_visual_evidence.subprocess.run") as run:
                 result = vve.capture_local_video_visual_evidence(
                     root,
                     "nicholascrown",
@@ -194,11 +194,11 @@ class VisualReviewClassifierTests(unittest.TestCase):
             root = Path(td)
             records = self._records(root)
             transcript = "The futures contract called heating oil is actually ultra low sulfur diesel."
-            with mock.patch.object(
+            with unittest.mock.patch.object(
                 vve,
                 "_ocr_visual_frame",
                 return_value="The futures contract called Heating Oil is actually",
-            ), mock.patch.object(vve, "_make_contact_sheet", return_value=None):
+            ), unittest.mock.patch.object(vve, "_make_contact_sheet", return_value=None):
                 bundle = vve.build_agent_visual_bundle(
                     root,
                     "nicholascrown",
@@ -218,11 +218,11 @@ class VisualReviewClassifierTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             records = self._records(root)
-            with mock.patch.object(
+            with unittest.mock.patch.object(
                 yte,
                 "_ocr_visual_frame",
                 return_value="NASDAQ QQQ 500 resistance support 495 volume 1.8%",
-            ), mock.patch.object(yte, "_make_contact_sheet", return_value=None):
+            ), unittest.mock.patch.object(yte, "_make_contact_sheet", return_value=None):
                 bundle = yte.build_agent_visual_bundle(
                     root, "nicholascrown", records, "ffmpeg", root
                 )
@@ -234,11 +234,11 @@ class VisualReviewClassifierTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             records = self._records(root)
-            with mock.patch.object(
+            with unittest.mock.patch.object(
                 yte,
                 "_ocr_visual_frame",
                 return_value="Welcome back everyone today we are discussing a general market topic",
-            ), mock.patch.object(yte, "_make_contact_sheet", return_value=None):
+            ), unittest.mock.patch.object(yte, "_make_contact_sheet", return_value=None):
                 bundle = yte.build_agent_visual_bundle(
                     root, "nicholascrown", records, "ffmpeg", root
                 )
@@ -261,7 +261,7 @@ class VisualReviewClassifierTests(unittest.TestCase):
                 }],
             }
             (evidence_dir / "visual_index.json").write_text(json.dumps(index), encoding="utf-8")
-            with mock.patch.object(yte, "_ffmpeg_exe", return_value="ffmpeg"), mock.patch.object(
+            with unittest.mock.patch.object(yte, "_ffmpeg_exe", return_value="ffmpeg"), unittest.mock.patch.object(
                 yte, "build_agent_visual_bundle",
                 return_value={"available": True, "visual_review_recommended": True},
             ):
@@ -279,7 +279,7 @@ class VisualReviewClassifierTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             records = self._records(root)
-            with mock.patch.object(yte, "_ocr_visual_frame", return_value="market update"), mock.patch.object(
+            with unittest.mock.patch.object(yte, "_ocr_visual_frame", return_value="market update"), unittest.mock.patch.object(
                 yte, "_make_contact_sheet", return_value=None
             ):
                 bundle = yte.build_agent_visual_bundle(

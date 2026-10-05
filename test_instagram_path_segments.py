@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import sys
 import tempfile
-import unittest
+import unittest.mock
 from pathlib import Path
 from types import ModuleType
-from unittest import mock
 
 # This unit only exercises pure path/identity helpers. CI does not install the
 # browser runtime, so provide the import surface needed by ephemeral_ingest.
@@ -19,7 +18,6 @@ if not hasattr(playwright_sync, "sync_playwright"):
 playwright_pkg.sync_api = playwright_sync
 
 import ephemeral_ingest as ephemeral
-from ephemeral_ingest import backfill_story_identity_metadata, enrich_story_visual_evidence, extract_story_identity, get_gemini_provider_health, initial_story_gemini_circuit, invalidate_legacy_unstable_story_evidence, normalize_creator_handle, retire_root_media_aliases_for_numeric_story
 from instagram_ingest import safe_creator
 
 
@@ -31,7 +29,7 @@ class InstagramPathSegmentTests(unittest.TestCase):
             ("A_B.C", "A_B.C"),
         ):
             self.assertEqual(safe_creator(value), expected)
-            self.assertEqual(normalize_creator_handle(value), expected)
+            self.assertEqual(ephemeral.normalize_creator_handle(value), expected)
 
     def test_traversal_and_windows_device_names_are_rejected(self) -> None:
         for value in (
@@ -42,16 +40,16 @@ class InstagramPathSegmentTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     safe_creator(value)
                 with self.assertRaises(ValueError):
-                    normalize_creator_handle(value)
+                    ephemeral.normalize_creator_handle(value)
 
 
     def test_root_story_uses_stable_media_path_not_screenshot_hash(self) -> None:
-        first = extract_story_identity(
+        first = ephemeral.extract_story_identity(
             "https://www.instagram.com/stories/example/",
             b"first volatile screenshot",
             "https://scontent.example.net/v/t51.2885-15/abc123.jpg?token=one",
         )
-        second = extract_story_identity(
+        second = ephemeral.extract_story_identity(
             "https://www.instagram.com/stories/example/",
             b"second volatile screenshot",
             "https://scontent.example.net/v/t51.2885-15/abc123.jpg?token=two",
@@ -62,7 +60,7 @@ class InstagramPathSegmentTests(unittest.TestCase):
         self.assertEqual(first[2], "VISIBLE_MEDIA_URL_PATH")
 
     def test_story_url_id_remains_primary_identity(self) -> None:
-        identity = extract_story_identity(
+        identity = ephemeral.extract_story_identity(
             "https://www.instagram.com/stories/example/3995836448797052519/",
             b"screenshot",
             "https://scontent.example.net/media.jpg",
@@ -73,7 +71,7 @@ class InstagramPathSegmentTests(unittest.TestCase):
         )
 
     def test_unresolved_story_root_fails_closed(self) -> None:
-        identity = extract_story_identity(
+        identity = ephemeral.extract_story_identity(
             "https://www.instagram.com/stories/example/",
             b"volatile screenshot",
             None,
@@ -93,7 +91,7 @@ class InstagramPathSegmentTests(unittest.TestCase):
                 }
             }
         }
-        self.assertEqual(invalidate_legacy_unstable_story_evidence(manifest), 1)
+        self.assertEqual(ephemeral.invalidate_legacy_unstable_story_evidence(manifest), 1)
         item = manifest["items"]["STORY:example:frame-old"]
         self.assertEqual(item["research_status"], "INVALID")
         self.assertEqual(
@@ -123,7 +121,7 @@ class InstagramPathSegmentTests(unittest.TestCase):
                 },
             }
         }
-        retired = retire_root_media_aliases_for_numeric_story(
+        retired = ephemeral.retire_root_media_aliases_for_numeric_story(
             manifest,
             creator="example",
             source_type="STORY",
@@ -181,27 +179,27 @@ class InstagramPathSegmentTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             with (
-                mock.patch.object(
+                unittest.mock.patch.object(
                     ephemeral,
                     "instagram_story_error_present",
                     return_value=False,
                 ),
-                mock.patch.object(
+                unittest.mock.patch.object(
                     ephemeral,
                     "story_view_confirmation_present",
                     return_value=False,
                 ),
-                mock.patch.object(
+                unittest.mock.patch.object(
                     ephemeral,
                     "dismiss_story_view_confirmation",
                     return_value=False,
                 ),
-                mock.patch.object(
+                unittest.mock.patch.object(
                     ephemeral,
                     "visible_story_media_url",
                     side_effect=media_url,
                 ),
-                mock.patch.object(
+                unittest.mock.patch.object(
                     ephemeral,
                     "wait_for_story_media_ready",
                     return_value={
@@ -213,7 +211,7 @@ class InstagramPathSegmentTests(unittest.TestCase):
                         "media": {"kind": "image", "ready": True},
                     },
                 ),
-                mock.patch.object(
+                unittest.mock.patch.object(
                     ephemeral,
                     "safe_body_text",
                     return_value="story",
@@ -347,7 +345,7 @@ class InstagramPathSegmentTests(unittest.TestCase):
             settings.parent.mkdir(parents=True)
             settings.write_text("{}", encoding="utf-8")
 
-            with mock.patch(
+            with unittest.mock.patch(
                 "ephemeral_ingest.extract_image_evidence_gemini",
                 return_value={
                     "text": "Readable Story evidence with enough factual detail.",
@@ -356,7 +354,7 @@ class InstagramPathSegmentTests(unittest.TestCase):
                     "model": "gemini-3.8-flash",
                 },
             ) as extract:
-                result = enrich_story_visual_evidence(
+                result = ephemeral.enrich_story_visual_evidence(
                     root,
                     manifest,
                     keys,
@@ -410,7 +408,7 @@ class InstagramPathSegmentTests(unittest.TestCase):
                 "retry_after_source": "TEST",
             }
 
-            with mock.patch(
+            with unittest.mock.patch(
                 "ephemeral_ingest.extract_story_text_local_ocr",
                 return_value={
                     "text": "x",
@@ -419,13 +417,13 @@ class InstagramPathSegmentTests(unittest.TestCase):
                     "model": "eng+swe",
                 },
             ) as ocr:
-                first = enrich_story_visual_evidence(
+                first = ephemeral.enrich_story_visual_evidence(
                     root,
                     manifest,
                     [key],
                     circuit_state=dict(circuit),
                 )
-                second = enrich_story_visual_evidence(
+                second = ephemeral.enrich_story_visual_evidence(
                     root,
                     manifest,
                     [key],
@@ -433,7 +431,7 @@ class InstagramPathSegmentTests(unittest.TestCase):
                 )
 
                 shot.write_bytes(b"changed-pixels")
-                third = enrich_story_visual_evidence(
+                third = ephemeral.enrich_story_visual_evidence(
                     root,
                     manifest,
                     [key],
@@ -525,11 +523,11 @@ class InstagramPathSegmentTests(unittest.TestCase):
                 }
             }
 
-            with mock.patch(
+            with unittest.mock.patch(
                 "ephemeral_ingest.extract_image_evidence_gemini",
                 side_effect=FakeGeminiError("secret provider body"),
             ):
-                result = enrich_story_visual_evidence(
+                result = ephemeral.enrich_story_visual_evidence(
                     root,
                     manifest,
                     [key],
@@ -584,11 +582,11 @@ class InstagramPathSegmentTests(unittest.TestCase):
                     "screenshot_file": str(shot.relative_to(root)),
                 }
 
-            with mock.patch(
+            with unittest.mock.patch(
                 "ephemeral_ingest.extract_image_evidence_gemini",
                 side_effect=FakeGeminiError("provider quota body"),
             ) as extract:
-                result = enrich_story_visual_evidence(
+                result = ephemeral.enrich_story_visual_evidence(
                     root,
                     manifest,
                     keys,
@@ -647,18 +645,18 @@ class InstagramPathSegmentTests(unittest.TestCase):
                     }
                 })
 
-            with mock.patch(
+            with unittest.mock.patch(
                 "ephemeral_ingest.extract_image_evidence_gemini",
                 side_effect=FakeGeminiError("provider body"),
             ) as extract:
-                first = enrich_story_visual_evidence(
+                first = ephemeral.enrich_story_visual_evidence(
                     root,
                     manifests[0],
                     [keys[0]],
                     max_attempts=2,
                     circuit_state=circuit,
                 )
-                second = enrich_story_visual_evidence(
+                second = ephemeral.enrich_story_visual_evidence(
                     root,
                     manifests[1],
                     [keys[1]],
@@ -678,7 +676,7 @@ class InstagramPathSegmentTests(unittest.TestCase):
                 "DEFERRED",
             )
 
-            health = get_gemini_provider_health(root)
+            health = ephemeral.get_gemini_provider_health(root)
             self.assertEqual(health["last_code"], 429)
             self.assertEqual(health["last_status"], "RESOURCE_EXHAUSTED")
             self.assertEqual(health["retry_after_source"], "PROVIDER_RETRY_AFTER")
@@ -716,13 +714,13 @@ class InstagramPathSegmentTests(unittest.TestCase):
                 }
             }
 
-            with mock.patch(
+            with unittest.mock.patch(
                 "ephemeral_ingest.extract_image_evidence_gemini",
                 side_effect=FakeGeminiError("hidden"),
             ):
-                enrich_story_visual_evidence(root, manifest, [key], max_attempts=1)
+                ephemeral.enrich_story_visual_evidence(root, manifest, [key], max_attempts=1)
 
-            next_circuit = initial_story_gemini_circuit(root)
+            next_circuit = ephemeral.initial_story_gemini_circuit(root)
             self.assertTrue(next_circuit["open"])
             self.assertEqual(next_circuit["reason"], "PROVIDER_RATE_LIMIT")
             self.assertEqual(next_circuit["retry_after_source"], "PROVIDER_RETRY_AFTER")
@@ -739,7 +737,7 @@ class InstagramPathSegmentTests(unittest.TestCase):
             "visual_description": "Existing readable evidence",
         }
 
-        changed = backfill_story_identity_metadata(
+        changed = ephemeral.backfill_story_identity_metadata(
             item,
             story_id="3995836448797052519",
             identity_basis="STORY_URL_ID",
@@ -762,7 +760,7 @@ class InstagramPathSegmentTests(unittest.TestCase):
             "source_url": "https://www.instagram.com/stories/example/123/",
         }
 
-        changed = backfill_story_identity_metadata(
+        changed = ephemeral.backfill_story_identity_metadata(
             item,
             story_id="123",
             identity_basis="STORY_URL_ID",

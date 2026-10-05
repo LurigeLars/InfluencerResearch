@@ -19,13 +19,13 @@ class CamoFoxRetryTests(unittest.TestCase):
             detail='{"code":"admission_rejected","retryable":true}',
         )
         with (
-            mock.patch.object(sync, "_ensure_fallback_server", return_value={"base_url": "http://camofox"}),
-            mock.patch.object(
+            unittest.mock.patch.object(sync, "_ensure_fallback_server", return_value={"base_url": "http://camofox"}),
+            unittest.mock.patch.object(
                 sync,
                 "_fallback_request_json",
                 side_effect=[transient, {"tabId": "ok"}],
             ) as request,
-            mock.patch.object(sync.time, "sleep") as sleep,
+            unittest.mock.patch.object(sync.time, "sleep") as sleep,
         ):
             result = sync.request_json("POST", "/tabs", {"userId": "u"}, timeout=30)
 
@@ -41,8 +41,8 @@ class CamoFoxRetryTests(unittest.TestCase):
             detail='{"error":"Internal server error","retryable":false}',
         )
         with (
-            mock.patch.object(sync, "_ensure_fallback_server", return_value={"base_url": "http://camofox"}),
-            mock.patch.object(sync, "_fallback_request_json", side_effect=failure) as request,
+            unittest.mock.patch.object(sync, "_ensure_fallback_server", return_value={"base_url": "http://camofox"}),
+            unittest.mock.patch.object(sync, "_fallback_request_json", side_effect=failure) as request,
         ):
             with self.assertRaises(sync.CamoFoxHttpError):
                 sync.request_json("POST", "/tabs", {"userId": "u"}, timeout=30)
@@ -51,7 +51,7 @@ class CamoFoxRetryTests(unittest.TestCase):
 
     def test_profile_readiness_returns_without_blind_sleep_when_links_are_ready(self) -> None:
         with (
-            mock.patch.object(
+            unittest.mock.patch.object(
                 sync,
                 "request_json",
                 return_value={
@@ -68,7 +68,7 @@ class CamoFoxRetryTests(unittest.TestCase):
                     }
                 },
             ) as request,
-            mock.patch.object(sync.time, "sleep") as sleep,
+            unittest.mock.patch.object(sync.time, "sleep") as sleep,
         ):
             result = sync._wait_for_tiktok_profile_ready(
                 "tab-1",
@@ -108,8 +108,8 @@ class CamoFoxRetryTests(unittest.TestCase):
             },
         ]
         with (
-            mock.patch.object(sync, "request_json", side_effect=responses) as request,
-            mock.patch.object(sync.time, "sleep") as sleep,
+            unittest.mock.patch.object(sync, "request_json", side_effect=responses) as request,
+            unittest.mock.patch.object(sync.time, "sleep") as sleep,
         ):
             result = sync._wait_for_tiktok_profile_ready(
                 "tab-1",
@@ -130,7 +130,7 @@ class CamoFoxRetryTests(unittest.TestCase):
             "https://www.tiktok.com/@nicholas_crown/video/101",
             "https://www.tiktok.com/@nicholas_crown/video/102",
         ]
-        with mock.patch.object(sync, "request_json") as request:
+        with unittest.mock.patch.object(sync, "request_json") as request:
             found, diag = sync.collect_video_urls(
                 "tab-1",
                 user_id="user-1",
@@ -160,7 +160,7 @@ class CamoFoxRetryTests(unittest.TestCase):
                 return links
             raise AssertionError(f"unexpected request: {method} {path}")
 
-        with mock.patch.object(sync, "request_json", side_effect=fake_request):
+        with unittest.mock.patch.object(sync, "request_json", side_effect=fake_request):
             found, diag = sync.collect_video_urls(
                 "tab-1",
                 user_id="user-1",
@@ -186,7 +186,7 @@ class CamoFoxRetryTests(unittest.TestCase):
                 "https://www.tiktok.com/@nicholas_crown/video/101",
             ]
         }
-        with mock.patch.object(
+        with unittest.mock.patch.object(
             sync,
             "request_json",
             side_effect=[
@@ -239,9 +239,9 @@ class CamoFoxRetryTests(unittest.TestCase):
                 "max_new_downloads": 1,
             }
             with (
-                mock.patch.object(sync, "request_json") as request,
-                mock.patch.object(sync, "collect_video_urls") as collect,
-                mock.patch.object(sync, "download_one", return_value={
+                unittest.mock.patch.object(sync, "request_json") as request,
+                unittest.mock.patch.object(sync, "collect_video_urls") as collect,
+                unittest.mock.patch.object(sync, "download_one", return_value={
                     "video_id": video_id,
                     "url": f"https://www.tiktok.com/@nicholas_crown/video/{video_id}",
                     "ok": False,
@@ -284,8 +284,8 @@ class CamoFoxRetryTests(unittest.TestCase):
                 "max_new_downloads": 1,
             }
             with (
-                mock.patch.object(sync, "request_json", side_effect=fake_request),
-                mock.patch.object(
+                unittest.mock.patch.object(sync, "request_json", side_effect=fake_request),
+                unittest.mock.patch.object(
                     sync,
                     "_wait_for_tiktok_profile_ready",
                     return_value={
@@ -294,7 +294,7 @@ class CamoFoxRetryTests(unittest.TestCase):
                         "wait_ms": 0.0,
                     },
                 ),
-                mock.patch.object(sync, "collect_video_urls", side_effect=RuntimeError("boom")),
+                unittest.mock.patch.object(sync, "collect_video_urls", side_effect=RuntimeError("boom")),
             ):
                 with self.assertRaisesRegex(RuntimeError, "boom"):
                     sync.process_source(
