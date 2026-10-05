@@ -38,6 +38,9 @@ def summarize_status(path: Path | None) -> dict | None:
         "deferred_due_to_cap_count",
         "error",
         "error_count",
+        "stop_reason",
+        "transitions",
+        "ingestion_groups",
         "errors",
         "completed",
         "completed_ids",
@@ -84,6 +87,8 @@ _DETAIL_ARRAY_COUNT_KEYS = {
     "extraction_error_items": "extraction_error_count",
     "pending_extraction_items": "pending_extraction_count",
     "creator_filters": "creator_filter_count",
+    "transitions": "transition_count",
+    "ingestion_groups": "ingestion_group_count",
 }
 
 

@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
+import signal
 import subprocess
 import sys
+import threading
 import time
+import uuid
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
@@ -13,7 +17,11 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from creator_registry import get_creator, load_registry, select_monitor_sources
-from creator_monitor import manifest_done_ids, _tiktok_published_at
+from creator_monitor import (
+    manifest_done_ids,
+    _tiktok_published_at,
+    _classify_ingestion_result,
+)
 import youtube_creator_evaluation as yte
 import tiktok_camofox_sync as tts
 import instagram_ingest as instagram
@@ -35,7 +43,7 @@ def _bounded_env_int(
     return max(minimum, min(maximum, value))
 
 
-RECENT_CHECK_VERSION = "0.2.17"
+RECENT_CHECK_VERSION = "0.3.0"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
@@ -49,6 +57,20 @@ DISCOVERY_BROWSER_WORKERS = _bounded_env_int(
     4,
 )
 DISCOVERY_NETWORK_WORKERS = 4
+INGESTION_GROUP_TIMEOUT_SECONDS = _bounded_env_int(
+    "INFLUENCER_RESEARCH_INGESTION_GROUP_TIMEOUT_SECONDS",
+    360,
+    30,
+    900,
+)
+STORY_PREFETCH_TIMEOUT_SECONDS = _bounded_env_int(
+    "INFLUENCER_RESEARCH_STORY_PREFETCH_TIMEOUT_SECONDS",
+    120,
+    15,
+    600,
+)
+WORKER_HEARTBEAT_SECONDS = 5.0
+WORKER_POLL_SECONDS = 0.25
 MAX_ANALYSIS_EVIDENCE_CHARS = 6000
 STOCKHOLM_TZ = ZoneInfo("Europe/Stockholm")
 
@@ -72,6 +94,188 @@ def atomic_json(path: Path, obj: dict) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, path)
+
+
+def _terminate_process_group(proc: subprocess.Popen, *, grace_seconds: float = 2.0) -> None:
+    if proc.poll() is not None:
+        return
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        with contextlib.suppress(Exception):
+            proc.terminate()
+    try:
+        proc.wait(timeout=max(0.1, grace_seconds))
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        with contextlib.suppress(Exception):
+            proc.kill()
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.wait(timeout=2)
+
+
+def _recent_worker_paths(root: Path, label: str) -> tuple[Path, Path]:
+    work_dir = root / "state" / "recent_check_workers"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    token = f"{label}-{uuid.uuid4().hex}"
+    return work_dir / f"{token}.request.json", work_dir / f"{token}.result.json"
+
+
+def _launch_recent_worker(
+    root: Path,
+    payload: dict,
+    *,
+    label: str,
+    timeout_seconds: int,
+) -> dict:
+    request_path, result_path = _recent_worker_paths(root, label)
+    request = {
+        "schema_version": 1,
+        "recent_check_version": RECENT_CHECK_VERSION,
+        "root": str(root),
+        "result_path": str(result_path),
+        "timeout_seconds": int(timeout_seconds),
+        "parent_pid": os.getpid(),
+        **payload,
+    }
+    atomic_json(request_path, request)
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "--internal-worker",
+            str(request_path),
+        ],
+        cwd=str(root / "app"),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    return {
+        "proc": proc,
+        "request_path": request_path,
+        "result_path": result_path,
+        "started_clock": time.monotonic(),
+        "timeout_seconds": int(timeout_seconds),
+        "operation": str(payload.get("operation") or ""),
+    }
+
+
+def _wait_recent_worker(
+    handle: dict,
+    *,
+    progress_callback=None,
+) -> dict:
+    proc: subprocess.Popen = handle["proc"]
+    timeout_seconds = int(handle["timeout_seconds"])
+    started_clock = float(handle["started_clock"])
+    deadline = started_clock + timeout_seconds
+    last_heartbeat = 0.0
+    timed_out = False
+    try:
+        while proc.poll() is None:
+            now = time.monotonic()
+            elapsed = now - started_clock
+            if now >= deadline:
+                timed_out = True
+                _terminate_process_group(proc)
+                break
+            if (
+                progress_callback is not None
+                and (last_heartbeat == 0.0 or now - last_heartbeat >= WORKER_HEARTBEAT_SECONDS)
+            ):
+                progress_callback(
+                    elapsed_seconds=round(elapsed, 1),
+                    timeout_seconds=timeout_seconds,
+                )
+                last_heartbeat = now
+            time.sleep(min(WORKER_POLL_SECONDS, max(0.05, deadline - now)))
+
+        elapsed_ms = round((time.monotonic() - started_clock) * 1000, 1)
+        if timed_out:
+            return {
+                "ok": False,
+                "operation": handle["operation"],
+                "timeout": True,
+                "elapsed_ms": elapsed_ms,
+                "error": f"TIMEOUT:{timeout_seconds}s",
+                "worker_returncode": proc.poll(),
+            }
+
+        result = load_json(handle["result_path"], {})
+        if not isinstance(result, dict) or not result:
+            return {
+                "ok": False,
+                "operation": handle["operation"],
+                "timeout": False,
+                "elapsed_ms": elapsed_ms,
+                "error": f"WORKER_RESULT_MISSING:returncode={proc.returncode}",
+                "worker_returncode": proc.returncode,
+            }
+        result["elapsed_ms"] = elapsed_ms
+        result["worker_returncode"] = proc.returncode
+        return result
+    finally:
+        for path in (handle["request_path"], handle["result_path"]):
+            with contextlib.suppress(OSError):
+                Path(path).unlink(missing_ok=True)
+
+
+def _internal_worker_watchdog(
+    *,
+    timeout_seconds: int,
+    result_path: Path,
+    operation: str,
+    parent_pid: int,
+) -> threading.Event:
+    stop = threading.Event()
+
+    def terminate_self(error: str, *, timeout: bool, exit_code: int) -> None:
+        with contextlib.suppress(Exception):
+            atomic_json(
+                result_path,
+                {
+                    "ok": False,
+                    "operation": operation,
+                    "timeout": timeout,
+                    "error": error,
+                },
+            )
+        with contextlib.suppress(Exception):
+            os.killpg(os.getpgrp(), signal.SIGKILL)
+        os._exit(exit_code)
+
+    def watchdog() -> None:
+        deadline = time.monotonic() + max(1, int(timeout_seconds))
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                terminate_self(
+                    f"TIMEOUT:{int(timeout_seconds)}s",
+                    timeout=True,
+                    exit_code=124,
+                )
+                return
+            if stop.wait(min(1.0, remaining)):
+                return
+            if parent_pid > 1 and os.getppid() != parent_pid:
+                terminate_self(
+                    f"PARENT_EXITED:{parent_pid}",
+                    timeout=False,
+                    exit_code=125,
+                )
+                return
+
+    threading.Thread(
+        target=watchdog,
+        name=f"recent-check-{operation.lower()}-watchdog",
+        daemon=True,
+    ).start()
+    return stop
 
 
 def parse_iso_utc(value: str) -> datetime:
@@ -1399,40 +1603,105 @@ def _run_discovery_with_story_prefetch(
     gemini_circuit: dict,
     ollama_budget_state: dict,
     progress_callback=None,
+    transition_callback=None,
 ) -> tuple[tuple[list[dict], list[dict], dict, list[dict], dict], dict]:
-    """Overlap serial Story capture with bounded discovery."""
-    executor = ThreadPoolExecutor(
-        max_workers=1,
-        thread_name_prefix="recent-story-prefetch",
-    )
-    story_future = executor.submit(
-        _run_story_capture_batch,
+    """Overlap Story capture with discovery without an unbounded thread join."""
+    story_targets = _story_capture_targets(selected)
+    story_handle = None
+    if story_targets:
+        story_handle = _launch_recent_worker(
+            root,
+            {
+                "operation": "STORY_PREFETCH",
+                "selected": selected,
+                "max_items": max_items,
+                "gemini_circuit": dict(gemini_circuit),
+                "ollama_budget_state": dict(ollama_budget_state),
+            },
+            label="story-prefetch",
+            timeout_seconds=STORY_PREFETCH_TIMEOUT_SECONDS,
+        )
+
+    discovery_clock = time.perf_counter()
+    discovery_result = _run_discovery_batch(
         root,
         selected,
-        max_items,
-        gemini_circuit=gemini_circuit,
-        ollama_budget_state=ollama_budget_state,
+        cutoff,
+        end,
+        discovery_limit,
+        progress_callback=progress_callback,
     )
-    discovery_clock = time.perf_counter()
-    try:
-        discovery_result = _run_discovery_batch(
-            root,
-            selected,
-            cutoff,
-            end,
-            discovery_limit,
-            progress_callback=progress_callback,
+    discovery_duration_ms = round(
+        (time.perf_counter() - discovery_clock) * 1000,
+        1,
+    )
+    if transition_callback is not None:
+        transition_callback(
+            "DISCOVERY_DONE",
+            stage="DISCOVERY",
+            source_count=len(discovery_result[0]),
+            error_count=len(discovery_result[1]),
+            duration_ms=discovery_duration_ms,
         )
-        discovery_duration_ms = round(
-            (time.perf_counter() - discovery_clock) * 1000,
-            1,
-        )
-        join_clock = time.perf_counter()
-        story_result = story_future.result()
-        join_wait_ms = round((time.perf_counter() - join_clock) * 1000, 1)
-    finally:
-        executor.shutdown(wait=True, cancel_futures=False)
 
+    join_clock = time.perf_counter()
+    if story_handle is None:
+        story_result = {
+            "results": [],
+            "creator_count": 0,
+            "wall_duration_ms": 0.0,
+        }
+    else:
+        def story_wait_progress(*, elapsed_seconds: float, timeout_seconds: int) -> None:
+            if progress_callback is not None:
+                progress_callback(
+                    "STORY_PREFETCH",
+                    phase="WAITING",
+                    elapsed_seconds=elapsed_seconds,
+                    timeout_seconds=timeout_seconds,
+                    total_creators=len(story_targets),
+                    wait_reason="STORY_CAPTURE_WORKER",
+                )
+
+        worker_result = _wait_recent_worker(
+            story_handle,
+            progress_callback=story_wait_progress,
+        )
+        if worker_result.get("ok"):
+            story_result = worker_result.get("story_prefetch") or {
+                "results": [],
+                "creator_count": len(story_targets),
+                "wall_duration_ms": float(worker_result.get("elapsed_ms") or 0.0),
+            }
+            returned_circuit = worker_result.get("gemini_circuit")
+            if isinstance(returned_circuit, dict):
+                gemini_circuit.clear()
+                gemini_circuit.update(returned_circuit)
+            returned_budget = worker_result.get("ollama_budget_state")
+            if isinstance(returned_budget, dict):
+                ollama_budget_state.clear()
+                ollama_budget_state.update(returned_budget)
+        else:
+            reason = str(worker_result.get("error") or "STORY_PREFETCH_WORKER_FAILED")
+            story_result = {
+                "results": [
+                    {
+                        "creator_key": str(profile["creator_key"]),
+                        "profile": profile,
+                        "source": source,
+                        "run": None,
+                        "error": reason,
+                        "duration_ms": float(worker_result.get("elapsed_ms") or 0.0),
+                    }
+                    for profile, source in story_targets
+                ],
+                "creator_count": len(story_targets),
+                "wall_duration_ms": float(worker_result.get("elapsed_ms") or 0.0),
+                "timeout": bool(worker_result.get("timeout")),
+                "error": reason,
+            }
+
+    join_wait_ms = round((time.perf_counter() - join_clock) * 1000, 1)
     story_result["discovery_duration_ms"] = discovery_duration_ms
     story_result["join_wait_ms"] = join_wait_ms
     story_result["overlap_saved_estimate_ms"] = round(
@@ -1443,7 +1712,6 @@ def _run_discovery_with_story_prefetch(
         1,
     )
     return discovery_result, story_result
-
 
 def _run_discovery_batch(
     root: Path,
@@ -1710,6 +1978,236 @@ def _run_discovery_batch(
     return discoveries, errors, source_map, stage_timings, meta
 
 
+def _plan_recent_items(all_recent: list[dict], max_items: int) -> dict:
+    pending = [item for item in all_recent if not item.get("already_ingested")]
+    selected_pending = pending[:max_items]
+    deferred = pending[max_items:]
+    grouped: dict[tuple[str, str], list[str]] = defaultdict(list)
+    selected_metadata: dict[tuple[str, str, str], dict] = {}
+    for item in selected_pending:
+        creator_key = str(item["creator_key"])
+        platform = str(item["platform"])
+        source_id = str(item["source_id"])
+        grouped[(creator_key, platform)].append(source_id)
+        selected_metadata[(creator_key, platform, source_id)] = item
+    return {
+        "pending": pending,
+        "selected_pending": selected_pending,
+        "deferred": deferred,
+        "grouped": grouped,
+        "selected_metadata": selected_metadata,
+    }
+
+
+def _manifest_stage_ids(root: Path, platform: str, ids: list[str]) -> dict:
+    manifest = load_json(root / "state" / "manifest.json", {"items": {}})
+    items = manifest.get("items") if isinstance(manifest.get("items"), dict) else {}
+    downloaded: list[str] = []
+    transcribed: list[str] = []
+    for source_id in ids:
+        key = source_id
+        if platform == "YOUTUBE":
+            key = f"yt_{source_id}"
+        elif platform == "TIKTOK":
+            key = f"tt_{source_id}"
+        item = items.get(key)
+        if not isinstance(item, dict) and platform == "INSTAGRAM":
+            item = items.get(source_id)
+        if not isinstance(item, dict):
+            continue
+        if item.get("download_status") == "DONE":
+            downloaded.append(source_id)
+        if item.get("transcription_status") in {"DONE", "NOT_APPLICABLE"}:
+            transcribed.append(source_id)
+    persisted = sorted(set(ids) & manifest_done_ids(root, platform))
+    return {
+        "downloaded_ids": downloaded,
+        "transcribed_ids": transcribed,
+        "visual_done_ids": persisted,
+        "persisted_ids": persisted,
+    }
+
+
+def _evaluate_ingestion_group(
+    root: Path,
+    *,
+    creator_key: str,
+    platform: str,
+    ids: list[str],
+    worker_result: dict,
+    skipped_already_ingested_count: int,
+) -> dict:
+    ingestion = (
+        worker_result.get("ingestion")
+        if isinstance(worker_result.get("ingestion"), dict)
+        else {}
+    )
+    stages = _manifest_stage_ids(root, platform, ids)
+    persisted_ids = stages["persisted_ids"]
+    had_failure = (
+        not bool(worker_result.get("ok"))
+        or bool(worker_result.get("timeout"))
+        or int(ingestion.get("returncode") or 0) != 0
+        or bool(ingestion.get("failures"))
+        or bool(ingestion.get("errors"))
+    )
+    result, completed_set, failed_ids = _classify_ingestion_result(
+        ids,
+        persisted_ids,
+        had_failure=had_failure,
+    )
+    failures = [
+        row for row in (ingestion.get("failures") or [])
+        if isinstance(row, dict)
+    ]
+    first_failure = failures[0] if failures else {}
+    ingestion_errors = list(ingestion.get("errors") or [])
+    failure_stage = str(first_failure.get("stage") or "INGESTION")
+    error_detail = str(worker_result.get("error") or "").strip()
+    if not error_detail and first_failure:
+        detail = str(
+            first_failure.get("detail")
+            or first_failure.get("error")
+            or first_failure.get("reason")
+            or ""
+        ).strip()
+        error_detail = (
+            f"{failure_stage}:{detail}"
+            if detail
+            else failure_stage
+        )
+    if not error_detail and ingestion_errors:
+        error_detail = str(ingestion_errors[0])[:1200]
+    if worker_result.get("timeout"):
+        terminal_reason = "GROUP_TIMEOUT"
+        error_detail = error_detail or f"TIMEOUT:{INGESTION_GROUP_TIMEOUT_SECONDS}s"
+    elif not worker_result.get("ok"):
+        terminal_reason = "GROUP_WORKER_FAILED"
+        error_detail = error_detail or "GROUP_WORKER_FAILED"
+    elif failed_ids:
+        terminal_reason = "PERSISTENCE_INCOMPLETE"
+        error_detail = error_detail or (
+            "SELECTED_ITEMS_NOT_PERSISTED:" + ",".join(failed_ids)
+        )
+    elif had_failure:
+        terminal_reason = "INGESTION_REPORTED_FAILURE"
+        error_detail = error_detail or "INGESTION_REPORTED_FAILURE"
+    else:
+        terminal_reason = "PERSISTED"
+        error_detail = ""
+    return {
+        "creator": creator_key,
+        "platform": platform,
+        "item_ids": list(ids),
+        "selected_count": len(ids),
+        "completed_count": len(completed_set),
+        "completed_ids": sorted(completed_set),
+        "skipped_already_ingested_count": int(skipped_already_ingested_count),
+        "failed_count": len(failed_ids),
+        "failed_ids": failed_ids,
+        "result": result,
+        "terminal_reason": terminal_reason,
+        "failure_stage": failure_stage if error_detail else None,
+        "error_detail": error_detail or None,
+        "timeout": bool(worker_result.get("timeout")),
+        "elapsed_ms": float(worker_result.get("elapsed_ms") or 0.0),
+        "stages": stages,
+        "worker_error": worker_result.get("error"),
+        "ingestion": ingestion,
+    }
+
+
+def _internal_worker_main(request_path: Path) -> int:
+    request = load_json(request_path, {})
+    result_path = Path(str(request.get("result_path") or ""))
+    operation = str(request.get("operation") or "")
+    timeout_seconds = int(request.get("timeout_seconds") or 0)
+    if (
+        request.get("schema_version") != 1
+        or not result_path.is_absolute()
+        or timeout_seconds <= 0
+    ):
+        return 2
+
+    root = Path(str(request.get("root") or "")).resolve()
+    watchdog_stop = _internal_worker_watchdog(
+        timeout_seconds=timeout_seconds,
+        result_path=result_path,
+        operation=operation,
+        parent_pid=int(request.get("parent_pid") or 0),
+    )
+    try:
+        if operation == "STORY_PREFETCH":
+            gemini_circuit = dict(request.get("gemini_circuit") or {})
+            ollama_budget_state = dict(request.get("ollama_budget_state") or {})
+            story_prefetch = _run_story_capture_batch(
+                root,
+                list(request.get("selected") or []),
+                int(request.get("max_items") or 1),
+                gemini_circuit=gemini_circuit,
+                ollama_budget_state=ollama_budget_state,
+            )
+            result = {
+                "ok": True,
+                "operation": operation,
+                "story_prefetch": story_prefetch,
+                "gemini_circuit": gemini_circuit,
+                "ollama_budget_state": ollama_budget_state,
+            }
+        elif operation == "INGESTION_GROUP":
+            creator_key = str(request["creator_key"])
+            platform = str(request["platform"]).upper()
+            ids = [str(value) for value in (request.get("ids") or [])]
+            profile = dict(request.get("profile") or {})
+            source = dict(request.get("source") or {})
+            if platform == "YOUTUBE":
+                ingestion = _ingest_youtube(root, creator_key, ids)
+            elif platform == "TIKTOK":
+                ingestion = _ingest_tiktok(
+                    root,
+                    profile,
+                    source,
+                    ids,
+                    int(request.get("discovery_limit") or MIN_DISCOVERY_PER_SOURCE),
+                )
+            elif platform == "INSTAGRAM":
+                ingestion = _ingest_instagram(
+                    root,
+                    profile,
+                    source,
+                    ids,
+                    {
+                        str(key): str(value)
+                        for key, value in (request.get("published_by_id") or {}).items()
+                    },
+                )
+            else:
+                raise ValueError(f"BAD_INGESTION_PLATFORM:{platform}")
+            result = {
+                "ok": True,
+                "operation": operation,
+                "ingestion": ingestion,
+            }
+        else:
+            raise ValueError(f"BAD_INTERNAL_OPERATION:{operation}")
+        atomic_json(result_path, result)
+        return 0
+    except Exception as exc:
+        with contextlib.suppress(Exception):
+            atomic_json(
+                result_path,
+                {
+                    "ok": False,
+                    "operation": operation,
+                    "timeout": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                },
+            )
+        return 1
+    finally:
+        watchdog_stop.set()
+
+
 def _main_impl() -> int:
     ap = argparse.ArgumentParser(description="InfluencerResearch recent-window discovery + automatic ingestion")
     ap.add_argument("--root", type=Path, required=True)
@@ -1728,6 +2226,8 @@ def _main_impl() -> int:
     started = now_iso()
     run_clock = time.perf_counter()
     stage_timings: list[dict] = []
+    transition_events: list[dict] = []
+    ingestion_groups: list[dict] = []
 
     def record_timing(stage: str, started_clock: float, **dimensions) -> None:
         stage_timings.append({
@@ -1759,10 +2259,23 @@ def _main_impl() -> int:
                 "stage": stage,
                 **{key: value for key, value in details.items() if value is not None},
             },
+            "transitions": transition_events[-200:],
+            "ingestion_groups": ingestion_groups[-100:],
             "timings": {
                 "elapsed_ms": round((time.perf_counter() - run_clock) * 1000, 1),
             },
         })
+
+    def emit_transition(event: str, *, stage: str, **details) -> None:
+        row = {
+            "event": event,
+            "stage": stage,
+            "at": now_iso(),
+            "elapsed_ms": round((time.perf_counter() - run_clock) * 1000, 1),
+            **{key: value for key, value in details.items() if value is not None},
+        }
+        transition_events.append(row)
+        write_progress(stage, phase=event, event=event, **details)
 
     write_progress("STARTING", phase="STARTED")
 
@@ -1808,6 +2321,7 @@ def _main_impl() -> int:
             gemini_circuit=story_gemini_circuit,
             ollama_budget_state=story_ollama_budget,
             progress_callback=write_progress,
+            transition_callback=emit_transition,
         )
         errors.extend(discovery_errors)
         stage_timings.extend(discovery_timings)
@@ -1818,9 +2332,12 @@ def _main_impl() -> int:
         for item in all_recent:
             item["already_ingested"] = item["source_id"] in done_by_platform[item["platform"]]
 
-        pending = [x for x in all_recent if not x["already_ingested"]]
-        selected_pending = pending[:max_items]
-        deferred = pending[max_items:]
+        plan = _plan_recent_items(all_recent, max_items)
+        pending = plan["pending"]
+        selected_pending = plan["selected_pending"]
+        deferred = plan["deferred"]
+        grouped = plan["grouped"]
+        selected_metadata = plan["selected_metadata"]
         write_progress(
             "DISCOVERY",
             phase="COMPLETE",
@@ -1831,80 +2348,198 @@ def _main_impl() -> int:
             pending_found_count=len(pending),
             errors_so_far=len(errors),
         )
+        emit_transition(
+            "SELECTION_DONE",
+            stage="SELECTION",
+            recent_found_count=len(all_recent),
+            already_ingested_count=sum(1 for item in all_recent if item["already_ingested"]),
+            selected_count=len(selected_pending),
+            deferred_count=len(deferred),
+            group_count=len(grouped),
+        )
 
-        grouped: dict[tuple[str, str], list[str]] = defaultdict(list)
-        selected_metadata: dict[tuple[str, str, str], dict] = {}
-        for item in selected_pending:
-            grouped[(item["creator_key"], item["platform"])].append(item["source_id"])
-            selected_metadata[(item["creator_key"], item["platform"], item["source_id"])] = item
+        already_by_group: dict[tuple[str, str], int] = defaultdict(int)
+        for item in all_recent:
+            if item.get("already_ingested"):
+                already_by_group[(str(item["creator_key"]), str(item["platform"]))] += 1
 
         ingestion_results = []
         ingestion_group_count = len(grouped)
+        for (creator_key, platform), ids in grouped.items():
+            emit_transition(
+                "GROUP_CREATED",
+                stage="INGESTION",
+                creator=creator_key,
+                platform=platform,
+                item_ids=list(ids),
+                selected_count=len(ids),
+                completed_count=0,
+                skipped_already_ingested_count=already_by_group[(creator_key, platform)],
+                failed_count=0,
+                terminal_reason="PENDING",
+            )
+
         for group_index, ((creator_key, platform), ids) in enumerate(
             grouped.items(),
             start=1,
         ):
             profile, source = source_map[(creator_key, platform)]
-            write_progress(
-                "INGESTION",
-                phase="GROUP_RUNNING",
+            ingestion_clock = time.perf_counter()
+            emit_transition(
+                "GROUP_STARTED",
+                stage="INGESTION",
                 completed_groups=group_index - 1,
                 total_groups=ingestion_group_count,
-                current_creator=creator_key,
-                current_platform=platform,
-                item_count=len(ids),
-                errors_so_far=len(errors),
+                creator=creator_key,
+                platform=platform,
+                item_ids=list(ids),
+                selected_count=len(ids),
+                skipped_already_ingested_count=already_by_group[(creator_key, platform)],
+                timeout_seconds=INGESTION_GROUP_TIMEOUT_SECONDS,
             )
-            ingestion_clock = time.perf_counter()
             try:
-                if platform == "YOUTUBE":
-                    ing = _ingest_youtube(root, creator_key, ids)
-                elif platform == "TIKTOK":
-                    ing = _ingest_tiktok(root, profile, source, ids, discovery_limit)
-                elif platform == "INSTAGRAM":
-                    ing = _ingest_instagram(
-                        root,
-                        profile,
-                        source,
-                        ids,
-                        {
+                worker_handle = _launch_recent_worker(
+                    root,
+                    {
+                        "operation": "INGESTION_GROUP",
+                        "creator_key": creator_key,
+                        "platform": platform,
+                        "ids": list(ids),
+                        "profile": profile,
+                        "source": source,
+                        "discovery_limit": discovery_limit,
+                        "published_by_id": {
                             source_id: str(
                                 selected_metadata[(creator_key, platform, source_id)].get("published_at") or ""
                             )
                             for source_id in ids
                         },
-                    )
-                else:
-                    continue
-                ingestion_results.append({"creator_key": creator_key, "platform": platform, **ing})
-                if int(ing.get("returncode", 0)) != 0:
-                    failure = next(
-                        (row for row in (ing.get("failures") or []) if isinstance(row, dict)),
-                        {},
-                    )
-                    failure_stage = str(failure.get("stage") or "").strip()
-                    failure_detail = str(failure.get("detail") or "").strip()
-                    diagnostic = f"RETURNCODE:{ing.get('returncode')}"
-                    if failure_stage:
-                        diagnostic += f"; STAGE:{failure_stage}"
-                    if failure_detail:
-                        diagnostic += f"; DETAIL:{failure_detail[:1200]}"
-                    errors.append({
-                        "creator_key": creator_key,
-                        "platform": platform,
-                        "stage": "INGESTION",
-                        "error": diagnostic,
-                    })
-            except Exception as exc:
-                errors.append({"creator_key": creator_key, "platform": platform, "stage": "INGESTION", "error": f"{type(exc).__name__}: {exc}"})
-            finally:
-                record_timing(
-                    "INGESTION",
-                    ingestion_clock,
-                    creator_key=creator_key,
-                    platform=platform,
-                    item_count=len(ids),
+                    },
+                    label=f"ingest-{creator_key}-{platform.lower()}",
+                    timeout_seconds=INGESTION_GROUP_TIMEOUT_SECONDS,
                 )
+
+                def group_wait_progress(*, elapsed_seconds: float, timeout_seconds: int) -> None:
+                    write_progress(
+                        "INGESTION",
+                        phase="GROUP_WAITING",
+                        completed_groups=group_index - 1,
+                        total_groups=ingestion_group_count,
+                        current_creator=creator_key,
+                        current_platform=platform,
+                        item_count=len(ids),
+                        elapsed_seconds=elapsed_seconds,
+                        timeout_seconds=timeout_seconds,
+                        wait_reason="INGESTION_GROUP_WORKER",
+                        errors_so_far=len(errors),
+                    )
+
+                worker_result = _wait_recent_worker(
+                    worker_handle,
+                    progress_callback=group_wait_progress,
+                )
+            except Exception as exc:
+                worker_result = {
+                    "ok": False,
+                    "timeout": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "elapsed_ms": round((time.perf_counter() - ingestion_clock) * 1000, 1),
+                }
+
+            group_summary = _evaluate_ingestion_group(
+                root,
+                creator_key=creator_key,
+                platform=platform,
+                ids=list(ids),
+                worker_result=worker_result,
+                skipped_already_ingested_count=already_by_group[(creator_key, platform)],
+            )
+            ingestion_groups.append(group_summary)
+            ing = group_summary.get("ingestion") or {}
+            ingestion_results.append({
+                "creator_key": creator_key,
+                "platform": platform,
+                **ing,
+                "group_result": group_summary["result"],
+                "group_terminal_reason": group_summary["terminal_reason"],
+                "group_failed_ids": group_summary["failed_ids"],
+            })
+
+            stages = group_summary["stages"]
+            if stages["downloaded_ids"]:
+                emit_transition(
+                    "DOWNLOAD_DONE",
+                    stage="INGESTION",
+                    creator=creator_key,
+                    platform=platform,
+                    item_ids=stages["downloaded_ids"],
+                    completed_count=len(stages["downloaded_ids"]),
+                )
+            if stages["transcribed_ids"]:
+                emit_transition(
+                    "TRANSCRIPTION_DONE",
+                    stage="INGESTION",
+                    creator=creator_key,
+                    platform=platform,
+                    item_ids=stages["transcribed_ids"],
+                    completed_count=len(stages["transcribed_ids"]),
+                )
+            if stages["visual_done_ids"]:
+                emit_transition(
+                    "VISUAL_DONE",
+                    stage="INGESTION",
+                    creator=creator_key,
+                    platform=platform,
+                    item_ids=stages["visual_done_ids"],
+                    completed_count=len(stages["visual_done_ids"]),
+                )
+            if stages["persisted_ids"]:
+                emit_transition(
+                    "PERSIST_DONE",
+                    stage="INGESTION",
+                    creator=creator_key,
+                    platform=platform,
+                    item_ids=stages["persisted_ids"],
+                    completed_count=len(stages["persisted_ids"]),
+                )
+
+            if group_summary["result"] != "INGESTED":
+                errors.append({
+                    "creator_key": creator_key,
+                    "platform": platform,
+                    "stage": "INGESTION",
+                    "item_ids": group_summary["failed_ids"],
+                    "error": group_summary["terminal_reason"],
+                    "failure_stage": group_summary.get("failure_stage"),
+                    "error_detail": group_summary.get("error_detail"),
+                    "timeout": group_summary["timeout"],
+                    "worker_error": group_summary.get("worker_error"),
+                })
+
+            emit_transition(
+                "GROUP_DONE",
+                stage="INGESTION",
+                creator=creator_key,
+                platform=platform,
+                item_ids=list(ids),
+                selected_count=group_summary["selected_count"],
+                completed_count=group_summary["completed_count"],
+                skipped_already_ingested_count=group_summary["skipped_already_ingested_count"],
+                failed_count=group_summary["failed_count"],
+                failed_ids=group_summary["failed_ids"],
+                elapsed_ms=group_summary["elapsed_ms"],
+                terminal_reason=group_summary["terminal_reason"],
+                failure_stage=group_summary.get("failure_stage"),
+                error_detail=group_summary.get("error_detail"),
+                result=group_summary["result"],
+            )
+            record_timing(
+                "INGESTION",
+                ingestion_clock,
+                creator_key=creator_key,
+                platform=platform,
+                item_count=len(ids),
+            )
 
         write_progress(
             "INGESTION",
@@ -1959,11 +2594,23 @@ def _main_impl() -> int:
                 )
                 story_clock = time.perf_counter()
                 prefetch_row = story_prefetch_by_creator.get(creator_key) or {}
-                precomputed_run = (
-                    prefetch_row.get("run")
-                    if not prefetch_row.get("error")
-                    else None
-                )
+                if prefetch_row.get("error"):
+                    story_error = str(prefetch_row.get("error") or "STORY_PREFETCH_FAILED")
+                    errors.append({
+                        "creator_key": creator_key,
+                        "platform": "INSTAGRAM",
+                        "stage": "STORY_PREFETCH",
+                        "error": story_error,
+                    })
+                    story_results.append({
+                        "creator_key": creator_key,
+                        "promoted": [],
+                        "available": [],
+                        "warnings": [story_error],
+                        "state": "FAILED",
+                    })
+                    continue
+                precomputed_run = prefetch_row.get("run")
                 try:
                     story_result = _ingest_instagram_stories(
                         root,
@@ -2096,6 +2743,13 @@ def _main_impl() -> int:
             candidate_count=len(analysis_candidate_keys),
             errors_so_far=len(errors),
         )
+        emit_transition(
+            "QUEUE_DONE",
+            stage="ANALYSIS_QUEUE",
+            queued_for_analysis_count=len(analysis_targets),
+            candidate_count=len(analysis_candidate_keys),
+            queue_ok=bool(queue_refresh.get("ok")),
+        )
 
         def annotate_content_state(item: dict) -> None:
             item["queued_for_analysis"] = item["item_key"] in completed_keys
@@ -2189,6 +2843,13 @@ def _main_impl() -> int:
             deferred_extraction=deferred_extraction_recent,
             extraction_errors=extraction_error_recent,
             pending_extraction=pending_extraction_recent,
+        )
+        emit_transition(
+            "JOB_FINALIZED",
+            stage="FINALIZE",
+            final_state=final_state,
+            analysis_readiness_complete=analysis_readiness_complete,
+            error_count=len(errors),
         )
         total_duration_ms = round((time.perf_counter() - run_clock) * 1000, 1)
         stage_totals_ms: dict[str, float] = {}
@@ -2324,6 +2985,7 @@ def _main_impl() -> int:
             "recent_check_version": RECENT_CHECK_VERSION,
             "state": final_state,
             "started_at": started,
+            "updated_at": now_iso(),
             "finished_at": now_iso(),
             "scope": args.scope,
             "creator_filters": creator_keys or None,
@@ -2417,6 +3079,8 @@ def _main_impl() -> int:
             "analysis_targets": analysis_targets,
             "discoveries": discoveries,
             "ingestion_results": ingestion_results,
+            "ingestion_groups": ingestion_groups,
+            "transitions": transition_events[-200:],
             "story_ingestion_results": story_results,
             "error_count": len(errors),
             "errors": errors,
@@ -2425,6 +3089,14 @@ def _main_impl() -> int:
         print(json.dumps(status, ensure_ascii=True, indent=2))
         return 0 if final_state == "COMPLETE" else (1 if final_state == "PARTIAL" else 2)
     except Exception as exc:
+        transition_events.append({
+            "event": "JOB_FINALIZED",
+            "stage": "FINALIZE",
+            "at": now_iso(),
+            "elapsed_ms": round((time.perf_counter() - run_clock) * 1000, 1),
+            "final_state": "FAILED",
+            "terminal_reason": f"{type(exc).__name__}: {exc}",
+        })
         status = {
             "schema_version": 1,
             "recent_check_version": RECENT_CHECK_VERSION,
@@ -2436,6 +3108,8 @@ def _main_impl() -> int:
             "window": window_meta,
             "cutoff_at": cutoff.isoformat(),
             "error": f"{type(exc).__name__}: {exc}",
+            "transitions": transition_events[-200:],
+            "ingestion_groups": ingestion_groups,
             "timings": {
                 "total_duration_ms": round((time.perf_counter() - run_clock) * 1000, 1),
                 "slowest_operations": sorted(
@@ -2461,7 +3135,7 @@ def _recent_check_final_state(
 ) -> tuple[str, bool]:
     """Separate scan completion from downstream evidence readiness."""
     analysis_readiness_complete = not bool(
-        deferred_extraction or extraction_errors or pending_extraction
+        errors or deferred_extraction or extraction_errors or pending_extraction
     )
     blocking_extraction_pending = bool(extraction_errors or pending_extraction)
     state = (
@@ -2474,6 +3148,8 @@ def _recent_check_final_state(
 
 
 def main() -> int:
+    if len(sys.argv) == 3 and sys.argv[1] == "--internal-worker":
+        return _internal_worker_main(Path(sys.argv[2]))
     try:
         return _main_impl()
     finally:

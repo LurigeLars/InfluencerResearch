@@ -110,7 +110,7 @@ class CreatorSource(BaseModel):
 def resolve_job_state(kind: str, returncode: int, status: dict | None) -> str:
     if kind == "creator_recent_check" and isinstance(status, dict):
         state = str(status.get("state") or "").upper()
-        if state in {"COMPLETE", "PARTIAL", "FAILED"}:
+        if state in {"COMPLETE", "PARTIAL", "FAILED", "STOPPED"}:
             return state
     return "COMPLETE" if returncode == 0 else "FAILED"
 
@@ -236,6 +236,44 @@ class JobManager:
             persisted = load_json(JOB_STATE_PATH, {})
             return {"active": None, "last": persisted or None}
 
+    def _mark_status_stopped(self, job: dict, finished_at: str) -> dict | None:
+        status_path = job.get("status_path")
+        if not isinstance(status_path, Path):
+            return None
+        status = load_json(status_path, {})
+        if not isinstance(status, dict):
+            status = {}
+        previous_state = str(status.get("state") or "RUNNING")
+        status.update({
+            "schema_version": int(status.get("schema_version") or 1),
+            "state": "STOPPED",
+            "updated_at": finished_at,
+            "finished_at": finished_at,
+            "stop_reason": "USER_REQUESTED",
+        })
+        progress = status.get("progress")
+        if not isinstance(progress, dict):
+            progress = {}
+        status["progress"] = {
+            **progress,
+            "phase": "STOPPED",
+            "previous_state": previous_state,
+            "terminal_reason": "USER_REQUESTED",
+        }
+        transitions = status.get("transitions")
+        if not isinstance(transitions, list):
+            transitions = []
+        transitions.append({
+            "event": "JOB_FINALIZED",
+            "stage": "CANCELLATION",
+            "at": finished_at,
+            "final_state": "STOPPED",
+            "terminal_reason": "USER_REQUESTED",
+        })
+        status["transitions"] = transitions[-200:]
+        atomic_json(status_path, status)
+        return summarize_status(status_path)
+
     def stop(self) -> dict:
         with self._lock:
             self._refresh_locked()
@@ -255,9 +293,10 @@ class JobManager:
             finally:
                 self._cleanup_request()
                 job["returncode"] = proc.poll()
-                job["finished_at"] = utc_now()
+                finished_at = utc_now()
+                job["finished_at"] = finished_at
                 job["state"] = "STOPPED"
-                job["status"] = summarize_status(job["status_path"])
+                job["status"] = self._mark_status_stopped(job, finished_at)
                 public = self._public(job)
                 self._last = public
                 self._active = None

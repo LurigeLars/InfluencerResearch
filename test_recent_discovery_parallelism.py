@@ -235,15 +235,9 @@ class RecentDiscoveryParallelismTests(unittest.TestCase):
             )
         ]
 
-        def fake_story_batch(*args, **kwargs):
+        def fake_launch(*args, **kwargs):
             story_started.set()
-            self.assertTrue(discovery_started.wait(timeout=1.0))
-            time.sleep(0.02)
-            return {
-                "results": [],
-                "creator_count": 1,
-                "wall_duration_ms": 20.0,
-            }
+            return {"fixture": "story-worker"}
 
         def fake_discovery(*args, **kwargs):
             discovery_started.set()
@@ -251,9 +245,25 @@ class RecentDiscoveryParallelismTests(unittest.TestCase):
             time.sleep(0.02)
             return ([], [], {}, [], {"wall_duration_ms": 20.0})
 
+        def fake_wait(handle, **kwargs):
+            self.assertEqual(handle, {"fixture": "story-worker"})
+            self.assertTrue(discovery_started.is_set())
+            return {
+                "ok": True,
+                "elapsed_ms": 20.0,
+                "story_prefetch": {
+                    "results": [],
+                    "creator_count": 1,
+                    "wall_duration_ms": 20.0,
+                },
+                "gemini_circuit": {},
+                "ollama_budget_state": {"attempted": 0},
+            }
+
         with tempfile.TemporaryDirectory() as tmp:
             with (
-                patch.object(crc, "_run_story_capture_batch", side_effect=fake_story_batch),
+                patch.object(crc, "_launch_recent_worker", side_effect=fake_launch),
+                patch.object(crc, "_wait_recent_worker", side_effect=fake_wait),
                 patch.object(crc, "_run_discovery_batch", side_effect=fake_discovery),
             ):
                 discovery, story = crc._run_discovery_with_story_prefetch(

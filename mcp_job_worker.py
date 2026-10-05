@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import runpy
+import signal
 import sys
+import threading
 import traceback
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +15,94 @@ from typing import Any
 APP_DIR = Path(__file__).resolve().parent
 ROOT = Path("/research")
 REQUEST_PATH = Path("/research/state/mcp_job_request.json")
+RECENT_CHECK_STATUS_PATH = Path("/research/state/creator_recent_check_status.json")
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = os.environ.get(name)
+    if raw in {None, ""}:
+        return default
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return default
+    return max(minimum, min(maximum, value))
+
+
+def _atomic_json(path: Path, obj: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def _load_status(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8-sig"))
+        return value if isinstance(value, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _arm_recent_check_watchdog(request: dict[str, Any]) -> threading.Event | None:
+    if request.get("kind") != "creator_recent_check":
+        return None
+
+    timeout_seconds = _bounded_env_int(
+        "INFLUENCER_RESEARCH_RECENT_CHECK_JOB_TIMEOUT_SECONDS",
+        1800,
+        120,
+        7200,
+    )
+    stop = threading.Event()
+
+    def watchdog() -> None:
+        if stop.wait(timeout_seconds):
+            return
+        status = _load_status(RECENT_CHECK_STATUS_PATH)
+        finished_at = _now_iso()
+        status.update({
+            "schema_version": int(status.get("schema_version") or 1),
+            "state": "FAILED",
+            "updated_at": finished_at,
+            "finished_at": finished_at,
+            "error": f"JOB_TIMEOUT:{timeout_seconds}s",
+            "progress": {
+                "stage": "WATCHDOG",
+                "phase": "JOB_TIMEOUT",
+                "timeout_seconds": timeout_seconds,
+                "wait_reason": "RECENT_CHECK_JOB_EXCEEDED_HARD_DEADLINE",
+            },
+        })
+        transitions = status.get("transitions")
+        if not isinstance(transitions, list):
+            transitions = []
+        transitions.append({
+            "event": "JOB_FINALIZED",
+            "stage": "WATCHDOG",
+            "at": finished_at,
+            "final_state": "FAILED",
+            "terminal_reason": f"JOB_TIMEOUT:{timeout_seconds}s",
+        })
+        status["transitions"] = transitions[-200:]
+        try:
+            _atomic_json(RECENT_CHECK_STATUS_PATH, status)
+        finally:
+            try:
+                os.killpg(os.getpgrp(), signal.SIGKILL)
+            except Exception:
+                os._exit(124)
+
+    threading.Thread(
+        target=watchdog,
+        name="creator-recent-check-job-watchdog",
+        daemon=True,
+    ).start()
+    return stop
 
 
 def load_request() -> dict[str, Any]:
@@ -96,13 +188,18 @@ def run_script(script: Path, args: list[str]) -> int:
 
 
 def main() -> int:
+    watchdog_stop: threading.Event | None = None
     try:
         request = load_request()
+        watchdog_stop = _arm_recent_check_watchdog(request)
         script, args = build_invocation(request)
         return run_script(script, args)
     except Exception:
         traceback.print_exc()
         return 1
+    finally:
+        if watchdog_stop is not None:
+            watchdog_stop.set()
 
 
 if __name__ == "__main__":
