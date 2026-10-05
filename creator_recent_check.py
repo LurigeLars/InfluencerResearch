@@ -1513,14 +1513,24 @@ def _analysis_candidate_coverage(
         )
     }
 
-    accounted = queued | explicit_nonready | finalized | duplicate
     requested = {str(value) for value in item_keys if str(value)}
+    remaining = set(requested)
+
+    queued_selected = remaining & queued
+    remaining -= queued_selected
+    nonready_selected = remaining & explicit_nonready
+    remaining -= nonready_selected
+    finalized_selected = remaining & finalized
+    remaining -= finalized_selected
+    duplicate_selected = remaining & duplicate
+    remaining -= duplicate_selected
+
     return {
-        "queued": sorted(requested & queued),
-        "explicit_nonready": sorted(requested & explicit_nonready),
-        "finalized": sorted(requested & finalized),
-        "duplicate": sorted(requested & duplicate),
-        "missing": sorted(requested - accounted),
+        "queued": sorted(queued_selected),
+        "explicit_nonready": sorted(nonready_selected),
+        "finalized": sorted(finalized_selected),
+        "duplicate": sorted(duplicate_selected),
+        "missing": sorted(remaining),
     }
 
 
