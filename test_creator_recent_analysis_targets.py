@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
-import unittest
-from unittest import mock
+import unittest.mock
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -111,8 +110,8 @@ class RecentAnalysisTargetTests(unittest.TestCase):
         }
         completed_id = "7690974941457534222"
         with (
-            mock.patch.object(crc.tts, "start_server"),
-            mock.patch.object(
+            unittest.mock.patch.object(crc.tts, "start_server"),
+            unittest.mock.patch.object(
                 crc.tts,
                 "process_source",
                 return_value={
@@ -122,7 +121,7 @@ class RecentAnalysisTargetTests(unittest.TestCase):
                     "timings_ms": {"total": 123.4},
                 },
             ),
-            mock.patch.object(crc.tts, "run_research_queue") as queue,
+            unittest.mock.patch.object(crc.tts, "run_research_queue") as queue,
         ):
             result = crc._ingest_tiktok(
                 Path("."),
