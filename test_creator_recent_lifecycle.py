@@ -325,6 +325,89 @@ class CreatorRecentLifecycleTests(unittest.TestCase):
             self.assertIn("TIMEOUT", outcome["error"])
             self.assertIsNotNone(proc.poll())
 
+    def test_ingestion_timeout_reports_transcription_stage_from_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            state = root / "state"
+            state.mkdir(parents=True)
+            (state / "manifest.json").write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "items": {
+                        "HANGING": {
+                            "creator": "fixture",
+                            "source_platform": "INSTAGRAM",
+                            "source_id": "HANGING",
+                            "download_status": "DONE",
+                            "transcription_status": "PENDING",
+                            "visual_review_policy_version": 0,
+                        }
+                    },
+                }),
+                encoding="utf-8",
+            )
+            summary = crc._evaluate_ingestion_group(
+                root,
+                creator_key="fixture",
+                platform="INSTAGRAM",
+                ids=["HANGING"],
+                worker_result={
+                    "ok": False,
+                    "timeout": True,
+                    "elapsed_ms": 360000.0,
+                    "error": "TIMEOUT:360s",
+                },
+                skipped_already_ingested_count=0,
+            )
+            self.assertEqual(summary["result"], "FAILED")
+            self.assertEqual(summary["terminal_reason"], "GROUP_TIMEOUT")
+            self.assertEqual(summary["failure_stage"], "TRANSCRIPTION")
+            self.assertEqual(summary["error_detail"], "TRANSCRIPTION:TIMEOUT:360s")
+
+    def test_analysis_candidate_coverage_fails_closed_on_unaccounted_item(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            state = root / "state"
+            state.mkdir(parents=True)
+            (state / "manifest.json").write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "items": {
+                        "DUP": {
+                            "research_status": "DUPLICATE",
+                            "duplicate_of": "QUEUED",
+                        }
+                    },
+                }),
+                encoding="utf-8",
+            )
+            (state / "research_decisions.json").write_text(
+                json.dumps({
+                    "schema_version": 2,
+                    "items": {
+                        "FINAL": {"decision": "RESEARCH"},
+                    },
+                }),
+                encoding="utf-8",
+            )
+            queue_snapshot = {
+                "items": [{"queue_id": "QUEUED"}],
+                "insufficient_content_items": [],
+                "deferred_extraction_items": [{"queue_id": "DEFERRED"}],
+                "extraction_error_items": [],
+                "pending_extraction_items": [],
+            }
+            coverage = crc._analysis_candidate_coverage(
+                root,
+                queue_snapshot,
+                {"QUEUED", "DEFERRED", "FINAL", "DUP", "MISSING"},
+            )
+            self.assertEqual(coverage["queued"], ["QUEUED"])
+            self.assertEqual(coverage["explicit_nonready"], ["DEFERRED"])
+            self.assertEqual(coverage["finalized"], ["FINAL"])
+            self.assertEqual(coverage["duplicate"], ["DUP"])
+            self.assertEqual(coverage["missing"], ["MISSING"])
+
     def test_transcription_or_visual_provider_failure_cannot_look_complete(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
