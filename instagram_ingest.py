@@ -21,7 +21,7 @@ from transcription_backend import transcribe_video
 from video_visual_evidence import VISUAL_REVIEW_POLICY_VERSION, capture_local_video_visual_evidence
 
 
-APP_VERSION = "0.3.3"
+APP_VERSION = "0.3.4"
 REEL_RE = re.compile(r"/reel/([A-Za-z0-9_-]+)/?")
 
 
@@ -882,8 +882,15 @@ def select_transcription_keys(
     summaries: list[dict],
     *,
     new_only: bool,
+    only_shortcodes: set[str] | None = None,
 ) -> list[str]:
-    if new_only:
+    # Exact-ID recovery must take precedence over the "new only" optimization.
+    # A previous aborted run can leave a valid downloaded Reel in the manifest
+    # with transcription still PENDING/ERROR. Such an item is intentionally
+    # skipped by the downloader, but it still has to re-enter transcription.
+    if only_shortcodes is not None:
+        candidates = sorted(only_shortcodes)
+    elif new_only:
         candidates = [
             key
             for summary in summaries
@@ -1051,6 +1058,7 @@ def main() -> int:
                 manifest,
                 summaries,
                 new_only=args.transcribe_new_only,
+                only_shortcodes=only_shortcodes,
             )
             transcription = transcribe_videos(root, manifest, settings, pending)
             atomic_write_json(manifest_path, manifest)
