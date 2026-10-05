@@ -150,6 +150,65 @@ class InstagramIngestLimitTests(unittest.TestCase):
                 "DONE",
             )
 
+    def test_gemini_fallback_switches_remaining_batch_to_local(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "state").mkdir(parents=True)
+            manifest = {
+                "schema_version": 1,
+                "items": {
+                    key: {
+                        "creator": "fixture",
+                        "download_status": "DONE",
+                        "video_file": f"output/fixture/raw/{key}.mp4",
+                        "transcription_status": "PENDING",
+                    }
+                    for key in ("A", "B", "C")
+                },
+            }
+            calls: list[dict] = []
+
+            def fake_transcribe(_video_path, settings):
+                calls.append(dict(settings))
+                base = {
+                    "provider": "faster-whisper",
+                    "model": "small",
+                    "text": "local transcript",
+                    "language": "en",
+                    "language_probability": 1.0,
+                    "duration": 1.0,
+                    "segments": [],
+                }
+                if len(calls) == 1:
+                    return {
+                        **base,
+                        "fallback_from": "gemini",
+                        "fallback_error": "TimeoutError: Gemini transcription failed",
+                    }
+                return base
+
+            with (
+                unittest.mock.patch.object(ig, "validate_media", return_value=(True, "ok")),
+                unittest.mock.patch.object(
+                    ig,
+                    "transcribe_video",
+                    side_effect=fake_transcribe,
+                ),
+            ):
+                result = ig.transcribe_videos(
+                    root,
+                    manifest,
+                    {"transcription": {"enabled": True, "provider": "auto"}},
+                    ["A", "B", "C"],
+                )
+
+            self.assertEqual(result["completed"], 3)
+            self.assertTrue(result["gemini_failover_triggered"])
+            self.assertEqual(result["forced_local_count"], 2)
+            self.assertEqual(calls[0]["provider"], "auto")
+            self.assertEqual(calls[1]["provider"], "faster-whisper")
+            self.assertEqual(calls[2]["provider"], "faster-whisper")
+
     def test_ephemeral_context_uses_new_context_not_persistent_profile(self) -> None:
         context = unittest.mock.Mock()
         browser = unittest.mock.Mock()
