@@ -3100,7 +3100,7 @@ def _recent_check_final_state(
 ) -> tuple[str, bool]:
     """Separate scan completion from downstream evidence readiness."""
     analysis_readiness_complete = not bool(
-        deferred_extraction or extraction_errors or pending_extraction
+        errors or deferred_extraction or extraction_errors or pending_extraction
     )
     blocking_extraction_pending = bool(extraction_errors or pending_extraction)
     state = (
