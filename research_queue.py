@@ -59,6 +59,7 @@ def atomic_write_json_if_changed(path: Path, data: dict) -> bool:
             if path.read_text(encoding="utf-8") == text:
                 return False
         except OSError:
+            # Best-effort comparison: a transient read failure falls through to atomic rewrite.
             pass
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
