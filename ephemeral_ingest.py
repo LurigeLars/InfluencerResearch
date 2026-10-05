@@ -1981,11 +1981,6 @@ def run_one(
     ollama_budget_state: dict | None = None,
 ) -> dict:
     run_clock = time.perf_counter()
-    capture_duration_ms = 0.0
-    ytdlp_duration_ms = 0.0
-    browser_total_ms = 0.0
-    visual_enrichment_duration_ms = 0.0
-    transcription_duration_ms = 0.0
     manifest_path = root / "state" / "ephemeral" / "manifest.json"
     manifest = load_json(
         manifest_path,
