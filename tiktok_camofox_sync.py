@@ -82,7 +82,7 @@ CAMOUFOX_BROWSER_EXECUTABLE_SHA256 = {
 }
 
 _CAMOFOX_FALLBACK_SERVER: dict[str, Any] | None = None
-_CAMOFOX_PUBLIC_PROXY_SERVER: dict[str, Any] | None = None
+_CAMOFOX_PUBLIC_PROXY_STATE: dict[str, dict[str, Any] | None] = {"server": None}
 _CAMOFOX_PROXY_USERS: set[str] = set()
 _CAMOFOX_PROXY_ROUTE_LOCK = threading.Lock()
 _CAMOFOX_PROXY_METRICS_LOCK = threading.Lock()
@@ -521,11 +521,10 @@ def start_server() -> dict:
 
 def stop_server(*, deadline: float | None = None) -> None:
     """Release this run's Camofox handle; legacy-local mode also stops its process."""
-    global _CAMOFOX_PUBLIC_PROXY_SERVER
     end = deadline if deadline is not None else time.monotonic() + 8.0
     try:
         _stop_fallback_server(force=False, deadline=end)
-        _CAMOFOX_PUBLIC_PROXY_SERVER = None
+        _CAMOFOX_PUBLIC_PROXY_STATE["server"] = None
         with _CAMOFOX_PROXY_ROUTE_LOCK:
             _CAMOFOX_PROXY_USERS.clear()
     finally:
@@ -1363,7 +1362,6 @@ def _ensure_container_camofox_server(*, deadline: float) -> dict[str, Any]:
 
 
 def _ensure_public_proxy_server(*, deadline: float) -> dict[str, Any]:
-    global _CAMOFOX_PUBLIC_PROXY_SERVER
     mode = (
         os.environ.get("INFLUENCER_RESEARCH_CAMOFOX_MODE", "container")
         .strip()
@@ -1372,7 +1370,7 @@ def _ensure_public_proxy_server(*, deadline: float) -> dict[str, Any]:
     if mode != "container":
         raise RuntimeError("Public proxy fallback is available only in container mode")
 
-    current = _CAMOFOX_PUBLIC_PROXY_SERVER
+    current = _CAMOFOX_PUBLIC_PROXY_STATE["server"]
     if (
         current
         and current.get("runtime_mode") == "container_proxy"
@@ -1430,7 +1428,7 @@ def _ensure_public_proxy_server(*, deadline: float) -> dict[str, Any]:
         deadline=deadline,
         timeout_cap=2.0,
     )
-    _CAMOFOX_PUBLIC_PROXY_SERVER = server
+    _CAMOFOX_PUBLIC_PROXY_STATE["server"] = server
     return server
 
 
