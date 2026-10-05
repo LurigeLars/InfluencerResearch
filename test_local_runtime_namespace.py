@@ -70,9 +70,9 @@ class LocalRuntimeNamespaceTests(unittest.TestCase):
         compose = (BASE / "compose.yaml").read_text(encoding="utf-8")
         self.assertIn("gemini_api_key.dpapi", runtime)
         self.assertIn("/run/influencerresearch-secrets/gemini_api_key", runtime)
-        self.assertIn("/run/influencerresearch-secrets:", compose)
+        self.assertIn("target: /run/influencerresearch-secrets", compose)
 
-    def test_camofox_runtime_secrets_use_dpapi_and_tmpfs_not_service_env(self) -> None:
+    def test_camofox_runtime_secrets_use_dpapi_and_restart_safe_tmpfs_not_service_env(self) -> None:
         runtime = (BASE / "scripts/runtime.ps1").read_text(encoding="utf-8")
         compose = (BASE / "compose.yaml").read_text(encoding="utf-8")
         self.assertIn("camofox_access_key.dpapi", runtime)
@@ -81,33 +81,32 @@ class LocalRuntimeNamespaceTests(unittest.TestCase):
         self.assertNotIn("$env:CAMOFOX_ADMIN_KEY", runtime)
         self.assertNotIn("CAMOFOX_ACCESS_KEY: ${CAMOFOX_ACCESS_KEY", compose)
         self.assertNotIn("CAMOFOX_ADMIN_KEY: ${CAMOFOX_ADMIN_KEY", compose)
-        self.assertIn("/run/influencerresearch-secrets/camofox_access_key", compose)
-        self.assertIn("/run/influencerresearch-secrets/camofox_admin_key", compose)
+        self.assertNotIn("post_start:", compose)
+        self.assertIn("influencerresearch-secret-holder", compose)
+        self.assertIn("network_mode: none", compose)
+        self.assertIn("type: tmpfs", compose)
+        self.assertIn("influencerresearch-mcp-secrets", compose)
+        self.assertIn("influencerresearch-camofox-secrets", compose)
+        self.assertIn("influencerresearch-camofox-proxy-secrets", compose)
+        self.assertIn("target: /run/influencerresearch-secrets", compose)
+        self.assertIn("/run/secret-store/mcp/camofox_access_key", runtime)
+        self.assertIn("/run/secret-store/mcp/camofox_admin_key", runtime)
         self.assertIn("/run/camofox-secrets/access_key", compose)
         self.assertIn("/run/camofox-secrets/admin_key", compose)
-        self.assertIn("post_start:", compose)
-        self.assertIn(
-            '$env:INFLUENCER_CAMOFOX_ACCESS_SECRET = "compose-config-only"',
-            runtime,
-        )
-        self.assertIn(
-            '$env:INFLUENCER_CAMOFOX_ADMIN_SECRET = "compose-config-only"',
-            runtime,
-        )
-        self.assertIn(
-            "Remove-Item Env:INFLUENCER_CAMOFOX_ACCESS_SECRET",
-            runtime,
-        )
-        self.assertIn(
-            "Remove-Item Env:INFLUENCER_CAMOFOX_ADMIN_SECRET",
-            runtime,
-        )
+        self.assertIn("Write-SecretHolderFile", runtime)
+        self.assertIn('arguments = @("-Action", "Recover")', runtime)
+        self.assertIn('"Recover" {', runtime)
+        self.assertIn("Invoke-ComposeUp -Build $false", runtime)
 
     def test_smoke_rehydrates_ephemeral_runtime_secrets(self) -> None:
         runtime = (BASE / "scripts/runtime.ps1").read_text(encoding="utf-8")
         self.assertIn("function Import-AvailableRuntimeSecrets", runtime)
+        compose_up = runtime.split("function Invoke-ComposeUp", 1)[1].split(
+            "function Import-InstagramAuth", 1
+        )[0]
+        self.assertIn("Import-AvailableRuntimeSecrets", compose_up)
         smoke = runtime.split('"Smoke" {', 1)[1]
-        self.assertIn("Import-AvailableRuntimeSecrets", smoke)
+        self.assertIn("Invoke-ComposeUp", smoke)
 
     def test_tiktok_host_fallback_uses_new_namespace(self) -> None:
         text = (BASE / "tiktok_camofox_sync.py").read_text(encoding="utf-8")

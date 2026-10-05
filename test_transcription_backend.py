@@ -11,6 +11,11 @@ import transcription_backend as tb
 
 
 class TranscriptionBackendTests(unittest.TestCase):
+    def test_faster_whisper_pyav_compatibility_is_pinned(self) -> None:
+        requirements = Path("requirements.txt").read_text(encoding="utf-8")
+        self.assertIn("faster-whisper==1.2.1", requirements)
+        self.assertIn("av==18.1.0", requirements)
+
     def test_gemini_http_options_are_bounded(self) -> None:
         self.assertEqual(
             tb.gemini_http_options(),

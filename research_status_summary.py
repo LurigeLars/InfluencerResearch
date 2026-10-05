@@ -21,12 +21,21 @@ def summarize_status(path: Path | None) -> dict | None:
         "state",
         "result",
         "started_at",
+        "updated_at",
         "finished_at",
+        "progress",
         "creator_key",
         "creator_filter",
+        "creator_filters",
         "scope",
         "window",
+        "cutoff_at",
+        "checked_until",
+        "max_items",
         "source_count",
+        "already_ingested_count",
+        "pending_found_count",
+        "deferred_due_to_cap_count",
         "error",
         "error_count",
         "errors",
@@ -34,6 +43,7 @@ def summarize_status(path: Path | None) -> dict | None:
         "completed_ids",
         "failed_ids",
         "failure_count",
+        "failures",
         "recent_found_count",
         "selected_for_ingestion_count",
         "selected_standard_ingestion_count",
@@ -60,3 +70,92 @@ def summarize_status(path: Path | None) -> dict | None:
         "timings",
     }
     return {key: obj[key] for key in allowed if key in obj}
+
+
+_DETAIL_ARRAY_COUNT_KEYS = {
+    "completed_ids": "completed_id_count",
+    "failed_ids": "failed_id_count",
+    "failures": "failure_detail_count",
+    "errors": "error_detail_count",
+    "story_items": "story_item_count",
+    "analysis_targets": "analysis_target_count",
+    "insufficient_content_items": "insufficient_content_count",
+    "deferred_extraction_items": "deferred_extraction_count",
+    "extraction_error_items": "extraction_error_count",
+    "pending_extraction_items": "pending_extraction_count",
+    "creator_filters": "creator_filter_count",
+}
+
+
+def compact_status_details(status: dict | None) -> dict | None:
+    """Reduce verbose job status for routine MCP polling without losing persisted detail."""
+    if not isinstance(status, dict):
+        return status
+
+    out: dict = {}
+    for key, value in status.items():
+        count_key = _DETAIL_ARRAY_COUNT_KEYS.get(key)
+        if count_key and isinstance(value, list):
+            if count_key not in status and count_key not in out:
+                out[count_key] = len(value)
+            continue
+
+        if key == "story_visual_enrichment" and isinstance(value, dict):
+            compact = {}
+            for nested in ("totals", "ollama_budget"):
+                if nested in value:
+                    compact[nested] = value[nested]
+            out[key] = compact
+            continue
+
+        if key == "timings" and isinstance(value, dict):
+            compact = {}
+            for nested in (
+                "total_duration_ms",
+                "discovery_wall_ms",
+                "discovery_parallelism",
+                "stage_totals_ms",
+            ):
+                if nested in value:
+                    compact[nested] = value[nested]
+            out[key] = compact
+            continue
+
+        if key == "provider_health" and isinstance(value, dict):
+            compact_providers = {}
+            for provider, provider_state in value.items():
+                if not isinstance(provider_state, dict):
+                    continue
+                compact_providers[provider] = {
+                    nested: provider_state[nested]
+                    for nested in (
+                        "last_success_at",
+                        "last_error_at",
+                        "last_429_at",
+                        "cooldown_until",
+                        "last_code",
+                        "last_status",
+                        "retry_after_source",
+                        "consecutive_transient_failures",
+                    )
+                    if nested in provider_state
+                }
+            out[key] = compact_providers
+            continue
+
+        out[key] = value
+    return out
+
+
+def compact_job_status(payload: dict) -> dict:
+    """Compact active/last JobManager payloads while preserving job-level lifecycle fields."""
+    if not isinstance(payload, dict):
+        return payload
+    out = dict(payload)
+    for slot in ("active", "last"):
+        job = out.get(slot)
+        if isinstance(job, dict) and isinstance(job.get("status"), dict):
+            job = dict(job)
+            job["status"] = compact_status_details(job["status"])
+            out[slot] = job
+    return out

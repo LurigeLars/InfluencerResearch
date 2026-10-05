@@ -1,6 +1,23 @@
 name: influencerresearch
 
 services:
+  secret-holder:
+    image: busybox:1.37.0-musl
+    container_name: influencerresearch-secret-holder
+    command: ["sh", "-c", "while :; do sleep 3600; done"]
+    user: "20000:20000"
+    network_mode: none
+    volumes:
+      - influencerresearch-mcp-secrets:/run/secret-store/mcp
+      - influencerresearch-camofox-secrets:/run/secret-store/camofox
+      - influencerresearch-camofox-proxy-secrets:/run/secret-store/proxy
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
   influencerresearch:
     build:
       context: .
@@ -34,26 +51,20 @@ services:
         source: ${INFLUENCER_RESEARCH_LOG_DIR:?INFLUENCER_RESEARCH_LOG_DIR is required}
         target: /research/logs
       - influencerresearch-runtime:/runtime/influencerresearch
+      - type: volume
+        source: influencerresearch-mcp-secrets
+        target: /run/influencerresearch-secrets
+        read_only: true
     depends_on:
+      secret-holder:
+        condition: service_started
       camofox:
         condition: service_healthy
+    group_add:
+      - "20000"
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,size=512m,mode=1777
-      - /run/influencerresearch-secrets:rw,nosuid,nodev,noexec,size=64k,uid=10001,gid=10001,mode=0700
-    post_start:
-      - command:
-          - sh
-          - -c
-          - >-
-            umask 077;
-            test -n "$$INFLUENCER_CAMOFOX_ACCESS_SECRET";
-            test -n "$$INFLUENCER_CAMOFOX_ADMIN_SECRET";
-            printf '%s' "$$INFLUENCER_CAMOFOX_ACCESS_SECRET" > /run/influencerresearch-secrets/camofox_access_key;
-            printf '%s' "$$INFLUENCER_CAMOFOX_ADMIN_SECRET" > /run/influencerresearch-secrets/camofox_admin_key
-        environment:
-          INFLUENCER_CAMOFOX_ACCESS_SECRET: ${INFLUENCER_CAMOFOX_ACCESS_SECRET:?Camofox access runtime secret is required}
-          INFLUENCER_CAMOFOX_ADMIN_SECRET: ${INFLUENCER_CAMOFOX_ADMIN_SECRET:?Camofox admin runtime secret is required}
     cap_drop:
       - ALL
     security_opt:
@@ -81,6 +92,11 @@ services:
       dockerfile: runtime/camofox/Dockerfile
     container_name: influencerresearch-camofox
     user: node
+    group_add:
+      - "20000"
+    depends_on:
+      secret-holder:
+        condition: service_started
     environment:
       NODE_ENV: production
       CAMOFOX_PORT: "9377"
@@ -111,24 +127,15 @@ services:
       TEMP: /tmp
     expose:
       - "9377"
+    volumes:
+      - type: volume
+        source: influencerresearch-camofox-secrets
+        target: /run/camofox-secrets
+        read_only: true
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,size=256m,mode=1777
       - /run/camofox:rw,nosuid,nodev,size=384m,uid=1000,gid=1000,mode=0700
-      - /run/camofox-secrets:rw,nosuid,nodev,noexec,size=64k,uid=1000,gid=1000,mode=0700
-    post_start:
-      - command:
-          - sh
-          - -c
-          - >-
-            umask 077;
-            test -n "$$INFLUENCER_CAMOFOX_ACCESS_SECRET";
-            test -n "$$INFLUENCER_CAMOFOX_ADMIN_SECRET";
-            printf '%s' "$$INFLUENCER_CAMOFOX_ACCESS_SECRET" > /run/camofox-secrets/access_key;
-            printf '%s' "$$INFLUENCER_CAMOFOX_ADMIN_SECRET" > /run/camofox-secrets/admin_key
-        environment:
-          INFLUENCER_CAMOFOX_ACCESS_SECRET: ${INFLUENCER_CAMOFOX_ACCESS_SECRET:?Camofox access runtime secret is required}
-          INFLUENCER_CAMOFOX_ADMIN_SECRET: ${INFLUENCER_CAMOFOX_ADMIN_SECRET:?Camofox admin runtime secret is required}
     command:
       - sh
       - -c
@@ -167,14 +174,20 @@ services:
       dockerfile: runtime/camofox/Dockerfile
     container_name: influencerresearch-camofox-public-proxy
     user: node
+    group_add:
+      - "20000"
+    depends_on:
+      secret-holder:
+        condition: service_started
     environment:
       NODE_ENV: production
       CAMOFOX_PORT: "9377"
       CAMOFOX_BIND_HOST: 0.0.0.0
       CAMOFOX_LOCALE: sv-SE
       CAMOFOX_TIMEZONE: Europe/Stockholm
+      GEOIP_SETUP_TIMEOUT_MS: "30000"
       CAMOUFOX_EXECUTABLE: /opt/camoufox/camoufox-bin
-      CAMOUFOX_INSTALL_DIR: /opt/camoufox
+      CAMOUFOX_INSTALL_DIR: /run/camofox-proxy/install
       HOME: /run/camofox-proxy
       XDG_CACHE_HOME: /run/camofox-proxy/cache
       CAMOFOX_PROFILE_DIR: /run/camofox-proxy/profiles
@@ -201,35 +214,26 @@ services:
       TEMP: /tmp
     expose:
       - "9377"
+    volumes:
+      - type: volume
+        source: influencerresearch-camofox-proxy-secrets
+        target: /run/camofox-proxy-secrets
+        read_only: true
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,size=256m,mode=1777
       - /run/camofox-proxy:rw,nosuid,nodev,size=384m,uid=1000,gid=1000,mode=0700
-      - /run/camofox-proxy-secrets:rw,nosuid,nodev,noexec,size=64k,uid=1000,gid=1000,mode=0700
-    post_start:
-      - command:
-          - sh
-          - -c
-          - >-
-            umask 077;
-            test -n "$$INFLUENCER_CAMOFOX_ACCESS_SECRET";
-            test -n "$$INFLUENCER_CAMOFOX_ADMIN_SECRET";
-            test -n "$$INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET";
-            test -n "$$INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET";
-            printf '%s' "$$INFLUENCER_CAMOFOX_ACCESS_SECRET" > /run/camofox-proxy-secrets/access_key;
-            printf '%s' "$$INFLUENCER_CAMOFOX_ADMIN_SECRET" > /run/camofox-proxy-secrets/admin_key;
-            printf '%s' "$$INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET" > /run/camofox-proxy-secrets/proxy_username;
-            printf '%s' "$$INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET" > /run/camofox-proxy-secrets/proxy_password
-        environment:
-          INFLUENCER_CAMOFOX_ACCESS_SECRET: ${INFLUENCER_CAMOFOX_ACCESS_SECRET:?Camofox access runtime secret is required}
-          INFLUENCER_CAMOFOX_ADMIN_SECRET: ${INFLUENCER_CAMOFOX_ADMIN_SECRET:?Camofox admin runtime secret is required}
-          INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET: ${INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET:?Public proxy username runtime secret is required}
-          INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET: ${INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET:?Public proxy password runtime secret is required}
     command:
       - sh
       - -c
       - >-
         while [ ! -s /run/camofox-proxy-secrets/access_key ] || [ ! -s /run/camofox-proxy-secrets/admin_key ] || [ ! -s /run/camofox-proxy-secrets/proxy_username ] || [ ! -s /run/camofox-proxy-secrets/proxy_password ]; do sleep 0.05; done;
+        test -r /opt/camoufox/version.json;
+        test -d /opt/camoufox/fontconfig;
+        mkdir -p /run/camofox-proxy/install;
+        ln -sf /opt/camoufox/version.json /run/camofox-proxy/install/version.json;
+        rm -rf /run/camofox-proxy/install/fontconfig;
+        ln -s /opt/camoufox/fontconfig /run/camofox-proxy/install/fontconfig;
         export CAMOFOX_ACCESS_KEY="$$(cat /run/camofox-proxy-secrets/access_key)";
         export CAMOFOX_ADMIN_KEY="$$(cat /run/camofox-proxy-secrets/admin_key)";
         export PROXY_USERNAME="$$(cat /run/camofox-proxy-secrets/proxy_username)";
@@ -259,6 +263,24 @@ services:
 
 volumes:
   influencerresearch-runtime:
+  influencerresearch-mcp-secrets:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "size=65536,uid=20000,gid=20000,mode=0750"
+  influencerresearch-camofox-secrets:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "size=65536,uid=20000,gid=20000,mode=0750"
+  influencerresearch-camofox-proxy-secrets:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "size=65536,uid=20000,gid=20000,mode=0750"
 
 networks:
   runtime:

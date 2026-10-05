@@ -35,22 +35,23 @@ MIN_ANALYSIS_TRANSCRIPT_WORDS = 8
 MIN_ANALYSIS_TRANSCRIPT_CHARS = 48
 CAMOFOX_FALLBACK_EXPECTED_NODE_VERSION = "v22.23.2"
 CAMOFOX_FALLBACK_EXPECTED_CAMOFOX_VERSION = "1.17.0"
+CAMOFOX_CONTAINER_EXPECTED_CAMOFOX_VERSION = "1.18.0"
 CAMOFOX_FALLBACK_EXPECTED_CAMOUFOX_JS_VERSION = "0.11.5"
 CAMOFOX_FALLBACK_EXPECTED_GIT_BLOBS = {
-    "package.json": "0360fa0f47b7048903768c19ae14591a1b124519",
+    "package.json": "11dc4ab85830d21042dd38dd8be997deb60ac008",
     "camofox.config.json": "da28c876d8864f3f25e44a2dc813c48e1e82ed9f",
-    "server.js": "80d5190990c06166aa0df257d7d6da98a39a2221",
-    "lib/auth.js": "cc881a14207191ef84382cf940b75bc3e9e8100d",
-    "lib/config.js": "5f5a6f845f62ac17a99e6ee5c5f743f75aadef88",
-    "lib/downloads.js": "bf1697b8dcc329d42151bce5d36222991ca67ad0",
+    "server.js": "ddee8624516ae414a5cb835ebc4741825b437989",
+    "lib/auth.js": "9f3985b01c41d41e10cfa48ca15224ac47ad58c1",
+    "lib/config.js": "4c86f82f5acd564c299bf1fbed3c811ecb079a40",
+    "lib/downloads.js": "83cd9a6b93d67a12d81f67d77a4a440f497d899b",
     "lib/persistence.js": "c8c6ffc70bdbac6c8b453ef1c91b6fbc88aded66",
     "lib/plugins.js": "282eeb37e434bb384b77916fbe15c1c44bf9dbf6",
     "lib/launcher.js": "faa50e51a94abdd6c817c116b43542287ef6f039",
-    "lib/camoufox-executable.js": "142f16922c6e8ad6a9b0d02488f0350009b0eeee",
+    "lib/camoufox-executable.js": "3fd06e95bd328a81843c2af2dc22f7bc7e73a41a",
     "plugins/persistence/index.js": "7c5199d3b00c39325b660699581f4298a334808e",
 }
 CAMOFOX_FALLBACK_SOURCE_COMMIT = "389c996ae3c7d42e539295a336ee6f975847f066"
-CAMOFOX_CONTAINER_SOURCE_COMMIT = "011faad7a88797e780556321d328bdd00b8f68b7"
+CAMOFOX_CONTAINER_SOURCE_COMMIT = "6916ebccec152f940d2ed1d63c6ce080c5c4abaa"
 CAMOUFOX_JS_SOURCE_COMMIT = "3fe80d8448653d8dc1a2c186c7506f89e74c4ed4"
 CAMOFOX_ACCEPTED_ROOT_PACKAGE_NAME = "influencerresearch-camofox-runtime"
 CAMOFOX_ACCEPTED_ROOT_DEPENDENCIES = {
@@ -1326,7 +1327,7 @@ def _ensure_container_camofox_server(*, deadline: float) -> dict[str, Any]:
         "provenance": {
             "runtime_mode": "container",
             "source_commit": CAMOFOX_CONTAINER_SOURCE_COMMIT,
-            "camofox_version": CAMOFOX_FALLBACK_EXPECTED_CAMOFOX_VERSION,
+            "camofox_version": CAMOFOX_CONTAINER_EXPECTED_CAMOFOX_VERSION,
             "camoufox_js_version": CAMOFOX_FALLBACK_EXPECTED_CAMOUFOX_JS_VERSION,
             "browser": dict(CAMOUFOX_BROWSER_VERSION_FIELDS),
         },
@@ -1398,7 +1399,7 @@ def _ensure_public_proxy_server(*, deadline: float) -> dict[str, Any]:
         "provenance": {
             "runtime_mode": "container_proxy",
             "source_commit": CAMOFOX_CONTAINER_SOURCE_COMMIT,
-            "camofox_version": CAMOFOX_FALLBACK_EXPECTED_CAMOFOX_VERSION,
+            "camofox_version": CAMOFOX_CONTAINER_EXPECTED_CAMOFOX_VERSION,
             "camoufox_js_version": CAMOFOX_FALLBACK_EXPECTED_CAMOUFOX_JS_VERSION,
             "browser": dict(CAMOUFOX_BROWSER_VERSION_FIELDS),
         },

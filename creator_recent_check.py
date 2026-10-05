@@ -7,7 +7,7 @@ import subprocess
 import sys
 import time
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -770,7 +770,15 @@ def _ingest_youtube(root: Path, creator_key: str, ids: list[str]) -> dict:
     p = subprocess.run(cmd, cwd=str(root / "app"))
     status = load_json(root / "state" / "creator_evaluation_status.json", {})
     completed = [str(x)[3:] for x in status.get("completed", []) if str(x).startswith("yt_")]
-    return {"requested": len(ids), "completed_ids": completed, "returncode": int(p.returncode), "evaluation_state": status.get("state")}
+    failures = status.get("failures") if isinstance(status.get("failures"), list) else []
+    return {
+        "requested": len(ids),
+        "completed_ids": completed,
+        "returncode": int(p.returncode),
+        "evaluation_state": status.get("state"),
+        "failure_count": int(status.get("failure_count") or len(failures)),
+        "failures": failures[:10],
+    }
 
 
 def _ingest_instagram(
@@ -840,6 +848,22 @@ def _ingest_instagram(
 def _story_transcript_path(root: Path, handle: str, identity: str) -> Path | None:
     path = root / "output" / handle / "stories" / "transcripts" / f"{identity}.txt"
     return path if path.exists() else None
+
+
+def _story_video_path(root: Path, handle: str, identity: str) -> Path | None:
+    video_dir = root / "output" / handle / "stories" / "videos"
+    if not video_dir.is_dir():
+        return None
+    preferred = video_dir / f"{identity}.mp4"
+    if preferred.is_file():
+        return preferred
+    allowed = {".mp4", ".webm", ".mkv", ".mov"}
+    candidates = sorted(
+        path
+        for path in video_dir.glob(f"{identity}.*")
+        if path.is_file() and path.suffix.casefold() in allowed
+    )
+    return candidates[0] if candidates else None
 
 
 def _promote_story_items(
@@ -955,9 +979,11 @@ def _promote_story_items(
         screenshot_rel = str(item.get("screenshot_file") or "").strip()
         screenshot_path = root / screenshot_rel if screenshot_rel else None
         transcript_path = _story_transcript_path(root, handle, identity)
+        video_path = _story_video_path(root, handle, identity)
         has_screenshot = bool(screenshot_path and screenshot_path.exists())
         has_transcript = transcript_path is not None
-        if not has_screenshot and not has_transcript:
+        has_video = video_path is not None
+        if not has_screenshot and not has_transcript and not has_video:
             continue
 
         matching_aliases: list[tuple[str, dict]] = []
@@ -1028,6 +1054,10 @@ def _promote_story_items(
                 "visual_description_error": item.get("visual_description_error"),
                 "visual_description_deferred_reason": item.get("visual_description_deferred_reason"),
                 "visual_description_retry_after": item.get("visual_description_retry_after"),
+                "video_file": (
+                    str(video_path.relative_to(root)) if video_path is not None else None
+                ),
+                "full_video_persisted": has_video,
             }
             for field, value in evidence_updates.items():
                 if existing.get(field) != value:
@@ -1059,6 +1089,9 @@ def _promote_story_items(
                 str(transcript_path.relative_to(root)) if transcript_path is not None else None
             ),
             "transcript_source": "STORY_VIDEO" if has_transcript else None,
+            "video_file": (
+                str(video_path.relative_to(root)) if video_path is not None else None
+            ),
             "browser_text": str(item.get("browser_text") or alias_source.get("browser_text") or ""),
             "visual_description": str(item.get("visual_description") or alias_source.get("visual_description") or ""),
             "visual_description_status": item.get("visual_description_status") or alias_source.get("visual_description_status"),
@@ -1075,7 +1108,7 @@ def _promote_story_items(
             "visual_evidence_index": screenshot_rel or None,
             "visual_frame_count": 1 if has_screenshot else 0,
             "visual_capture_strategy": "INSTAGRAM_STORY_SCREENSHOT",
-            "full_video_persisted": bool(has_transcript),
+            "full_video_persisted": has_video,
             "media_retention": "EPHEMERAL_CAPTURE",
             "permanent_source": True,
             "research_status": "PENDING",
@@ -1364,6 +1397,7 @@ def _run_discovery_with_story_prefetch(
     *,
     gemini_circuit: dict,
     ollama_budget_state: dict,
+    progress_callback=None,
 ) -> tuple[tuple[list[dict], list[dict], dict, list[dict], dict], dict]:
     """Overlap serial Story capture with bounded discovery."""
     executor = ThreadPoolExecutor(
@@ -1386,6 +1420,7 @@ def _run_discovery_with_story_prefetch(
             cutoff,
             end,
             discovery_limit,
+            progress_callback=progress_callback,
         )
         discovery_duration_ms = round(
             (time.perf_counter() - discovery_clock) * 1000,
@@ -1415,6 +1450,8 @@ def _run_discovery_batch(
     cutoff: datetime,
     end: datetime,
     discovery_limit: int,
+    *,
+    progress_callback=None,
 ) -> tuple[list[dict], list[dict], dict, list[dict], dict]:
     """Discover all selected sources with bounded platform-aware concurrency."""
     work: list[tuple[int, dict, dict, str]] = []
@@ -1614,7 +1651,27 @@ def _run_discovery_batch(
             for task in network_tasks:
                 futures[task[0]] = network_executor.submit(discover_one, task)
 
-        results = [futures[index].result() for index in sorted(futures)]
+        results_by_index: dict[int, dict] = {}
+        future_to_index = {future: index for index, future in futures.items()}
+        completed_sources = 0
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
+            result = future.result()
+            results_by_index[index] = result
+            completed_sources += 1
+            if progress_callback is not None:
+                discovery = result.get("discovery") or {}
+                progress_callback(
+                    "DISCOVERY",
+                    phase="SOURCE_COMPLETE",
+                    completed_sources=completed_sources,
+                    total_sources=len(futures),
+                    last_completed_creator=str(result["profile"]["creator_key"]),
+                    last_completed_platform=str(result["platform"]),
+                    discovered_items=len(discovery.get("items") or []),
+                    had_error=bool(result.get("error")),
+                )
+        results = [results_by_index[index] for index in sorted(results_by_index)]
     finally:
         for executor in executors:
             executor.shutdown(wait=True, cancel_futures=False)
@@ -1679,7 +1736,7 @@ def _main_impl() -> int:
         })
 
     status_path = root / "state" / "creator_recent_check_status.json"
-    atomic_json(status_path, {
+    progress_base = {
         "schema_version": 1,
         "recent_check_version": RECENT_CHECK_VERSION,
         "state": "RUNNING",
@@ -1691,7 +1748,22 @@ def _main_impl() -> int:
         "max_items": max_items,
         "auto_ingest": True,
         "auto_analysis_owner": "EKONOMI",
-    })
+    }
+
+    def write_progress(stage: str, **details) -> None:
+        atomic_json(status_path, {
+            **progress_base,
+            "updated_at": now_iso(),
+            "progress": {
+                "stage": stage,
+                **{key: value for key, value in details.items() if value is not None},
+            },
+            "timings": {
+                "elapsed_ms": round((time.perf_counter() - run_clock) * 1000, 1),
+            },
+        })
+
+    write_progress("STARTING", phase="STARTED")
 
     discoveries = []
     errors = []
@@ -1709,6 +1781,13 @@ def _main_impl() -> int:
     story_ollama_budget = {"attempted": 0}
     try:
         selected = select_profiles_and_sources(root, args.scope, creator_keys)
+        selected_source_count = sum(len(sources) for _, sources in selected)
+        write_progress(
+            "DISCOVERY",
+            phase="STARTED",
+            total_creators=len(selected),
+            total_sources=selected_source_count,
+        )
         (
             (
                 discoveries,
@@ -1727,6 +1806,7 @@ def _main_impl() -> int:
             max_items,
             gemini_circuit=story_gemini_circuit,
             ollama_budget_state=story_ollama_budget,
+            progress_callback=write_progress,
         )
         errors.extend(discovery_errors)
         stage_timings.extend(discovery_timings)
@@ -1740,6 +1820,16 @@ def _main_impl() -> int:
         pending = [x for x in all_recent if not x["already_ingested"]]
         selected_pending = pending[:max_items]
         deferred = pending[max_items:]
+        write_progress(
+            "DISCOVERY",
+            phase="COMPLETE",
+            completed_sources=selected_source_count,
+            total_sources=selected_source_count,
+            successful_sources=len(discoveries),
+            recent_found_count=len(all_recent),
+            pending_found_count=len(pending),
+            errors_so_far=len(errors),
+        )
 
         grouped: dict[tuple[str, str], list[str]] = defaultdict(list)
         selected_metadata: dict[tuple[str, str, str], dict] = {}
@@ -1748,8 +1838,22 @@ def _main_impl() -> int:
             selected_metadata[(item["creator_key"], item["platform"], item["source_id"])] = item
 
         ingestion_results = []
-        for (creator_key, platform), ids in grouped.items():
+        ingestion_group_count = len(grouped)
+        for group_index, ((creator_key, platform), ids) in enumerate(
+            grouped.items(),
+            start=1,
+        ):
             profile, source = source_map[(creator_key, platform)]
+            write_progress(
+                "INGESTION",
+                phase="GROUP_RUNNING",
+                completed_groups=group_index - 1,
+                total_groups=ingestion_group_count,
+                current_creator=creator_key,
+                current_platform=platform,
+                item_count=len(ids),
+                errors_so_far=len(errors),
+            )
             ingestion_clock = time.perf_counter()
             try:
                 if platform == "YOUTUBE":
@@ -1773,7 +1877,23 @@ def _main_impl() -> int:
                     continue
                 ingestion_results.append({"creator_key": creator_key, "platform": platform, **ing})
                 if int(ing.get("returncode", 0)) != 0:
-                    errors.append({"creator_key": creator_key, "platform": platform, "stage": "INGESTION", "error": f"RETURNCODE:{ing.get('returncode')}"})
+                    failure = next(
+                        (row for row in (ing.get("failures") or []) if isinstance(row, dict)),
+                        {},
+                    )
+                    failure_stage = str(failure.get("stage") or "").strip()
+                    failure_detail = str(failure.get("detail") or "").strip()
+                    diagnostic = f"RETURNCODE:{ing.get('returncode')}"
+                    if failure_stage:
+                        diagnostic += f"; STAGE:{failure_stage}"
+                    if failure_detail:
+                        diagnostic += f"; DETAIL:{failure_detail[:1200]}"
+                    errors.append({
+                        "creator_key": creator_key,
+                        "platform": platform,
+                        "stage": "INGESTION",
+                        "error": diagnostic,
+                    })
             except Exception as exc:
                 errors.append({"creator_key": creator_key, "platform": platform, "stage": "INGESTION", "error": f"{type(exc).__name__}: {exc}"})
             finally:
@@ -1784,6 +1904,14 @@ def _main_impl() -> int:
                     platform=platform,
                     item_count=len(ids),
                 )
+
+        write_progress(
+            "INGESTION",
+            phase="COMPLETE",
+            completed_groups=ingestion_group_count,
+            total_groups=ingestion_group_count,
+            errors_so_far=len(errors),
+        )
 
         story_results = []
         story_prefetch_by_creator = {
@@ -1797,6 +1925,13 @@ def _main_impl() -> int:
         story_reattributed_count = 0
         story_identity_aliases_retired_count = 0
         remaining_story_slots = max(0, max_items - len(selected_pending))
+        story_target_count = len(_story_capture_targets(selected))
+        write_progress(
+            "STORIES",
+            phase="STARTED",
+            total_creators=story_target_count,
+            remaining_slots=remaining_story_slots,
+        )
         if remaining_story_slots:
             seen_instagram_creators: set[str] = set()
             for profile, sources in selected:
@@ -1812,6 +1947,15 @@ def _main_impl() -> int:
                 if creator_key in seen_instagram_creators:
                     continue
                 seen_instagram_creators.add(creator_key)
+                write_progress(
+                    "STORIES",
+                    phase="CREATOR_RUNNING",
+                    total_creators=story_target_count,
+                    current_creator=creator_key,
+                    current_platform="INSTAGRAM",
+                    remaining_slots=remaining_story_slots,
+                    errors_so_far=len(errors),
+                )
                 story_clock = time.perf_counter()
                 prefetch_row = story_prefetch_by_creator.get(creator_key) or {}
                 precomputed_run = (
@@ -1880,9 +2024,25 @@ def _main_impl() -> int:
                         "finalize_duration_ms": finalize_duration_ms,
                     })
 
+        write_progress(
+            "STORIES",
+            phase="COMPLETE",
+            total_creators=story_target_count,
+            promoted_count=len(story_selected),
+            current_count=len(story_available),
+            errors_so_far=len(errors),
+        )
+
         # Rebuild the queue even when all recent items were already ingested. This
         # migrates older evidence through the current content-readiness gate instead
         # of silently treating an empty/weak transcript as analysis-ready.
+        write_progress(
+            "ANALYSIS_QUEUE",
+            phase="REFRESHING",
+            recent_found_count=len(all_recent),
+            story_current_count=len(story_available),
+            errors_so_far=len(errors),
+        )
         queue_clock = time.perf_counter()
         queue_refresh = tts.run_research_queue(root)
         record_timing("RESEARCH_QUEUE", queue_clock)
@@ -1928,6 +2088,13 @@ def _main_impl() -> int:
         analysis_candidate_keys.update(x["item_key"] for x in story_available)
         analysis_targets = _queue_targets(root, analysis_candidate_keys)
         completed_keys = {x["queue_id"] for x in analysis_targets}
+        write_progress(
+            "ANALYSIS_QUEUE",
+            phase="COMPLETE",
+            queued_for_analysis_count=len(analysis_targets),
+            candidate_count=len(analysis_candidate_keys),
+            errors_so_far=len(errors),
+        )
 
         def annotate_content_state(item: dict) -> None:
             item["queued_for_analysis"] = item["item_key"] in completed_keys
