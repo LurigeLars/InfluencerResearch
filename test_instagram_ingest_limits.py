@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
+import tempfile
 import unittest.mock
+from pathlib import Path
 from types import SimpleNamespace
 
 import instagram_ingest as ig
@@ -82,6 +85,141 @@ class InstagramIngestLimitTests(unittest.TestCase):
             ),
             ["requested_pending"],
         )
+
+    def test_transcription_checkpoints_completed_item_before_later_interrupt(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "state").mkdir(parents=True)
+            for key in ("FIRST", "SECOND"):
+                video = root / "output" / "fixture" / "raw" / f"{key}.mp4"
+                video.parent.mkdir(parents=True, exist_ok=True)
+                video.write_bytes(b"fixture")
+            manifest = {
+                "schema_version": 1,
+                "items": {
+                    key: {
+                        "creator": "fixture",
+                        "source_platform": "INSTAGRAM",
+                        "source_id": key,
+                        "download_status": "DONE",
+                        "video_file": f"output/fixture/raw/{key}.mp4",
+                        "transcription_status": "PENDING",
+                    }
+                    for key in ("FIRST", "SECOND")
+                },
+            }
+            (root / "state" / "manifest.json").write_text(
+                json.dumps(manifest),
+                encoding="utf-8",
+            )
+
+            with (
+                unittest.mock.patch.object(
+                    ig,
+                    "validate_media",
+                    return_value=(True, "ok"),
+                ),
+                unittest.mock.patch.object(
+                    ig,
+                    "transcribe_video",
+                    side_effect=[
+                        {
+                            "provider": "fixture",
+                            "model": "fixture",
+                            "text": "first transcript",
+                            "segments": [],
+                        },
+                        KeyboardInterrupt(),
+                    ],
+                ),
+            ):
+                with self.assertRaises(KeyboardInterrupt):
+                    ig.transcribe_videos(
+                        root,
+                        manifest,
+                        {"transcription": {"enabled": True}},
+                        ["FIRST", "SECOND"],
+                    )
+
+            persisted = json.loads(
+                (root / "state" / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                persisted["items"]["FIRST"]["transcription_status"],
+                "DONE",
+            )
+            self.assertEqual(
+                persisted["items"]["SECOND"]["transcription_status"],
+                "RUNNING",
+            )
+            self.assertTrue(
+                (root / "output" / "fixture" / "transcripts" / "FIRST.txt").is_file()
+            )
+
+    def test_visual_checkpoint_preserves_completed_item_before_later_interrupt(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "state").mkdir(parents=True)
+            manifest = {
+                "schema_version": 1,
+                "items": {
+                    key: {
+                        "creator": "fixture",
+                        "source_platform": "INSTAGRAM",
+                        "source_id": key,
+                        "download_status": "DONE",
+                        "video_file": f"output/fixture/raw/{key}.mp4",
+                        "transcription_status": "DONE",
+                        "visual_review_policy_version": 0,
+                    }
+                    for key in ("FIRST", "SECOND")
+                },
+            }
+            (root / "state" / "manifest.json").write_text(
+                json.dumps(manifest),
+                encoding="utf-8",
+            )
+
+            with unittest.mock.patch.object(
+                ig,
+                "capture_local_video_visual_evidence",
+                side_effect=[
+                    {
+                        "ok": True,
+                        "index": str(root / "output" / "fixture" / "first-index.json"),
+                        "retained_frames": 1,
+                        "capture_strategy": "fixture",
+                        "agent_visual_bundle": {},
+                    },
+                    KeyboardInterrupt(),
+                ],
+            ):
+                with self.assertRaises(KeyboardInterrupt):
+                    ig.enrich_visual_evidence(
+                        root,
+                        manifest,
+                        ["FIRST", "SECOND"],
+                    )
+
+            persisted = json.loads(
+                (root / "state" / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                persisted["items"]["FIRST"]["visual_evidence_status"],
+                "DONE",
+            )
+            self.assertEqual(
+                persisted["items"]["FIRST"]["visual_review_policy_version"],
+                ig.VISUAL_REVIEW_POLICY_VERSION,
+            )
+            self.assertEqual(
+                persisted["items"]["SECOND"]["visual_evidence_status"],
+                "RUNNING",
+            )
+            self.assertEqual(
+                persisted["items"]["SECOND"]["visual_review_policy_version"],
+                0,
+            )
 
     def test_ephemeral_context_uses_new_context_not_persistent_profile(self) -> None:
         context = unittest.mock.Mock()
