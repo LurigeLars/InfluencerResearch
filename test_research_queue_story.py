@@ -3,9 +3,8 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
-import unittest
+import unittest.mock
 from pathlib import Path
-from unittest import mock
 
 import research_queue
 
@@ -70,7 +69,7 @@ class ResearchQueueStoryTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with mock.patch.object(sys, "argv", ["research_queue.py", "--root", str(root)]):
+            with unittest.mock.patch.object(sys, "argv", ["research_queue.py", "--root", str(root)]):
                 self.assertEqual(research_queue.main(), 0)
 
             queue = json.loads((state / "research_queue.json").read_text(encoding="utf-8"))
@@ -134,7 +133,7 @@ class ResearchQueueStoryTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with mock.patch.object(sys, "argv", ["research_queue.py", "--root", str(root)]):
+            with unittest.mock.patch.object(sys, "argv", ["research_queue.py", "--root", str(root)]):
                 self.assertEqual(research_queue.main(), 0)
 
             queue = json.loads((state / "research_queue.json").read_text(encoding="utf-8"))
@@ -197,7 +196,7 @@ class ResearchQueueStoryTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with mock.patch.object(sys, "argv", ["research_queue.py", "--root", str(root)]):
+            with unittest.mock.patch.object(sys, "argv", ["research_queue.py", "--root", str(root)]):
                 self.assertEqual(research_queue.main(), 0)
 
             queue = json.loads((state / "research_queue.json").read_text(encoding="utf-8"))
@@ -257,7 +256,7 @@ class ResearchQueueStoryTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            with mock.patch.object(sys, "argv", ["research_queue.py", "--root", str(root)]):
+            with unittest.mock.patch.object(sys, "argv", ["research_queue.py", "--root", str(root)]):
                 self.assertEqual(research_queue.main(), 0)
 
             queue = json.loads((state / "research_queue.json").read_text(encoding="utf-8"))
