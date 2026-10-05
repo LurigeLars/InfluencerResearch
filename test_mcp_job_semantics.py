@@ -35,6 +35,35 @@ types_mod.ImageContent = _DummyModel
 types_mod.TextContent = _DummyModel
 types_mod.ToolAnnotations = _DummyModel
 
+pydantic_mod = sys.modules.setdefault("pydantic", ModuleType("pydantic"))
+
+
+class _DummyBaseModel:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+    def model_dump(self, **kwargs):
+        return dict(self.__dict__)
+
+
+def _dummy_config_dict(**kwargs):
+    return dict(kwargs)
+
+
+def _dummy_field(default=None, **kwargs):
+    return default
+
+
+pydantic_mod.BaseModel = _DummyBaseModel
+pydantic_mod.ConfigDict = _dummy_config_dict
+pydantic_mod.Field = _dummy_field
+
+starlette_pkg = sys.modules.setdefault("starlette", ModuleType("starlette"))
+starlette_requests = sys.modules.setdefault("starlette.requests", ModuleType("starlette.requests"))
+starlette_responses = sys.modules.setdefault("starlette.responses", ModuleType("starlette.responses"))
+starlette_requests.Request = _DummyModel
+starlette_responses.JSONResponse = _DummyModel
+
 import influencerresearch_mcp as irm
 
 
