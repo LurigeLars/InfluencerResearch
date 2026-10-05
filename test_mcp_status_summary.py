@@ -105,6 +105,10 @@ class McpStatusSummaryTests(unittest.TestCase):
                         "duplicate": 0,
                         "missing": 1,
                     },
+                    "analysis_candidate_states": [
+                        {"item_key": "q1", "analysis_state": "QUEUED"},
+                        {"item_key": "missing-1", "analysis_state": "MISSING"},
+                    ],
                     "analysis_targets": [{"id": 1}, {"id": 2}],
                     "story_items": [{"id": "s1"}],
                     "extraction_error_count": 0,
@@ -137,8 +141,10 @@ class McpStatusSummaryTests(unittest.TestCase):
         self.assertEqual(status["analysis_target_count"], 2)
         self.assertEqual(status["analysis_missing_count"], 1)
         self.assertEqual(status["analysis_candidate_coverage"]["missing"], 1)
+        self.assertEqual(status["analysis_candidate_state_count"], 2)
         self.assertEqual(status["story_item_count"], 1)
         self.assertNotIn("analysis_missing_items", status)
+        self.assertNotIn("analysis_candidate_states", status)
         self.assertNotIn("analysis_targets", status)
         self.assertNotIn("story_items", status)
         self.assertNotIn("extraction_error_items", status)
