@@ -426,6 +426,12 @@ def main() -> int:
         default=[],
         help="Bounded creator-evaluation queue admission reservation.",
     )
+    parser.add_argument(
+        "--include-creator",
+        action="append",
+        default=[],
+        help="Explicit creator whose evidence must be considered even when the screening allowlist excludes it.",
+    )
     args = parser.parse_args()
     root = args.root.resolve()
 
@@ -440,6 +446,15 @@ def main() -> int:
             must_include.append(shortcode)
     if len(must_include) > 20:
         raise ValueError(f"TOO_MANY_MUST_INCLUDE_SHORTCODES:{len(must_include)}>20")
+
+    include_creators: set[str] = set()
+    for raw in args.include_creator:
+        creator = str(raw or "").strip().lstrip("@").lower()
+        if not re.fullmatch(r"[a-z0-9._-]{1,128}", creator):
+            raise ValueError(f"BAD_INCLUDE_CREATOR:{creator[:128]}")
+        include_creators.add(creator)
+    if len(include_creators) > 50:
+        raise ValueError(f"TOO_MANY_INCLUDE_CREATORS:{len(include_creators)}>50")
 
     manifest_path = root / "state" / "manifest.json"
     queue_path = root / "state" / "research_queue.json"
@@ -510,7 +525,12 @@ def main() -> int:
             item.get("evaluation_mode") == "CREATOR_EVALUATION"
             and item.get("permanent_source") is False
         )
-        if creators_allow and creator not in creators_allow and not is_creator_evaluation:
+        if (
+            creators_allow
+            and creator not in creators_allow
+            and creator not in include_creators
+            and not is_creator_evaluation
+        ):
             continue
 
         transcript_path = normalize_manifest_path(root, item.get("transcript_txt"))
