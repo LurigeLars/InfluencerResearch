@@ -60,6 +60,7 @@ def summarize_status(path: Path | None) -> dict | None:
         "analysis_missing_count",
         "analysis_missing_items",
         "analysis_candidate_coverage",
+        "analysis_candidate_states",
         "analysis_readiness_complete",
         "story_visual_enrichment",
         "story_items",
@@ -94,6 +95,7 @@ _DETAIL_ARRAY_COUNT_KEYS = {
     "transitions": "transition_count",
     "ingestion_groups": "ingestion_group_count",
     "analysis_missing_items": "analysis_missing_count",
+    "analysis_candidate_states": "analysis_candidate_state_count",
 }
 
 
