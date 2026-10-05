@@ -21,7 +21,7 @@ from transcription_backend import transcribe_video
 from video_visual_evidence import VISUAL_REVIEW_POLICY_VERSION, capture_local_video_visual_evidence
 
 
-APP_VERSION = "0.3.4"
+APP_VERSION = "0.3.5"
 REEL_RE = re.compile(r"/reel/([A-Za-z0-9_-]+)/?")
 
 
@@ -697,8 +697,12 @@ def transcribe_videos(root: Path, manifest: dict, settings: dict, keys: list[str
     if not tcfg.get("enabled", True) or not keys:
         return {"attempted": 0, "completed": 0, "errors": []}
 
+    manifest_path = root / "state" / "manifest.json"
     completed = 0
     errors: list[str] = []
+
+    def checkpoint() -> None:
+        atomic_write_json(manifest_path, manifest)
 
     for key in keys:
         item = manifest["items"].get(key, {})
@@ -714,6 +718,7 @@ def transcribe_videos(root: Path, manifest: dict, settings: dict, keys: list[str
             item["media_validation"] = validation
             item["transcription_status"] = "NOT_STARTED"
             errors.append(f"{key}: invalid media before transcription: {validation}")
+            checkpoint()
             continue
 
         transcript_dir = root / "output" / creator / "transcripts"
@@ -723,9 +728,17 @@ def transcribe_videos(root: Path, manifest: dict, settings: dict, keys: list[str
 
         if txt_path.exists() and json_path.exists():
             item["transcription_status"] = "DONE"
+            item.pop("transcription_error", None)
+            item.pop("transcription_started_at", None)
             item["transcript_txt"] = str(txt_path.relative_to(root))
             item["transcript_json"] = str(json_path.relative_to(root))
+            checkpoint()
             continue
+
+        item["transcription_status"] = "RUNNING"
+        item["transcription_started_at"] = utc_now()
+        item.pop("transcription_error", None)
+        checkpoint()
 
         try:
             result = transcribe_video(video_path, tcfg)
@@ -756,11 +769,15 @@ def transcribe_videos(root: Path, manifest: dict, settings: dict, keys: list[str
             item["transcript_txt"] = str(txt_path.relative_to(root))
             item["transcript_json"] = str(json_path.relative_to(root))
             item["transcribed_at"] = utc_now()
+            item.pop("transcription_started_at", None)
             completed += 1
         except Exception as exc:
             item["transcription_status"] = "ERROR"
             item["transcription_error"] = f"{type(exc).__name__}: {exc}"
+            item.pop("transcription_started_at", None)
             errors.append(f"{key}: {type(exc).__name__}: {exc}")
+        finally:
+            checkpoint()
 
     return {"attempted": len(keys), "completed": completed, "errors": errors}
 
@@ -800,9 +817,14 @@ def select_visual_evidence_keys(
 
 
 def enrich_visual_evidence(root: Path, manifest: dict, keys: list[str]) -> dict:
+    manifest_path = root / "state" / "manifest.json"
     completed = 0
     fail_open = 0
     errors: list[str] = []
+
+    def checkpoint() -> None:
+        atomic_write_json(manifest_path, manifest)
+
     for key in keys:
         item = manifest.get("items", {}).get(key, {})
         creator = str(item.get("creator") or "")
@@ -852,6 +874,7 @@ def enrich_visual_evidence(root: Path, manifest: dict, keys: list[str]) -> dict:
             item["creator_visual_prior"] = "NEUTRAL"
             fail_open += 1
             errors.append(f"{key}: {item['visual_evidence_error']}")
+        checkpoint()
     return {"attempted": len(keys), "completed": completed, "fail_open": fail_open, "errors": errors}
 
 
