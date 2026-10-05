@@ -700,6 +700,8 @@ def transcribe_videos(root: Path, manifest: dict, settings: dict, keys: list[str
     manifest_path = root / "state" / "manifest.json"
     completed = 0
     errors: list[str] = []
+    gemini_failover_triggered = False
+    forced_local_count = 0
 
     for key in keys:
         item = manifest["items"].get(key, {})
@@ -731,7 +733,16 @@ def transcribe_videos(root: Path, manifest: dict, settings: dict, keys: list[str
             continue
 
         try:
-            result = transcribe_video(video_path, tcfg)
+            item_settings = dict(tcfg)
+            if (
+                gemini_failover_triggered
+                and str(item_settings.get("provider", "auto")).strip().lower() == "auto"
+            ):
+                item_settings["provider"] = "faster-whisper"
+                forced_local_count += 1
+            result = transcribe_video(video_path, item_settings)
+            if str(result.get("fallback_from") or "").strip().lower() == "gemini":
+                gemini_failover_triggered = True
             full_text = str(result.get("text") or "").strip()
             txt_path.write_text(full_text + ("\n" if full_text else ""), encoding="utf-8")
 
@@ -767,7 +778,13 @@ def transcribe_videos(root: Path, manifest: dict, settings: dict, keys: list[str
             errors.append(f"{key}: {type(exc).__name__}: {exc}")
             atomic_write_json(manifest_path, manifest)
 
-    return {"attempted": len(keys), "completed": completed, "errors": errors}
+    return {
+        "attempted": len(keys),
+        "completed": completed,
+        "errors": errors,
+        "gemini_failover_triggered": gemini_failover_triggered,
+        "forced_local_count": forced_local_count,
+    }
 
 
 def select_visual_evidence_keys(

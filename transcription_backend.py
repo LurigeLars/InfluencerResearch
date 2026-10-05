@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import base64
 import contextlib
 import json
@@ -7,6 +8,7 @@ import math
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -33,6 +35,7 @@ GEMINI_RETRY_ATTEMPTS = 2
 TRANSCRIPTION_GEMINI_HTTP_TIMEOUT_MS = 15_000
 TRANSCRIPTION_GEMINI_RETRY_ATTEMPTS = 1
 TRANSCRIPTION_AUDIO_EXTRACT_TIMEOUT_SECONDS = 60
+TRANSCRIPTION_GEMINI_TOTAL_TIMEOUT_SECONDS = 75
 STORY_GEMINI_HTTP_TIMEOUT_MS = 12_000
 STORY_GEMINI_RETRY_ATTEMPTS = 1
 ALLOWED_PROVIDERS = {"auto", "gemini", "faster-whisper"}
@@ -53,6 +56,12 @@ def bounded_transcription_audio_timeout_seconds(
     value: int = TRANSCRIPTION_AUDIO_EXTRACT_TIMEOUT_SECONDS,
 ) -> int:
     return max(15, min(int(value), 120))
+
+
+def bounded_transcription_gemini_total_timeout_seconds(
+    value: int = TRANSCRIPTION_GEMINI_TOTAL_TIMEOUT_SECONDS,
+) -> int:
+    return max(30, min(int(value), 120))
 
 
 def gemini_http_options(
@@ -229,23 +238,14 @@ def _extract_audio(
     return audio_path
 
 
-def transcribe_gemini(
-    video_path: Path,
+def _transcribe_gemini_audio(
+    audio_path: Path,
     *,
-    model: str = DEFAULT_GEMINI_MODEL,
-    secret_path: Path | None = None,
-    timeout_ms: int = TRANSCRIPTION_GEMINI_HTTP_TIMEOUT_MS,
-    retry_attempts: int = TRANSCRIPTION_GEMINI_RETRY_ATTEMPTS,
-    audio_timeout_seconds: int = TRANSCRIPTION_AUDIO_EXTRACT_TIMEOUT_SECONDS,
+    api_key: str,
+    model: str,
+    timeout_ms: int,
+    retry_attempts: int,
 ) -> dict[str, Any]:
-    api_key = read_gemini_api_key(secret_path)
-    if not api_key:
-        raise RuntimeError("Gemini runtime secret is not available.")
-
-    audio_path = _extract_audio(
-        video_path,
-        timeout_seconds=audio_timeout_seconds,
-    )
     client = _gemini_client(
         api_key,
         timeout_ms=bounded_transcription_gemini_timeout_ms(timeout_ms),
@@ -280,6 +280,141 @@ def transcribe_gemini(
         if uploaded is not None:
             with contextlib.suppress(Exception):
                 client.files.delete(name=uploaded.name)
+
+
+def transcribe_gemini(
+    video_path: Path,
+    *,
+    model: str = DEFAULT_GEMINI_MODEL,
+    secret_path: Path | None = None,
+    timeout_ms: int = TRANSCRIPTION_GEMINI_HTTP_TIMEOUT_MS,
+    retry_attempts: int = TRANSCRIPTION_GEMINI_RETRY_ATTEMPTS,
+    audio_timeout_seconds: int = TRANSCRIPTION_AUDIO_EXTRACT_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    api_key = read_gemini_api_key(secret_path)
+    if not api_key:
+        raise RuntimeError("Gemini runtime secret is not available.")
+
+    audio_path = _extract_audio(
+        video_path,
+        timeout_seconds=audio_timeout_seconds,
+    )
+    try:
+        return _transcribe_gemini_audio(
+            audio_path,
+            api_key=api_key,
+            model=model,
+            timeout_ms=timeout_ms,
+            retry_attempts=retry_attempts,
+        )
+    finally:
+        with contextlib.suppress(OSError):
+            audio_path.unlink(missing_ok=True)
+
+
+def _gemini_audio_worker_main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--gemini-audio-worker", action="store_true")
+    parser.add_argument("--audio", required=True)
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--secret-path", required=True)
+    parser.add_argument("--timeout-ms", type=int, required=True)
+    parser.add_argument("--retry-attempts", type=int, required=True)
+    args = parser.parse_args(argv)
+
+    try:
+        api_key = read_gemini_api_key(Path(args.secret_path))
+        if not api_key:
+            raise RuntimeError("Gemini runtime secret is not available.")
+        result = _transcribe_gemini_audio(
+            Path(args.audio),
+            api_key=api_key,
+            model=str(args.model),
+            timeout_ms=int(args.timeout_ms),
+            retry_attempts=int(args.retry_attempts),
+        )
+        print(json.dumps({"ok": True, "result": result}, ensure_ascii=True))
+        return 0
+    except Exception as exc:
+        print(json.dumps({
+            "ok": False,
+            "error": _safe_error(exc),
+        }, ensure_ascii=True))
+        return 1
+
+
+def transcribe_gemini_bounded(
+    video_path: Path,
+    *,
+    model: str = DEFAULT_GEMINI_MODEL,
+    secret_path: Path | None = None,
+    timeout_ms: int = TRANSCRIPTION_GEMINI_HTTP_TIMEOUT_MS,
+    retry_attempts: int = TRANSCRIPTION_GEMINI_RETRY_ATTEMPTS,
+    audio_timeout_seconds: int = TRANSCRIPTION_AUDIO_EXTRACT_TIMEOUT_SECONDS,
+    total_timeout_seconds: int = TRANSCRIPTION_GEMINI_TOTAL_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
+    secret = secret_path or GEMINI_SECRET_PATH
+    if read_gemini_api_key(secret) is None:
+        raise RuntimeError("Gemini runtime secret is not available.")
+
+    audio_path = _extract_audio(
+        video_path,
+        timeout_seconds=audio_timeout_seconds,
+    )
+    cmd = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--gemini-audio-worker",
+        "--audio",
+        str(audio_path),
+        "--model",
+        str(model),
+        "--secret-path",
+        str(secret),
+        "--timeout-ms",
+        str(bounded_transcription_gemini_timeout_ms(timeout_ms)),
+        "--retry-attempts",
+        str(max(1, min(int(retry_attempts), 2))),
+    ]
+    run_kwargs: dict[str, Any] = {}
+    if os.name != "nt":
+        run_kwargs["start_new_session"] = True
+
+    try:
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=bounded_transcription_gemini_total_timeout_seconds(
+                    total_timeout_seconds
+                ),
+                shell=False,
+                **run_kwargs,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise TimeoutError(
+                "Gemini transcription exceeded the hard provider deadline."
+            ) from exc
+
+        worker_lines = [
+            line.strip()
+            for line in (proc.stdout or "").splitlines()
+            if line.strip()
+        ]
+        try:
+            payload = json.loads(worker_lines[-1] if worker_lines else "")
+        except (IndexError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Gemini transcription worker returned invalid output.") from exc
+        if proc.returncode != 0 or not payload.get("ok"):
+            raise RuntimeError(
+                str(payload.get("error") or "Gemini transcription worker failed.")
+            )
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            raise RuntimeError("Gemini transcription worker returned no result.")
+        return result
+    finally:
         with contextlib.suppress(OSError):
             audio_path.unlink(missing_ok=True)
 
@@ -654,15 +789,22 @@ def transcribe_video(video_path: Path, settings: dict[str, Any] | None = None) -
             TRANSCRIPTION_AUDIO_EXTRACT_TIMEOUT_SECONDS,
         ))
     )
+    gemini_total_timeout_seconds = bounded_transcription_gemini_total_timeout_seconds(
+        int(settings.get(
+            "gemini_transcription_total_timeout_seconds",
+            TRANSCRIPTION_GEMINI_TOTAL_TIMEOUT_SECONDS,
+        ))
+    )
     gemini_kwargs = {
         "model": gemini_model,
         "timeout_ms": gemini_timeout_ms,
         "retry_attempts": gemini_retry_attempts,
         "audio_timeout_seconds": audio_timeout_seconds,
+        "total_timeout_seconds": gemini_total_timeout_seconds,
     }
 
     if provider == "gemini":
-        return transcribe_gemini(video_path, **gemini_kwargs)
+        return transcribe_gemini_bounded(video_path, **gemini_kwargs)
 
     if provider == "faster-whisper":
         return transcribe_faster_whisper(video_path, settings)
@@ -670,7 +812,7 @@ def transcribe_video(video_path: Path, settings: dict[str, Any] | None = None) -
     # auto: prefer Gemini only when the runtime-only secret is present, then fall back locally.
     if read_gemini_api_key() is not None:
         try:
-            return transcribe_gemini(video_path, **gemini_kwargs)
+            return transcribe_gemini_bounded(video_path, **gemini_kwargs)
         except Exception as exc:
             fallback = transcribe_faster_whisper(video_path, settings)
             fallback["fallback_from"] = "gemini"
@@ -678,3 +820,8 @@ def transcribe_video(video_path: Path, settings: dict[str, Any] | None = None) -
             return fallback
 
     return transcribe_faster_whisper(video_path, settings)
+
+
+if __name__ == "__main__":
+    if "--gemini-audio-worker" in sys.argv[1:]:
+        raise SystemExit(_gemini_audio_worker_main(sys.argv[1:]))

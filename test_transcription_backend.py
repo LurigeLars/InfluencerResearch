@@ -52,6 +52,9 @@ class TranscriptionBackendTests(unittest.TestCase):
         self.assertEqual(tb.bounded_transcription_audio_timeout_seconds(), 60)
         self.assertEqual(tb.bounded_transcription_audio_timeout_seconds(1), 15)
         self.assertEqual(tb.bounded_transcription_audio_timeout_seconds(999), 120)
+        self.assertEqual(tb.bounded_transcription_gemini_total_timeout_seconds(), 75)
+        self.assertEqual(tb.bounded_transcription_gemini_total_timeout_seconds(1), 30)
+        self.assertEqual(tb.bounded_transcription_gemini_total_timeout_seconds(999), 120)
 
     def test_story_image_path_uses_inline_bytes_not_files_api(self) -> None:
         source = Path(tb.__file__).read_text(encoding="utf-8")
@@ -153,7 +156,7 @@ class TranscriptionBackendTests(unittest.TestCase):
     def test_auto_passes_bounded_transcription_limits_to_gemini(self) -> None:
         with patch.object(tb, "read_gemini_api_key", return_value="secret"), patch.object(
             tb,
-            "transcribe_gemini",
+            "transcribe_gemini_bounded",
             return_value={"provider": "gemini", "text": "ok"},
         ) as gemini:
             result = tb.transcribe_video(
@@ -163,6 +166,7 @@ class TranscriptionBackendTests(unittest.TestCase):
                     "gemini_transcription_timeout_ms": 999_999,
                     "gemini_transcription_retry_attempts": 99,
                     "audio_extract_timeout_seconds": 999,
+                    "gemini_transcription_total_timeout_seconds": 999,
                 },
             )
 
@@ -173,12 +177,13 @@ class TranscriptionBackendTests(unittest.TestCase):
             timeout_ms=30_000,
             retry_attempts=2,
             audio_timeout_seconds=120,
+            total_timeout_seconds=120,
         )
 
     def test_auto_falls_back_when_gemini_fails(self) -> None:
         with patch.object(tb, "read_gemini_api_key", return_value="secret"), patch.object(
             tb,
-            "transcribe_gemini",
+            "transcribe_gemini_bounded",
             side_effect=RuntimeError("remote failure"),
         ), patch.object(
             tb,
@@ -190,6 +195,65 @@ class TranscriptionBackendTests(unittest.TestCase):
         self.assertEqual(result["fallback_from"], "gemini")
         self.assertIn("RuntimeError", result["fallback_error"])
         self.assertNotIn("secret", result["fallback_error"])
+
+    def test_bounded_gemini_worker_timeout_removes_audio(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            audio = Path(td) / "audio.mp3"
+            audio.write_bytes(b"fixture")
+            with (
+                patch.object(tb, "read_gemini_api_key", return_value="secret"),
+                patch.object(tb, "_extract_audio", return_value=audio),
+                patch.object(
+                    tb.subprocess,
+                    "run",
+                    side_effect=subprocess.TimeoutExpired("worker", 30),
+                ) as run,
+            ):
+                with self.assertRaisesRegex(TimeoutError, "hard provider deadline"):
+                    tb.transcribe_gemini_bounded(
+                        Path("video.mp4"),
+                        total_timeout_seconds=30,
+                    )
+
+            self.assertFalse(audio.exists())
+            self.assertEqual(run.call_args.kwargs["timeout"], 30)
+            self.assertFalse(run.call_args.kwargs["shell"])
+
+    def test_bounded_gemini_worker_accepts_terminal_json_and_cleans_audio(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            audio = Path(td) / "audio.mp3"
+            audio.write_bytes(b"fixture")
+            worker_result = {
+                "provider": "gemini",
+                "model": tb.DEFAULT_GEMINI_MODEL,
+                "text": "bounded transcript",
+                "language": None,
+                "language_probability": None,
+                "duration": None,
+                "segments": [],
+            }
+            completed = subprocess.CompletedProcess(
+                args=["worker"],
+                returncode=0,
+                stdout=(
+                    "harmless worker diagnostic\n"
+                    + tb.json.dumps({"ok": True, "result": worker_result})
+                    + "\n"
+                ),
+                stderr="",
+            )
+            with (
+                patch.object(tb, "read_gemini_api_key", return_value="secret"),
+                patch.object(tb, "_extract_audio", return_value=audio),
+                patch.object(tb.subprocess, "run", return_value=completed) as run,
+            ):
+                result = tb.transcribe_gemini_bounded(Path("video.mp4"))
+
+            self.assertEqual(result["text"], "bounded transcript")
+            self.assertFalse(audio.exists())
+            command = run.call_args.args[0]
+            self.assertIn("--gemini-audio-worker", command)
+            self.assertNotIn("secret", command)
 
     def test_extract_audio_timeout_removes_temporary_file(self) -> None:
         with tempfile.TemporaryDirectory() as td:

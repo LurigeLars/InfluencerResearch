@@ -7,6 +7,7 @@
     "gemini_model": "gemini-3.5-transcribe",
     "gemini_transcription_timeout_ms": 15000,
     "gemini_transcription_retry_attempts": 1,
+    "gemini_transcription_total_timeout_seconds": 75,
     "audio_extract_timeout_seconds": 60,
     "gemini_visual_model": "gemini-3.8-flash",
     "gemini_story_visual_timeout_ms": 12000,
