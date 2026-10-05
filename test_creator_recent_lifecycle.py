@@ -252,6 +252,12 @@ class CreatorRecentLifecycleTests(unittest.TestCase):
             self.assertEqual(rc, 0)
             self.assertEqual(status["state"], "COMPLETE")
             self.assertEqual(status["queued_for_analysis_count"], 2)
+            self.assertEqual(status["analysis_missing_count"], 0)
+            self.assertEqual(status["analysis_candidate_coverage"]["queued"], 2)
+            self.assertEqual(
+                {row["analysis_state"] for row in status["analysis_candidate_states"]},
+                {"QUEUED"},
+            )
             self.assertEqual(status["ingestion_groups"][0]["completed_count"], 2)
             self.assertEqual(status["ingestion_groups"][0]["failed_count"], 0)
             events = [row["event"] for row in status["transitions"]]
@@ -367,6 +373,50 @@ class CreatorRecentLifecycleTests(unittest.TestCase):
                 crc._infer_ingestion_substage(summary["stages"], 1),
                 "TRANSCRIPTION",
             )
+
+    def test_analysis_candidate_coverage_fails_closed_on_unaccounted_item(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            state = root / "state"
+            state.mkdir(parents=True)
+            (state / "manifest.json").write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "items": {
+                        "DUP": {
+                            "research_status": "DUPLICATE",
+                            "duplicate_of": "QUEUED",
+                        }
+                    },
+                }),
+                encoding="utf-8",
+            )
+            (state / "research_decisions.json").write_text(
+                json.dumps({
+                    "schema_version": 2,
+                    "items": {
+                        "FINAL": {"decision": "RESEARCH"},
+                    },
+                }),
+                encoding="utf-8",
+            )
+            queue_snapshot = {
+                "items": [{"queue_id": "QUEUED"}],
+                "insufficient_content_items": [],
+                "deferred_extraction_items": [{"queue_id": "DEFERRED"}],
+                "extraction_error_items": [],
+                "pending_extraction_items": [],
+            }
+            coverage = crc._analysis_candidate_coverage(
+                root,
+                queue_snapshot,
+                {"QUEUED", "DEFERRED", "FINAL", "DUP", "MISSING"},
+            )
+            self.assertEqual(coverage["queued"], ["QUEUED"])
+            self.assertEqual(coverage["explicit_nonready"], ["DEFERRED"])
+            self.assertEqual(coverage["finalized"], ["FINAL"])
+            self.assertEqual(coverage["duplicate"], ["DUP"])
+            self.assertEqual(coverage["missing"], ["MISSING"])
 
     def test_transcription_or_visual_provider_failure_cannot_look_complete(self) -> None:
         with tempfile.TemporaryDirectory() as td:
