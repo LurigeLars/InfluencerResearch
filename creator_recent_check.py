@@ -43,7 +43,7 @@ def _bounded_env_int(
     return max(minimum, min(maximum, value))
 
 
-RECENT_CHECK_VERSION = "0.3.0"
+RECENT_CHECK_VERSION = "0.3.1"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
@@ -1460,6 +1460,70 @@ def _ingest_tiktok(root: Path, profile: dict, source: dict, ids: list[str], disc
     }
 
 
+def _analysis_candidate_coverage(
+    root: Path,
+    queue_snapshot: dict,
+    item_keys: set[str],
+) -> dict:
+    queued = {
+        str(item.get("queue_id") or item.get("shortcode") or "")
+        for item in (queue_snapshot.get("items") or [])
+        if isinstance(item, dict)
+    }
+    explicit_nonready: set[str] = set()
+    for field in (
+        "insufficient_content_items",
+        "deferred_extraction_items",
+        "extraction_error_items",
+        "pending_extraction_items",
+    ):
+        explicit_nonready.update(
+            str(item.get("queue_id") or "")
+            for item in (queue_snapshot.get(field) or [])
+            if isinstance(item, dict) and item.get("queue_id")
+        )
+
+    decisions = load_json(
+        root / "state" / "research_decisions.json",
+        {"items": {}},
+    )
+    finalized = {
+        str(key)
+        for key, value in (decisions.get("items") or {}).items()
+        if isinstance(value, dict)
+        and str(value.get("decision") or "").upper()
+        in {
+            "IGNORE",
+            "RESEARCH",
+            "TEST_CANDIDATE",
+            "BACKLOG_CANDIDATE",
+            "TEST",
+            "BACKLOG",
+        }
+    }
+
+    manifest = load_json(root / "state" / "manifest.json", {"items": {}})
+    duplicate = {
+        str(key)
+        for key, value in (manifest.get("items") or {}).items()
+        if isinstance(value, dict)
+        and (
+            str(value.get("research_status") or "").upper() == "DUPLICATE"
+            or bool(value.get("duplicate_of"))
+        )
+    }
+
+    accounted = queued | explicit_nonready | finalized | duplicate
+    requested = {str(value) for value in item_keys if str(value)}
+    return {
+        "queued": sorted(requested & queued),
+        "explicit_nonready": sorted(requested & explicit_nonready),
+        "finalized": sorted(requested & finalized),
+        "duplicate": sorted(requested & duplicate),
+        "missing": sorted(requested - accounted),
+    }
+
+
 def _queue_targets(root: Path, item_keys: set[str]) -> list[dict]:
     queue = load_json(root / "state" / "research_queue.json", {"items": []})
     out = []
@@ -2004,6 +2068,7 @@ def _manifest_stage_ids(root: Path, platform: str, ids: list[str]) -> dict:
     items = manifest.get("items") if isinstance(manifest.get("items"), dict) else {}
     downloaded: list[str] = []
     transcribed: list[str] = []
+    visual_done: list[str] = []
     for source_id in ids:
         key = source_id
         if platform == "YOUTUBE":
@@ -2019,13 +2084,47 @@ def _manifest_stage_ids(root: Path, platform: str, ids: list[str]) -> dict:
             downloaded.append(source_id)
         if item.get("transcription_status") in {"DONE", "NOT_APPLICABLE"}:
             transcribed.append(source_id)
+
+        platform_upper = str(platform or "").upper()
+        if platform_upper == "INSTAGRAM":
+            if int(item.get("visual_review_policy_version") or 0) >= int(
+                instagram.VISUAL_REVIEW_POLICY_VERSION
+            ):
+                visual_done.append(source_id)
+        elif platform_upper == "YOUTUBE":
+            if item.get("visual_evidence_status") == "DONE":
+                visual_done.append(source_id)
+        elif platform_upper == "TIKTOK":
+            if tts._manifest_item_extraction_complete(item):
+                visual_done.append(source_id)
+
     persisted = sorted(set(ids) & manifest_done_ids(root, platform))
     return {
-        "downloaded_ids": downloaded,
-        "transcribed_ids": transcribed,
-        "visual_done_ids": persisted,
+        "downloaded_ids": sorted(set(downloaded)),
+        "transcribed_ids": sorted(set(transcribed)),
+        "visual_done_ids": sorted(set(visual_done)),
         "persisted_ids": persisted,
     }
+
+
+def _infer_ingestion_wait_stage(ids: list[str], stages: dict) -> str:
+    requested = set(ids)
+    if not requested:
+        return "COMPLETE"
+    downloaded = set(stages.get("downloaded_ids") or [])
+    transcribed = set(stages.get("transcribed_ids") or [])
+    visual_done = set(stages.get("visual_done_ids") or [])
+    persisted = set(stages.get("persisted_ids") or [])
+
+    if persisted >= requested:
+        return "COMPLETE"
+    if not downloaded:
+        return "DOWNLOAD"
+    if transcribed < requested:
+        return "TRANSCRIPTION"
+    if visual_done < requested:
+        return "VISUAL"
+    return "PERSIST"
 
 
 def _evaluate_ingestion_group(
@@ -2062,7 +2161,10 @@ def _evaluate_ingestion_group(
     ]
     first_failure = failures[0] if failures else {}
     ingestion_errors = list(ingestion.get("errors") or [])
-    failure_stage = str(first_failure.get("stage") or "INGESTION")
+    inferred_stage = _infer_ingestion_wait_stage(ids, stages)
+    failure_stage = str(first_failure.get("stage") or "").strip()
+    if not failure_stage:
+        failure_stage = inferred_stage if inferred_stage != "COMPLETE" else "INGESTION"
     error_detail = str(worker_result.get("error") or "").strip()
     if not error_detail and first_failure:
         detail = str(
@@ -2081,6 +2183,8 @@ def _evaluate_ingestion_group(
     if worker_result.get("timeout"):
         terminal_reason = "GROUP_TIMEOUT"
         error_detail = error_detail or f"TIMEOUT:{INGESTION_GROUP_TIMEOUT_SECONDS}s"
+        if failure_stage:
+            error_detail = f"{failure_stage}:{error_detail}"
     elif not worker_result.get("ok"):
         terminal_reason = "GROUP_WORKER_FAILED"
         error_detail = error_detail or "GROUP_WORKER_FAILED"
@@ -2420,6 +2524,7 @@ def _main_impl() -> int:
                 )
 
                 def group_wait_progress(*, elapsed_seconds: float, timeout_seconds: int) -> None:
+                    stage_snapshot = _manifest_stage_ids(root, platform, list(ids))
                     write_progress(
                         "INGESTION",
                         phase="GROUP_WAITING",
@@ -2431,6 +2536,11 @@ def _main_impl() -> int:
                         elapsed_seconds=elapsed_seconds,
                         timeout_seconds=timeout_seconds,
                         wait_reason="INGESTION_GROUP_WORKER",
+                        waiting_stage=_infer_ingestion_wait_stage(list(ids), stage_snapshot),
+                        downloaded_count=len(stage_snapshot["downloaded_ids"]),
+                        transcribed_count=len(stage_snapshot["transcribed_ids"]),
+                        visual_done_count=len(stage_snapshot["visual_done_ids"]),
+                        persisted_count=len(stage_snapshot["persisted_ids"]),
                         errors_so_far=len(errors),
                     )
 
@@ -2735,6 +2845,11 @@ def _main_impl() -> int:
         analysis_candidate_keys = {x["item_key"] for x in all_recent}
         analysis_candidate_keys.update(x["item_key"] for x in story_available)
         analysis_targets = _queue_targets(root, analysis_candidate_keys)
+        analysis_candidate_coverage = _analysis_candidate_coverage(
+            root,
+            queue_snapshot,
+            analysis_candidate_keys,
+        )
         completed_keys = {x["queue_id"] for x in analysis_targets}
         write_progress(
             "ANALYSIS_QUEUE",
@@ -2778,6 +2893,29 @@ def _main_impl() -> int:
             annotate_content_state(item)
 
         recent_content_items = all_recent + story_available
+        recent_content_by_key = {
+            str(item.get("item_key") or ""): item
+            for item in recent_content_items
+            if item.get("item_key")
+        }
+        analysis_missing_items = [
+            {
+                "item_key": item_key,
+                "creator_key": (recent_content_by_key.get(item_key) or {}).get("creator_key"),
+                "platform": (recent_content_by_key.get(item_key) or {}).get("platform"),
+                "source_id": (recent_content_by_key.get(item_key) or {}).get("source_id"),
+                "published_at": (recent_content_by_key.get(item_key) or {}).get("published_at"),
+                "reason": "NOT_QUEUED_NOT_NONREADY_NOT_FINALIZED_NOT_DUPLICATE",
+            }
+            for item_key in analysis_candidate_coverage["missing"]
+        ]
+        if analysis_missing_items:
+            errors.append({
+                "stage": "ANALYSIS_QUEUE",
+                "error": f"ANALYSIS_TARGET_MISSING:{len(analysis_missing_items)}",
+                "items": analysis_missing_items[:100],
+            })
+
         insufficient_recent = [
             {
                 "item_key": item["item_key"],
@@ -3011,6 +3149,18 @@ def _main_impl() -> int:
             "story_identity_aliases_retired_count": story_identity_aliases_retired_count,
             "deferred_due_to_cap_count": len(deferred),
             "queued_for_analysis_count": len(analysis_targets),
+            "analysis_accounted_count": (
+                len(analysis_candidate_coverage["queued"])
+                + len(analysis_candidate_coverage["explicit_nonready"])
+                + len(analysis_candidate_coverage["finalized"])
+                + len(analysis_candidate_coverage["duplicate"])
+            ),
+            "analysis_missing_count": len(analysis_missing_items),
+            "analysis_missing_items": analysis_missing_items[:100],
+            "analysis_candidate_coverage": {
+                key: len(value)
+                for key, value in analysis_candidate_coverage.items()
+            },
             "analysis_readiness_complete": analysis_readiness_complete,
             "story_visual_enrichment": story_visual_enrichment,
             "insufficient_content_count": len(insufficient_recent),
