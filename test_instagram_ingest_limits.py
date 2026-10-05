@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest.mock
+from pathlib import Path
 from types import SimpleNamespace
 
 import instagram_ingest as ig
@@ -82,6 +84,71 @@ class InstagramIngestLimitTests(unittest.TestCase):
             ),
             ["requested_pending"],
         )
+
+    def test_transcription_persists_manifest_progress_per_item(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            (root / "state").mkdir(parents=True)
+            manifest = {
+                "schema_version": 1,
+                "items": {
+                    "A": {
+                        "creator": "fixture",
+                        "download_status": "DONE",
+                        "video_file": "output/fixture/raw/A.mp4",
+                        "transcription_status": "PENDING",
+                    },
+                    "B": {
+                        "creator": "fixture",
+                        "download_status": "DONE",
+                        "video_file": "output/fixture/raw/B.mp4",
+                        "transcription_status": "PENDING",
+                    },
+                },
+            }
+            writes = []
+            real_write = ig.atomic_write_json
+
+            def recording_write(path, data):
+                writes.append(Path(path))
+                return real_write(path, data)
+
+            with (
+                unittest.mock.patch.object(ig, "validate_media", return_value=(True, "ok")),
+                unittest.mock.patch.object(
+                    ig,
+                    "transcribe_video",
+                    return_value={
+                        "provider": "fixture",
+                        "model": "fixture",
+                        "text": "hello",
+                        "language": "en",
+                        "language_probability": 1.0,
+                        "duration": 1.0,
+                        "segments": [],
+                    },
+                ),
+                unittest.mock.patch.object(
+                    ig,
+                    "atomic_write_json",
+                    side_effect=recording_write,
+                ),
+            ):
+                result = ig.transcribe_videos(root, manifest, {}, ["A", "B"])
+
+            manifest_path = root / "state" / "manifest.json"
+            manifest_writes = [path for path in writes if path == manifest_path]
+            self.assertEqual(result["completed"], 2)
+            self.assertGreaterEqual(len(manifest_writes), 2)
+            persisted = ig.load_json(manifest_path)
+            self.assertEqual(
+                persisted["items"]["A"]["transcription_status"],
+                "DONE",
+            )
+            self.assertEqual(
+                persisted["items"]["B"]["transcription_status"],
+                "DONE",
+            )
 
     def test_ephemeral_context_uses_new_context_not_persistent_profile(self) -> None:
         context = unittest.mock.Mock()
