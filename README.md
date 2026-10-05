@@ -286,10 +286,10 @@ The Camofox dependency tree is tracked in `runtime/camofox/package.json` and `ru
 
 The reviewed container baseline is:
 
-- Camofox Browser `1.17.0`
+- Camofox Browser `1.18.1`
 - `camoufox-js` `0.11.5`
-- Node.js `22.23.2`
-- Camoufox `152.0.4` / `beta.28`
+- Node.js `26.10.0`
+- Camoufox `152.0.4` / `beta.30`
 
 The Camofox image runs non-root with a read-only root filesystem, dropped capabilities, no-new-privileges, bounded CPU/RAM/PIDs and ephemeral browser state. It has no host bind mounts.
 

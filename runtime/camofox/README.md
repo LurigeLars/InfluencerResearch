@@ -2,10 +2,10 @@
 
 This directory defines the reviewed Camofox/Camoufox container used by the InfluencerResearch Docker runtime.
 
-- Direct dependency: `@askjo/camofox-browser` `1.18.0` from reviewed fork merge commit `6916ebccec152f940d2ed1d63c6ce080c5c4abaa`
+- Direct dependency: `@askjo/camofox-browser` `1.18.1` from reviewed fork merge commit `4b9b06982fba6fab858bfa2c5ce56ca77cacc75c`
 - Transitive browser client: `camoufox-js` `0.11.5`
-- Container Node.js baseline: `v22.23.2`
-- Camoufox browser baseline: `152.0.4` / `beta.28`
+- Container Node.js baseline: `v26.10.0`
+- Camoufox browser baseline: `152.0.4` / `beta.30`
 - Reviewed fork adds bounded sanitized live observability via per-tab `/network` and `/console` routes; headers, cookies and request/response bodies are not exposed.
 - Direct browser sessions also use the reviewed IPv6-aware, fail-closed SSRF guard; private/local destinations remain blocked by default.
 
