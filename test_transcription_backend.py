@@ -264,8 +264,9 @@ class TranscriptionBackendTests(unittest.TestCase):
                 patch.object(
                     tb.tempfile,
                     "mkstemp",
-                    return_value=(os.open(temp_audio, os.O_RDWR), str(temp_audio)),
+                    return_value=(123, str(temp_audio)),
                 ),
+                patch.object(tb.os, "close") as close_fd,
                 patch.dict(
                     sys.modules,
                     {
@@ -284,6 +285,7 @@ class TranscriptionBackendTests(unittest.TestCase):
                     tb._extract_audio(Path("video.mp4"), timeout_seconds=60)
 
             self.assertFalse(temp_audio.exists())
+            close_fd.assert_called_once_with(123)
 
     def test_explicit_gemini_does_not_silently_use_environment_key(self) -> None:
         with patch.object(tb, "read_gemini_api_key", return_value=None):
