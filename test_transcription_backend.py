@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -201,7 +202,14 @@ class TranscriptionBackendTests(unittest.TestCase):
                     "mkstemp",
                     return_value=(os.open(temp_audio, os.O_RDWR), str(temp_audio)),
                 ),
-                patch("imageio_ffmpeg.get_ffmpeg_exe", return_value="ffmpeg"),
+                patch.dict(
+                    sys.modules,
+                    {
+                        "imageio_ffmpeg": unittest.mock.Mock(
+                            get_ffmpeg_exe=unittest.mock.Mock(return_value="ffmpeg")
+                        )
+                    },
+                ),
                 patch.object(
                     tb.subprocess,
                     "run",
