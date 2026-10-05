@@ -145,8 +145,13 @@ def keyword_tags(text: str) -> list[str]:
 
 
 
-def assess_analysis_content(item: dict, transcript: str) -> dict:
-    """Fail closed when the extracted evidence is too thin for model analysis."""
+def assess_analysis_content(
+    item: dict,
+    transcript: str,
+    *,
+    agent_visual_fallback_available: bool = False,
+) -> dict:
+    """Fail closed unless text evidence or a retained Story screenshot is analyzable."""
     transcript = str(transcript or "").strip()
     caption = str(item.get("caption") or "").strip()
     browser_text = str(item.get("browser_text") or "").strip()
@@ -178,6 +183,12 @@ def assess_analysis_content(item: dict, transcript: str) -> dict:
     elif visible_text_words >= MIN_TRANSCRIPT_WORDS or len(visible_text) >= MIN_TRANSCRIPT_CHARS:
         status = "READY"
         reason = "VISIBLE_TEXT"
+    elif agent_visual_fallback_available and visual_status in {"DEFERRED", "ERROR"}:
+        # Prefer the retained screenshot over weak browser/caption fallbacks when
+        # provider extraction failed. The analysis agent can inspect the pixels
+        # directly via analysis_evidence_get.
+        status = "READY"
+        reason = "AGENT_VISUAL_FALLBACK"
     elif browser_text_words >= MIN_FALLBACK_TEXT_WORDS or len(browser_text) >= MIN_FALLBACK_TEXT_CHARS:
         status = "READY"
         reason = "BROWSER_TEXT"
@@ -238,21 +249,38 @@ def build_packet(
     visual_status = str(item.get("visual_description_status") or "").upper()
     raw_visual_description = str(item.get("visual_description") or "").strip()
     visual_description = raw_visual_description if visual_status == "DONE" else ""
+    video_file = str(item.get("video_file") or "").strip()
+    video_path = root / Path(video_file) if video_file else None
+    raw_media_available = bool(video_path is not None and video_path.is_file())
     visual_bundle = item.get("agent_visual_bundle") if isinstance(item.get("agent_visual_bundle"), dict) else {}
+    agent_visual_fallback = (
+        str(item.get("analysis_content_reason") or "") == "AGENT_VISUAL_FALLBACK"
+    )
     visual_review_recommended = bool(
-        item.get("visual_review_recommended")
+        agent_visual_fallback
+        or item.get("visual_review_recommended")
         or visual_bundle.get("visual_review_recommended")
     )
     analysis_mode_recommended = str(
         item.get("analysis_mode_recommended")
         or visual_bundle.get("analysis_mode_recommended")
-        or ("TRANSCRIPT_PLUS_VISUAL_REVIEW" if visual_review_recommended else "TRANSCRIPT_ONLY")
+        or (
+            "VISUAL_REVIEW_REQUIRED"
+            if agent_visual_fallback
+            else (
+                "TRANSCRIPT_PLUS_VISUAL_REVIEW"
+                if visual_review_recommended
+                else "TRANSCRIPT_ONLY"
+            )
+        )
     )
     visual_review_reason = list(
         item.get("visual_review_reason")
         or visual_bundle.get("visual_review_reason")
         or []
     )
+    if agent_visual_fallback and "AGENT_VISUAL_FALLBACK" not in visual_review_reason:
+        visual_review_reason.append("AGENT_VISUAL_FALLBACK")
     evidence_parts = [
         x
         for x in (transcript, visual_description, visible_text, browser_text, caption)
@@ -286,6 +314,7 @@ def build_packet(
         "analysis_status": "PENDING_ANALYSIS",
         "analysis_content_status": item.get("analysis_content_status"),
         "analysis_content_reason": item.get("analysis_content_reason"),
+        "agent_visual_fallback_available": item.get("agent_visual_fallback_available"),
         "analysis_mode_recommended": analysis_mode_recommended,
         "visual_review_recommended": visual_review_recommended,
         "visual_review_reason": visual_review_reason,
@@ -318,6 +347,8 @@ def build_packet(
         "visual_frame_count": item.get("visual_frame_count"),
         "visual_capture_strategy": item.get("visual_capture_strategy"),
         "screenshot_file": item.get("screenshot_file"),
+        "video_file": video_file or None,
+        "raw_media_available": raw_media_available,
         "full_video_persisted": item.get("full_video_persisted"),
         "media_retention": item.get("media_retention"),
         "discovery_tags": keyword_tags(
@@ -371,6 +402,8 @@ def build_packet(
                 "Cross-platform reposts are one evidence lineage, not independent confirmations.",
                 "For YouTube items, use transcript plus retained timestamped visual evidence when available; visual frames are supporting evidence, not execution truth.",
                 "If visual_review_recommended=true, inspect representative visual evidence before concluding; TRANSCRIPT alone is not sufficient for that item.",
+                "If analysis_content_reason=AGENT_VISUAL_FALLBACK, call analysis_evidence_get and inspect the retained Story screenshot directly; provider extraction failure is not evidence of insufficient content.",
+                "If the Story screenshot is still inconclusive and raw_media_available=true, call analysis_evidence_get with mode=RAW_MEDIA and inspect the retained raw video before classifying the item as insufficient.",
                 "visual_review_recommended is decided per video. Creator history may bias priority but must never prevent an unflagged creator's chart-heavy video from escalating to visual review.",
                 "If semantic duplication is plausible but not deterministically provable, use duplicate_basis=POSSIBLE_SEMANTIC_DUPLICATE and let Ekonomi decide.",
                 "A TEST_CANDIDATE or BACKLOG_CANDIDATE does not change system state; material implementation requires a new HANDOFF-XXX.",
@@ -467,7 +500,7 @@ def main() -> int:
         is_visual_story = (
             str(item.get("source_platform") or "").upper() == "INSTAGRAM"
             and str(item.get("source_subtype") or "").upper() == "STORY"
-            and bool(item.get("screenshot_file"))
+            and bool(item.get("screenshot_file") or item.get("video_file"))
         )
         if item.get("transcription_status") != "DONE" and not is_visual_story:
             continue
@@ -496,7 +529,25 @@ def main() -> int:
         else:
             transcript = read_text(transcript_path)
 
-        readiness = assess_analysis_content(item, transcript)
+        story_screenshot_path = (
+            normalize_manifest_path(root, item.get("screenshot_file"))
+            if is_visual_story
+            else None
+        )
+        story_video_path = (
+            normalize_manifest_path(root, item.get("video_file"))
+            if is_visual_story
+            else None
+        )
+        agent_visual_fallback_available = bool(
+            (story_screenshot_path is not None and story_screenshot_path.is_file())
+            or (story_video_path is not None and story_video_path.is_file())
+        )
+        readiness = assess_analysis_content(
+            item,
+            transcript,
+            agent_visual_fallback_available=agent_visual_fallback_available,
+        )
         if transcript_missing and readiness["status"] == "INSUFFICIENT_CONTENT":
             readiness["reason"] = "TRANSCRIPT_FILE_MISSING"
 
@@ -509,6 +560,7 @@ def main() -> int:
             "visible_text_word_count": readiness["visible_text_word_count"],
             "visual_description_word_count": readiness["visual_description_word_count"],
             "has_visual_evidence": readiness["has_visual_evidence"],
+            "agent_visual_fallback_available": agent_visual_fallback_available,
         }
         for key, value in desired_content_meta.items():
             if item.get(key) != value:

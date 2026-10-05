@@ -30,7 +30,7 @@ class CamofoxContainerRuntimeTests(TestCase):
         lock = json.loads(
             (BASE / "runtime" / "camofox" / "package-lock.json").read_text(encoding="utf-8")
         )
-        expected = "https://github.com/LurigeLars/camofox-browser/archive/461210dca6b90aa321c8b59d0512541346ec126e.tar.gz"
+        expected = "https://github.com/LurigeLars/camofox-browser/archive/6916ebccec152f940d2ed1d63c6ce080c5c4abaa.tar.gz"
         self.assertEqual(package["dependencies"]["@askjo/camofox-browser"], expected)
         self.assertEqual(lock["packages"][""]["dependencies"]["@askjo/camofox-browser"], expected)
         camofox = lock["packages"]["node_modules/@askjo/camofox-browser"]
@@ -48,7 +48,7 @@ class CamofoxContainerRuntimeTests(TestCase):
         ip_address = lock["packages"]["node_modules/ip-address"]
         self.assertEqual(ip_address["version"], "10.7.2")
         self.assertIsNot(ip_address.get("optional"), True)
-        self.assertEqual(sync.CAMOFOX_CONTAINER_SOURCE_COMMIT, "461210dca6b90aa321c8b59d0512541346ec126e")
+        self.assertEqual(sync.CAMOFOX_CONTAINER_SOURCE_COMMIT, "6916ebccec152f940d2ed1d63c6ce080c5c4abaa")
         self.assertEqual(sync.CAMOFOX_CONTAINER_EXPECTED_CAMOFOX_VERSION, "1.18.0")
         self.assertEqual(sync.CAMOFOX_FALLBACK_EXPECTED_CAMOFOX_VERSION, "1.17.0")
 
@@ -96,10 +96,26 @@ class CamofoxContainerRuntimeTests(TestCase):
         self.assertIn("pids_limit: 256", text)
         self.assertNotIn("CAMOFOX_ACCESS_KEY: ${CAMOFOX_ACCESS_KEY", text)
         self.assertNotIn("CAMOFOX_ADMIN_KEY: ${CAMOFOX_ADMIN_KEY", text)
-        self.assertIn("/run/camofox-secrets:rw,nosuid,nodev,noexec", text)
+        self.assertIn("source: influencerresearch-camofox-secrets", text)
+        self.assertIn("target: /run/camofox-secrets", text)
         self.assertIn("/run/camofox-secrets/access_key", text)
         self.assertIn("/run/camofox-secrets/admin_key", text)
-        self.assertIn("post_start:", text)
+        self.assertIn("influencerresearch-secret-holder", text)
+        self.assertIn("network_mode: none", text)
+        self.assertIn("type: tmpfs", text)
+        self.assertNotIn("post_start:", text)
+
+    def test_direct_camofox_matches_ipv4_only_host_runtime(self) -> None:
+        text = (BASE / "compose.yaml").read_text(encoding="utf-8")
+        start = text.index("  camofox:")
+        end = text.index("  camofox-public-proxy:")
+        direct = text[start:end]
+
+        self.assertIn("networks:\n      - runtime", direct)
+        self.assertNotIn("browser_egress", direct)
+        self.assertNotIn("172.64.36.1", direct)
+        self.assertNotIn("172.64.36.2", direct)
+        self.assertNotIn("enable_ipv6: true", text)
 
     def test_public_proxy_camofox_is_isolated_and_profile_gated(self) -> None:
         text = (BASE / "compose.yaml").read_text(encoding="utf-8")
@@ -130,8 +146,10 @@ class CamofoxContainerRuntimeTests(TestCase):
         self.assertNotIn("PROXY_HOST:", direct)
         self.assertNotIn("PROXY_USERNAME:", direct)
         self.assertNotIn("PROXY_PASSWORD:", direct)
-        self.assertIn('test -n "$$INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET"', proxy)
-        self.assertIn('test -n "$$INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET"', proxy)
+        self.assertIn("source: influencerresearch-camofox-proxy-secrets", proxy)
+        self.assertIn("target: /run/camofox-proxy-secrets", proxy)
+        self.assertNotIn("INFLUENCER_PUBLIC_PROXY_USERNAME_SECRET", proxy)
+        self.assertNotIn("INFLUENCER_PUBLIC_PROXY_PASSWORD_SECRET", proxy)
         self.assertIn(
             'export PROXY_USERNAME="$$(cat /run/camofox-proxy-secrets/proxy_username)"',
             proxy,
@@ -140,6 +158,14 @@ class CamofoxContainerRuntimeTests(TestCase):
             'export PROXY_PASSWORD="$$(cat /run/camofox-proxy-secrets/proxy_password)"',
             proxy,
         )
+
+    def test_runtime_supervisor_recovers_secret_tmpfs_after_docker_restart(self) -> None:
+        runtime = (BASE / "scripts" / "runtime.ps1").read_text(encoding="utf-8")
+        self.assertIn('name = "influencerresearch"', runtime)
+        self.assertIn('arguments = @("-Action", "Recover")', runtime)
+        self.assertIn("required_files = $holderRequired", runtime)
+        self.assertIn("recovery_wait_seconds = 90", runtime)
+        self.assertIn('Update-RuntimeSupervisorConfig -Enabled $false', runtime)
 
     def test_runtime_reuses_dpapi_webshare_secrets_without_copying_api_key(self) -> None:
         text = (BASE / "scripts" / "runtime.ps1").read_text(encoding="utf-8")

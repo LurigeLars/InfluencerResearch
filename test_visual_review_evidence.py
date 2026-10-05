@@ -305,6 +305,16 @@ class EvidenceToolContractTests(unittest.TestCase):
         self.assertIn("REPRESENTATIVE_FRAMES", rendered)
         self.assertIn("CONTACT_SHEET", rendered)
         self.assertIn("max_frames", rendered)
+        self.assertIn("screenshot_file", rendered)
+        self.assertIn("STORY_SCREENSHOT", rendered)
+        self.assertIn("RAW_MEDIA", rendered)
+        self.assertIn("include_binary", rendered)
+        self.assertIn("include_binary:bool=False", rendered.replace(" ", ""))
+        self.assertIn("binary_embedded", rendered)
+        self.assertIn("RAW_MEDIA_BINARY_INLINE_DISABLED", rendered)
+        self.assertNotIn("EmbeddedResource", rendered)
+        self.assertNotIn("BlobResourceContents", rendered)
+        self.assertIn("video_file", rendered)
 
 
 if __name__ == "__main__":

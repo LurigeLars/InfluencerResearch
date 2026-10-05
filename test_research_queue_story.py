@@ -22,6 +22,9 @@ class ResearchQueueStoryTests(unittest.TestCase):
             shot = root / "output" / "creator" / "stories" / "screenshots" / "abc.png"
             shot.parent.mkdir(parents=True)
             shot.write_bytes(b"png")
+            video = root / "output" / "creator" / "stories" / "videos" / "abc.mp4"
+            video.parent.mkdir(parents=True)
+            video.write_bytes(b"video")
 
             manifest = {
                 "schema_version": 1,
@@ -47,6 +50,8 @@ class ResearchQueueStoryTests(unittest.TestCase):
                         "visual_description_provider": "gemini",
                         "visual_description_model": "gemini-3.8-flash",
                         "screenshot_file": str(shot.relative_to(root)),
+                        "video_file": str(video.relative_to(root)),
+                        "full_video_persisted": True,
                         "visual_evidence_status": "DONE",
                         "visual_evidence_index": str(shot.relative_to(root)),
                         "visual_frame_count": 1,
@@ -82,6 +87,8 @@ class ResearchQueueStoryTests(unittest.TestCase):
             self.assertIn("Brent-WTI", packet["visual_description"])
             self.assertIn("Brent-WTI", packet["analysis_evidence_text"])
             self.assertEqual(packet["screenshot_file"], str(shot.relative_to(root)))
+            self.assertEqual(packet["video_file"], str(video.relative_to(root)))
+            self.assertTrue(packet["raw_media_available"])
 
 
     def test_story_visual_provider_error_is_not_mislabeled_insufficient(self) -> None:
@@ -131,13 +138,15 @@ class ResearchQueueStoryTests(unittest.TestCase):
                 self.assertEqual(research_queue.main(), 0)
 
             queue = json.loads((state / "research_queue.json").read_text(encoding="utf-8"))
-            self.assertEqual(queue["count"], 0)
+            self.assertEqual(queue["count"], 1)
             self.assertEqual(queue["insufficient_content_count"], 0)
-            self.assertEqual(queue["extraction_error_count"], 1)
-            self.assertEqual(
-                queue["extraction_error_items"][0]["status"],
-                "EXTRACTION_ERROR",
-            )
+            self.assertEqual(queue["extraction_error_count"], 0)
+            packet = queue["items"][0]
+            self.assertEqual(packet["analysis_content_status"], "READY")
+            self.assertEqual(packet["analysis_content_reason"], "AGENT_VISUAL_FALLBACK")
+            self.assertEqual(packet["analysis_mode_recommended"], "VISUAL_REVIEW_REQUIRED")
+            self.assertTrue(packet["visual_review_recommended"])
+            self.assertIn("AGENT_VISUAL_FALLBACK", packet["visual_review_reason"])
 
 
     def test_story_rate_limit_is_deferred_not_insufficient(self) -> None:
@@ -192,16 +201,18 @@ class ResearchQueueStoryTests(unittest.TestCase):
                 self.assertEqual(research_queue.main(), 0)
 
             queue = json.loads((state / "research_queue.json").read_text(encoding="utf-8"))
-            self.assertEqual(queue["count"], 0)
+            self.assertEqual(queue["count"], 1)
             self.assertEqual(queue["insufficient_content_count"], 0)
-            self.assertEqual(queue["deferred_extraction_count"], 1)
-            deferred = queue["deferred_extraction_items"][0]
-            self.assertEqual(deferred["status"], "DEFERRED_EXTRACTION")
-            self.assertEqual(deferred["reason"], "PROVIDER_RATE_LIMIT")
+            self.assertEqual(queue["deferred_extraction_count"], 0)
+            packet = queue["items"][0]
+            self.assertEqual(packet["analysis_content_status"], "READY")
+            self.assertEqual(packet["analysis_content_reason"], "AGENT_VISUAL_FALLBACK")
+            self.assertEqual(packet["analysis_mode_recommended"], "VISUAL_REVIEW_REQUIRED")
+            self.assertTrue(packet["visual_review_recommended"])
             updated = json.loads((state / "manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(
                 updated["items"]["ig_story_deferred"]["research_status"],
-                "PENDING_EXTRACTION",
+                "PENDING_ANALYSIS",
             )
 
 

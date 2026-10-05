@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 from datetime import datetime, timedelta, timezone
@@ -17,6 +18,7 @@ from urllib.parse import urlsplit
 
 from playwright.sync_api import sync_playwright
 
+from story_capture_readiness import wait_for_story_media_ready
 from transcription_backend import (
     DEFAULT_GEMINI_VISUAL_MODEL,
     DEFAULT_OLLAMA_BASE_URL,
@@ -808,6 +810,10 @@ def capture_story_frames(
     story_advance_attempts = 0
     story_advance_ready_count = 0
     story_advance_timeout_count = 0
+    story_capture_ready_wait_ms = 0.0
+    story_capture_ready_attempts = 0
+    story_capture_ready_count = 0
+    story_capture_not_ready_count = 0
 
     for _ in range(max_items):
         if "/stories/" not in page.url:
@@ -821,6 +827,38 @@ def capture_story_frames(
         if instagram_story_error_present(page):
             stop_reason = "INSTAGRAM_ERROR_PAGE_DURING_TRAVERSAL"
             break
+
+        if source_type == "STORY":
+            capture_ready = wait_for_story_media_ready(
+                page,
+                max_wait_ms=4000,
+                poll_ms=100,
+            )
+            story_capture_ready_wait_ms += float(capture_ready.get("wait_ms") or 0.0)
+            story_capture_ready_attempts += int(capture_ready.get("attempts") or 0)
+            if capture_ready.get("ready"):
+                story_capture_ready_count += 1
+            else:
+                story_capture_not_ready_count += 1
+                if capture_ready.get("exited"):
+                    stop_reason = "ENDED_OR_EXITED_STORY_VIEW"
+                    break
+                previous_identity = _story_navigation_identity(page)
+                page.keyboard.press("ArrowRight")
+                advance = wait_for_story_advance(
+                    page,
+                    previous_identity,
+                    max_wait_ms=1000,
+                    poll_ms=100,
+                )
+                story_advance_wait_ms += float(advance.get("wait_ms") or 0.0)
+                story_advance_attempts += int(advance.get("attempts") or 0)
+                if advance.get("changed"):
+                    story_advance_ready_count += 1
+                    story_frame_ready = True
+                else:
+                    story_advance_timeout_count += 1
+                continue
 
         screenshot = page.screenshot(full_page=False)
         media_url = visible_story_media_url(page) if source_type == "STORY" else None
@@ -928,6 +966,10 @@ def capture_story_frames(
         "story_advance_attempts": story_advance_attempts,
         "story_advance_ready_count": story_advance_ready_count,
         "story_advance_timeout_count": story_advance_timeout_count,
+        "story_capture_ready_wait_ms": round(story_capture_ready_wait_ms, 1),
+        "story_capture_ready_attempts": story_capture_ready_attempts,
+        "story_capture_ready_count": story_capture_ready_count,
+        "story_capture_not_ready_count": story_capture_not_ready_count,
         "view_confirmation_was_present": confirmation_was_present,
         "view_confirmation_dismissed": confirmation_dismissed,
         "reason": stop_reason,
@@ -1656,7 +1698,9 @@ def run_ytdlp(context, root: Path, creator: str, source_type: str, source_url: s
     video_dir = root / "output" / creator / source_dir / "videos"
     video_dir.mkdir(parents=True, exist_ok=True)
 
-    cookie_path = secret_dir() / "instagram_ephemeral_ytdlp_cookies.txt"
+    fd, cookie_path_raw = tempfile.mkstemp(prefix="instagram_ephemeral_ytdlp_", suffix=".txt")
+    os.close(fd)
+    cookie_path = Path(cookie_path_raw)
     write_netscape_cookiefile(context, cookie_path)
 
     cmd = [
@@ -2143,6 +2187,19 @@ def run_one(
             ),
             "story_advance_timeout_count": int(
                 capture.get("story_advance_timeout_count") or 0
+            ),
+            "story_capture_ready_wait_ms": round(
+                float(capture.get("story_capture_ready_wait_ms") or 0.0),
+                1,
+            ),
+            "story_capture_ready_attempts": int(
+                capture.get("story_capture_ready_attempts") or 0
+            ),
+            "story_capture_ready_count": int(
+                capture.get("story_capture_ready_count") or 0
+            ),
+            "story_capture_not_ready_count": int(
+                capture.get("story_capture_not_ready_count") or 0
             ),
             "ytdlp_ms": round(ytdlp_duration_ms, 1),
             "visual_enrichment_ms": round(visual_enrichment_duration_ms, 1),

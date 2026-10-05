@@ -15,13 +15,17 @@ from typing import Literal
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp.types import ImageContent, TextContent, ToolAnnotations
+from mcp.types import (
+    ImageContent,
+    TextContent,
+    ToolAnnotations,
+)
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from creator_registry import get_creator, load_registry, register_creator
-from research_status_summary import summarize_status
+from research_status_summary import compact_job_status, summarize_status
 
 
 SERVER_NAME = "InfluencerResearch"
@@ -67,6 +71,15 @@ def _safe_evidence_path(value: str | None) -> Path | None:
         return path
     except OSError:
         return None
+
+
+def _video_mime_type(path: Path) -> str:
+    return {
+        ".mp4": "video/mp4",
+        ".webm": "video/webm",
+        ".mov": "video/quicktime",
+        ".mkv": "video/x-matroska",
+    }.get(path.suffix.casefold(), "application/octet-stream")
 
 
 def _research_queue_item(queue_id: str) -> dict | None:
@@ -167,6 +180,18 @@ class JobManager:
             if kind not in self.STATUS_FILES:
                 return {"ok": False, "error": "UNKNOWN_JOB_KIND"}
 
+            # Status files represent the currently running job of each kind.
+            # Remove the previous run's file before spawning so research_status()
+            # cannot expose stale progress/failure data while the new worker starts.
+            status_path = self.STATUS_FILES[kind]
+            try:
+                status_path.unlink(missing_ok=True)
+            except OSError as exc:
+                return {
+                    "ok": False,
+                    "error": f"STATUS_RESET_FAILED:{type(exc).__name__}",
+                }
+
             job_id = uuid.uuid4().hex
             request = {
                 "schema_version": 1,
@@ -190,7 +215,7 @@ class JobManager:
                 "started_at": utc_now(),
                 "finished_at": None,
                 "returncode": None,
-                "status_path": self.STATUS_FILES[kind],
+                "status_path": status_path,
                 "status": None,
                 "proc": proc,
             }
@@ -434,16 +459,18 @@ def creator_recent_check(
 
 @mcp.tool(
     description=(
-        "Return retained visual evidence for one research-queue item so the analysis agent can inspect frames directly. "
-        "Use when visual_review_recommended is true or when transcript evidence appears visually incomplete."
+        "Return retained evidence for one research-queue item. Use representative frames/screenshots first; "
+        "when a Story screenshot remains inconclusive and raw_media_available=true, call mode=RAW_MEDIA for metadata. "
+        "Raw video bytes stay outside model context; include_binary is retained for compatibility but never embeds media."
     ),
     annotations=READ,
     structured_output=False,
 )
 def analysis_evidence_get(
     queue_id: str,
-    mode: Literal["REPRESENTATIVE_FRAMES", "CONTACT_SHEET"] = "REPRESENTATIVE_FRAMES",
+    mode: Literal["REPRESENTATIVE_FRAMES", "CONTACT_SHEET", "RAW_MEDIA"] = "REPRESENTATIVE_FRAMES",
     max_frames: int = 8,
+    include_binary: bool = False,
 ) -> list[TextContent | ImageContent]:
     item = _research_queue_item(queue_id)
     if item is None:
@@ -462,10 +489,40 @@ def analysis_evidence_get(
         "creator_visual_prior": bundle.get("creator_visual_prior"),
         "chart_signal_ratio": bundle.get("chart_signal_ratio"),
         "chart_signal_frame_count": bundle.get("chart_signal_frame_count"),
+        "raw_media_available": bool(item.get("raw_media_available")),
     }
     content: list[TextContent | ImageContent] = [
         TextContent(type="text", text=as_text(metadata))
     ]
+
+    if mode == "RAW_MEDIA":
+        raw_media = _safe_evidence_path(item.get("video_file"))
+        if raw_media is None:
+            content.append(
+                TextContent(
+                    type="text",
+                    text=as_text({"warning": "RAW_MEDIA_NOT_AVAILABLE"}),
+                )
+            )
+            return content
+        media_bytes = raw_media.stat().st_size
+        mime_type = _video_mime_type(raw_media)
+        content.append(
+            TextContent(
+                type="text",
+                text=as_text({
+                    "fallback": "RAW_MEDIA",
+                    "mime_type": mime_type,
+                    "bytes": media_bytes,
+                    "video_file": item.get("video_file"),
+                    "binary_embedded": False,
+                    "binary_inline_available": False,
+                    "warning": "RAW_MEDIA_BINARY_INLINE_DISABLED" if include_binary else None,
+                    "next_step": "Use REPRESENTATIVE_FRAMES or CONTACT_SHEET for bounded model-visible evidence.",
+                }),
+            )
+        )
+        return content
 
     if mode == "CONTACT_SHEET":
         contact = _safe_evidence_path(bundle.get("contact_sheet"))
@@ -504,6 +561,31 @@ def analysis_evidence_get(
         )
         returned += 1
     if returned == 0:
+        # Instagram Stories may have a single retained screenshot instead of a
+        # representative-frame bundle. This is the final model-vision fallback
+        # when OCR/Ollama/Gemini extraction could not produce usable text.
+        screenshot = _safe_evidence_path(item.get("screenshot_file"))
+        if screenshot is not None:
+            suffix = screenshot.suffix.casefold()
+            mime_type = "image/png" if suffix == ".png" else "image/jpeg"
+            content.append(
+                TextContent(
+                    type="text",
+                    text=as_text({
+                        "fallback": "STORY_SCREENSHOT",
+                        "analysis_content_reason": item.get("analysis_content_reason"),
+                        "visual_description_status": item.get("visual_description_status"),
+                    }),
+                )
+            )
+            content.append(
+                ImageContent(
+                    type="image",
+                    data=base64.b64encode(screenshot.read_bytes()).decode("ascii"),
+                    mime_type=mime_type,
+                )
+            )
+            return content
         content.append(TextContent(type="text", text=as_text({"warning": "REPRESENTATIVE_FRAMES_NOT_AVAILABLE"})))
     return content
 
@@ -513,8 +595,10 @@ def analysis_evidence_get(
     annotations=READ,
     structured_output=False,
 )
-def research_status() -> str:
-    return as_text(jobs.status())
+def research_status(include_details: bool = False) -> str:
+    """Get current or last research job status. Compact by default; set include_details=true for full retained detail."""
+    value = jobs.status()
+    return as_text(value if include_details else compact_job_status(value))
 
 
 @mcp.tool(
