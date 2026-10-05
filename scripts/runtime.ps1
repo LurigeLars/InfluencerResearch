@@ -1,5 +1,5 @@
 param(
-    [ValidateSet("Up", "Redeploy", "Down", "Status", "Smoke", "InstagramPublicSmoke", "ImportInstagramAuth", "ImportGeminiKey")]
+    [ValidateSet("Up", "Redeploy", "Down", "Status", "Smoke", "InstagramPublicSmoke", "ImportInstagramAuth", "ImportGeminiKey", "RehydrateSecrets")]
     [string]$Action = "Up",
     [string]$InstagramProfileUrl = "https://www.instagram.com/rikatillsammans/",
     [string]$InstagramHandle = "rikatillsammans",
@@ -25,6 +25,7 @@ $FirecrawlPublicProxyUsernameDpapiPath = Join-Path $env:LOCALAPPDATA "FirecrawlL
 $FirecrawlPublicProxyPasswordDpapiPath = Join-Path $env:LOCALAPPDATA "FirecrawlLocal\secrets\public_proxy_password.dpapi"
 $InstagramDpapiPath = Join-Path $SecretDir "instagram_cookies.dpapi"
 $LegacyInstagramPath = Join-Path $SecretDir "instagram_cookies.json"
+$SupervisorConfigPath = Join-Path $env:LOCALAPPDATA "DockerLocalMCP\runtime-supervisor.local.json"
 
 New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
 New-Item -ItemType Directory -Force -Path $SecretDir | Out-Null
@@ -89,6 +90,54 @@ function Get-DpapiSecretValue([string]$Path, [string]$Label) {
     finally {
         [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
         $secure = $null
+    }
+}
+
+function Invoke-DockerWithExactStdin {
+    param(
+        [Parameter(Mandatory)][string]$InputText,
+        [Parameter(Mandatory)][string[]]$Arguments
+    )
+
+    $dockerCommand = Get-Command docker.exe -ErrorAction SilentlyContinue
+    if (-not $dockerCommand) {
+        $dockerCommand = Get-Command docker -ErrorAction Stop
+    }
+
+    $psi = [Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = $dockerCommand.Source
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardInput = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $psi.CreateNoWindow = $true
+
+    foreach ($argument in $Arguments) {
+        [void]$psi.ArgumentList.Add([string]$argument)
+    }
+
+    $process = [Diagnostics.Process]::new()
+    $process.StartInfo = $psi
+
+    try {
+        [void]$process.Start()
+        $process.StandardInput.Write($InputText)
+        $process.StandardInput.Close()
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+
+        if ($process.ExitCode -ne 0) {
+            throw "Docker stdin operation failed with exit code $($process.ExitCode): $stderr"
+        }
+
+        return $stdout
+    }
+    finally {
+        if (-not $process.HasExited) {
+            try { $process.Kill($true) } catch {}
+        }
+        $process.Dispose()
     }
 }
 
@@ -254,7 +303,7 @@ function Ensure-HostMcpPort($Config) {
     throw "MCP host port $configuredPort is already in use and no free fallback port was found in 8771-8799."
 }
 
-$needsCamofoxSecrets = $Action -in @("Up", "Redeploy", "Smoke", "InstagramPublicSmoke")
+$needsCamofoxSecrets = $Action -in @("Up", "Redeploy", "Smoke", "InstagramPublicSmoke", "RehydrateSecrets")
 $publicProxyConfigured = Test-PublicProxyConfigured
 
 if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
@@ -304,6 +353,140 @@ function Compose([string[]]$ComposeArgs) {
     if ($LASTEXITCODE -ne 0) { throw "docker compose failed with exit code $LASTEXITCODE" }
 }
 
+function Test-ContainerRunning([string]$Name) {
+    $running = (& docker inspect $Name --format "{{.State.Running}}" 2>$null | Select-Object -First 1)
+    return ($LASTEXITCODE -eq 0 -and $running -eq "true")
+}
+
+function Write-RuntimeSecretToContainer([string]$Container, [string]$Path, [string]$Value) {
+    if (-not (Test-ContainerRunning $Container)) {
+        return $false
+    }
+
+    [void](Invoke-DockerWithExactStdin -InputText $Value -Arguments @(
+        "exec", "-i", $Container,
+        "sh", "-c",
+        "umask 077; cat > '$Path'"
+    ))
+
+    & docker exec $Container test -s $Path
+    if ($LASTEXITCODE -ne 0) {
+        throw "Runtime secret hydration failed for $Container at $Path."
+    }
+    return $true
+}
+
+function Rehydrate-CamofoxRuntimeSecrets {
+    $access = $null
+    $admin = $null
+    $proxyUser = $null
+    $proxyPass = $null
+
+    try {
+        $access = Get-DpapiSecretValue -Path $CamofoxAccessDpapiPath -Label "Camofox access"
+        $admin = Get-DpapiSecretValue -Path $CamofoxAdminDpapiPath -Label "Camofox admin"
+
+        [void](Write-RuntimeSecretToContainer -Container "influencerresearch-camofox" -Path "/run/camofox-secrets/access_key" -Value $access)
+        [void](Write-RuntimeSecretToContainer -Container "influencerresearch-camofox" -Path "/run/camofox-secrets/admin_key" -Value $admin)
+        [void](Write-RuntimeSecretToContainer -Container "influencerresearch-mcp" -Path "/run/influencerresearch-secrets/camofox_access_key" -Value $access)
+        [void](Write-RuntimeSecretToContainer -Container "influencerresearch-mcp" -Path "/run/influencerresearch-secrets/camofox_admin_key" -Value $admin)
+
+        if ($publicProxyConfigured -and (Test-ContainerRunning "influencerresearch-camofox-public-proxy")) {
+            $proxyUser = Get-PublicProxyRuntimeUsername
+            $proxyPass = Get-DpapiSecretValue -Path $FirecrawlPublicProxyPasswordDpapiPath -Label "Firecrawl public proxy password"
+
+            [void](Write-RuntimeSecretToContainer -Container "influencerresearch-camofox-public-proxy" -Path "/run/camofox-proxy-secrets/access_key" -Value $access)
+            [void](Write-RuntimeSecretToContainer -Container "influencerresearch-camofox-public-proxy" -Path "/run/camofox-proxy-secrets/admin_key" -Value $admin)
+            [void](Write-RuntimeSecretToContainer -Container "influencerresearch-camofox-public-proxy" -Path "/run/camofox-proxy-secrets/proxy_username" -Value $proxyUser)
+            [void](Write-RuntimeSecretToContainer -Container "influencerresearch-camofox-public-proxy" -Path "/run/camofox-proxy-secrets/proxy_password" -Value $proxyPass)
+        }
+    }
+    finally {
+        $access = $null
+        $admin = $null
+        $proxyUser = $null
+        $proxyPass = $null
+    }
+}
+
+function Update-RuntimeSupervisorConfig {
+    if (-not (Test-Path -LiteralPath $SupervisorConfigPath -PathType Leaf)) {
+        Write-Warning "Runtime supervisor config is unavailable; Camofox restart-secret recovery is not registered."
+        return
+    }
+
+    $supervisor = Get-Content -LiteralPath $SupervisorConfigPath -Raw | ConvertFrom-Json
+    if ([int]$supervisor.version -ne 1) {
+        throw "Unsupported runtime supervisor config version."
+    }
+
+    $checks = @(
+        [pscustomobject]@{
+            container = "influencerresearch-camofox"
+            require_healthy = $true
+            required_files = @(
+                "/run/camofox-secrets/access_key",
+                "/run/camofox-secrets/admin_key"
+            )
+        },
+        [pscustomobject]@{
+            container = "influencerresearch-mcp"
+            require_healthy = $true
+            required_files = @(
+                "/run/influencerresearch-secrets/camofox_access_key",
+                "/run/influencerresearch-secrets/camofox_admin_key"
+            )
+        }
+    )
+
+    $eventContainers = @(
+        "influencerresearch-camofox",
+        "influencerresearch-mcp"
+    )
+
+    if ($publicProxyConfigured) {
+        $checks += [pscustomobject]@{
+            container = "influencerresearch-camofox-public-proxy"
+            require_healthy = $true
+            required_files = @(
+                "/run/camofox-proxy-secrets/access_key",
+                "/run/camofox-proxy-secrets/admin_key",
+                "/run/camofox-proxy-secrets/proxy_username",
+                "/run/camofox-proxy-secrets/proxy_password"
+            )
+        }
+        $eventContainers += "influencerresearch-camofox-public-proxy"
+    }
+
+    $existing = @(
+        $supervisor.runtimes |
+            Where-Object { [string]$_.name -ne "influencerresearch" }
+    )
+
+    $runtime = [pscustomobject]@{
+        name = "influencerresearch"
+        enabled = $true
+        event_containers = $eventContainers
+        health = [pscustomobject]@{
+            checks = $checks
+        }
+        recovery = [pscustomobject]@{
+            script = (Resolve-Path -LiteralPath $PSCommandPath).Path
+            arguments = @("RehydrateSecrets")
+            working_directory = $Repo
+        }
+        cooldown_seconds = 10
+        recovery_wait_seconds = 30
+    }
+
+    $supervisor.runtimes = @($existing + $runtime)
+    [IO.File]::WriteAllText(
+        $SupervisorConfigPath,
+        (($supervisor | ConvertTo-Json -Depth 12) + [Environment]::NewLine),
+        [Text.UTF8Encoding]::new($false)
+    )
+}
+
 function Invoke-ComposeUp([bool]$ForceRecreate = $false) {
     $accessWasSet = Test-Path Env:INFLUENCER_CAMOFOX_ACCESS_SECRET
     $adminWasSet = Test-Path Env:INFLUENCER_CAMOFOX_ADMIN_SECRET
@@ -335,6 +518,8 @@ function Invoke-ComposeUp([bool]$ForceRecreate = $false) {
         $composeArgs += @("up", "-d", "--build")
         if ($ForceRecreate) { $composeArgs += "--force-recreate" }
         Compose -ComposeArgs $composeArgs
+        Rehydrate-CamofoxRuntimeSecrets
+        Update-RuntimeSupervisorConfig
     }
     finally {
         $access = $null
@@ -473,6 +658,10 @@ switch ($Action) {
         Write-Host "Camofox is internal-only at http://camofox:9377"
         if ($publicProxyConfigured) { Write-Host "Public proxy fallback is internal-only at http://camofox-public-proxy:9377" }
         Import-AvailableRuntimeSecrets
+    }
+    "RehydrateSecrets" {
+        Rehydrate-CamofoxRuntimeSecrets
+        Write-Host "INFLUENCERRESEARCH_RUNTIME_SECRETS_REHYDRATED"
     }
     "Down" {
         Compose -ComposeArgs @("down")
