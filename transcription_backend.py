@@ -194,26 +194,31 @@ def _extract_audio(
     os.close(fd)
     audio_path = Path(tmp_name)
 
-    proc = subprocess.run(
-        [
-            ffmpeg,
-            "-y",
-            "-i",
-            str(video_path),
-            "-vn",
-            "-ac",
-            "1",
-            "-ar",
-            "16000",
-            "-b:a",
-            "64k",
-            str(audio_path),
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-        timeout=bounded_transcription_audio_timeout_seconds(timeout_seconds),
-    )
+    try:
+        proc = subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-i",
+                str(video_path),
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-b:a",
+                "64k",
+                str(audio_path),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=bounded_transcription_audio_timeout_seconds(timeout_seconds),
+        )
+    except subprocess.TimeoutExpired as exc:
+        with contextlib.suppress(OSError):
+            audio_path.unlink(missing_ok=True)
+        raise TimeoutError("ffmpeg audio extraction timed out.") from exc
     if proc.returncode != 0:
         with contextlib.suppress(OSError):
             audio_path.unlink(missing_ok=True)
