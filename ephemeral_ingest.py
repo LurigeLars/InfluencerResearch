@@ -8,6 +8,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 from datetime import datetime, timedelta, timezone
@@ -1697,7 +1698,9 @@ def run_ytdlp(context, root: Path, creator: str, source_type: str, source_url: s
     video_dir = root / "output" / creator / source_dir / "videos"
     video_dir.mkdir(parents=True, exist_ok=True)
 
-    cookie_path = secret_dir() / "instagram_ephemeral_ytdlp_cookies.txt"
+    fd, cookie_path_raw = tempfile.mkstemp(prefix="instagram_ephemeral_ytdlp_", suffix=".txt")
+    os.close(fd)
+    cookie_path = Path(cookie_path_raw)
     write_netscape_cookiefile(context, cookie_path)
 
     cmd = [
