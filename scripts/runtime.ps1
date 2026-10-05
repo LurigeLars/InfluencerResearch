@@ -398,7 +398,7 @@ function Materialize-CamofoxRuntimeSecrets {
     }
 }
 
-function Invoke-ComposeUp([bool]$Build = $true) {
+function Invoke-ComposeUp([bool]$Build = $true, [bool]$ForceRecreate = $false) {
     Compose -ComposeArgs @("up", "-d", "secret-holder")
     Materialize-CamofoxRuntimeSecrets
     Import-AvailableRuntimeSecrets
@@ -410,6 +410,9 @@ function Invoke-ComposeUp([bool]$Build = $true) {
     $composeArgs += @("up", "-d")
     if ($Build) {
         $composeArgs += "--build"
+    }
+    if ($ForceRecreate) {
+        $composeArgs += "--force-recreate"
     }
     Compose -ComposeArgs $composeArgs
 }
@@ -590,7 +593,7 @@ switch ($Action) {
     }
     "Redeploy" {
         Update-RuntimeSupervisorConfig -Enabled $false
-        Invoke-ComposeUp
+        Invoke-ComposeUp -ForceRecreate $true
         Update-RuntimeSupervisorConfig -Enabled $true
         Write-Host "INFLUENCERRESEARCH_MCP=http://127.0.0.1:$($config.mcp_port)/mcp"
         Write-Host "Camofox is internal-only at http://camofox:9377"
