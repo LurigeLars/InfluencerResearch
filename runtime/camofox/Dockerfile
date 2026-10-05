@@ -1,9 +1,9 @@
 FROM node:26.10.0-trixie-slim
 
 ARG CAMOUFOX_VERSION=152.0.4
-ARG CAMOUFOX_RELEASE=beta.28
+ARG CAMOUFOX_RELEASE=beta.30
 ARG CAMOUFOX_ARCH=x86_64
-ARG CAMOUFOX_SHA256=924f3109ccd6d47cd6a0384d67a345fadf975d48b6319f8dbbd5954c588982bd
+ARG CAMOUFOX_SHA256=5720d45b894ce1770543de024c6f10d514b38be560fa2dc3226b3d8586caf672
 
 ENV NODE_ENV=production \
     CAMOFOX_SKIP_DOWNLOAD=1 \
@@ -48,7 +48,7 @@ COPY runtime/camofox/package.json runtime/camofox/package-lock.json ./
 # runtime dependency. Build only better-sqlite3 from source.
 RUN npm ci --ignore-scripts --omit=dev --omit=optional --no-audit --no-fund \
     && npm_config_build_from_source=true npm rebuild better-sqlite3 --foreground-scripts --no-audit --no-fund \
-    && node -e "const fs=require('fs');const path=require('path');const expected={'@askjo/camofox-browser':'1.18.0','camoufox-js':'0.11.5','impit-linux-x64-gnu':'0.14.5'};for(const [name,version] of Object.entries(expected)){const p=path.join('/app/node_modules',...name.split('/'),'package.json');const actual=JSON.parse(fs.readFileSync(p,'utf8')).version;if(actual!==version)throw new Error(name+': expected '+version+', got '+actual);}" \
+    && node -e "const fs=require('fs');const path=require('path');const expected={'@askjo/camofox-browser':'1.18.1','camoufox-js':'0.11.5','impit-linux-x64-gnu':'0.14.5'};for(const [name,version] of Object.entries(expected)){const p=path.join('/app/node_modules',...name.split('/'),'package.json');const actual=JSON.parse(fs.readFileSync(p,'utf8')).version;if(actual!==version)throw new Error(name+': expected '+version+', got '+actual);}" \
     && node -e "require('impit');require('express-rate-limit');" \
     && node -e "const Database=require('better-sqlite3');const db=new Database(':memory:');if(db.prepare('select 1 as ok').get().ok!==1)process.exit(2);db.close();"
 
