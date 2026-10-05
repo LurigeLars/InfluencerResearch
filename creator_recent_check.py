@@ -2056,16 +2056,45 @@ def _evaluate_ingestion_group(
         persisted_ids,
         had_failure=had_failure,
     )
+    failures = [
+        row for row in (ingestion.get("failures") or [])
+        if isinstance(row, dict)
+    ]
+    first_failure = failures[0] if failures else {}
+    ingestion_errors = list(ingestion.get("errors") or [])
+    failure_stage = str(first_failure.get("stage") or "INGESTION")
+    error_detail = str(worker_result.get("error") or "").strip()
+    if not error_detail and first_failure:
+        detail = str(
+            first_failure.get("detail")
+            or first_failure.get("error")
+            or first_failure.get("reason")
+            or ""
+        ).strip()
+        error_detail = (
+            f"{failure_stage}:{detail}"
+            if detail
+            else failure_stage
+        )
+    if not error_detail and ingestion_errors:
+        error_detail = str(ingestion_errors[0])[:1200]
     if worker_result.get("timeout"):
-        terminal_reason = str(worker_result.get("error") or "GROUP_TIMEOUT")
+        terminal_reason = "GROUP_TIMEOUT"
+        error_detail = error_detail or f"TIMEOUT:{INGESTION_GROUP_TIMEOUT_SECONDS}s"
     elif not worker_result.get("ok"):
-        terminal_reason = str(worker_result.get("error") or "GROUP_WORKER_FAILED")
+        terminal_reason = "GROUP_WORKER_FAILED"
+        error_detail = error_detail or "GROUP_WORKER_FAILED"
     elif failed_ids:
         terminal_reason = "PERSISTENCE_INCOMPLETE"
+        error_detail = error_detail or (
+            "SELECTED_ITEMS_NOT_PERSISTED:" + ",".join(failed_ids)
+        )
     elif had_failure:
         terminal_reason = "INGESTION_REPORTED_FAILURE"
+        error_detail = error_detail or "INGESTION_REPORTED_FAILURE"
     else:
         terminal_reason = "PERSISTED"
+        error_detail = ""
     return {
         "creator": creator_key,
         "platform": platform,
@@ -2078,6 +2107,8 @@ def _evaluate_ingestion_group(
         "failed_ids": failed_ids,
         "result": result,
         "terminal_reason": terminal_reason,
+        "failure_stage": failure_stage if error_detail else None,
+        "error_detail": error_detail or None,
         "timeout": bool(worker_result.get("timeout")),
         "elapsed_ms": float(worker_result.get("elapsed_ms") or 0.0),
         "stages": stages,
@@ -2479,6 +2510,8 @@ def _main_impl() -> int:
                     "stage": "INGESTION",
                     "item_ids": group_summary["failed_ids"],
                     "error": group_summary["terminal_reason"],
+                    "failure_stage": group_summary.get("failure_stage"),
+                    "error_detail": group_summary.get("error_detail"),
                     "timeout": group_summary["timeout"],
                     "worker_error": group_summary.get("worker_error"),
                 })
@@ -2496,6 +2529,8 @@ def _main_impl() -> int:
                 failed_ids=group_summary["failed_ids"],
                 elapsed_ms=group_summary["elapsed_ms"],
                 terminal_reason=group_summary["terminal_reason"],
+                failure_stage=group_summary.get("failure_stage"),
+                error_detail=group_summary.get("error_detail"),
                 result=group_summary["result"],
             )
             record_timing(
