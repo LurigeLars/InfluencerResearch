@@ -62,6 +62,7 @@ jobs:
           test_camofox_container_runtime
           test_camofox_public_proxy_fallback
           test_instagram_path_segments
+          test_instagram_ingest_limits
           test_local_runtime_namespace
           test_mcp_contract
           test_research_queue_story
