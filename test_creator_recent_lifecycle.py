@@ -350,6 +350,8 @@ class CreatorRecentLifecycleTests(unittest.TestCase):
                 skipped_already_ingested_count=0,
             )
             self.assertEqual(summary["result"], "FAILED")
+            self.assertEqual(summary["failure_stage"], "transcription")
+            self.assertIn("provider failed", summary["error_detail"])
             final_state, readiness = crc._recent_check_final_state(
                 errors=[{"stage": "INGESTION", "error": summary["terminal_reason"]}],
                 discoveries=[{"creator_key": "fixture", "platform": "INSTAGRAM"}],
@@ -414,6 +416,7 @@ class CreatorRecentLifecycleTests(unittest.TestCase):
             self.assertEqual(summary["result"], "FAILED")
             self.assertEqual(summary["terminal_reason"], "PERSISTENCE_INCOMPLETE")
             self.assertEqual(summary["failed_ids"], FRATERNITY_IDS[:3])
+            self.assertIn(FRATERNITY_IDS[0], summary["error_detail"])
             self.assertEqual(summary["skipped_already_ingested_count"], 1)
 
     def test_recent_group_semantics_match_creator_monitor_classifier(self) -> None:
