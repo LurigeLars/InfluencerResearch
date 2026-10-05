@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 from datetime import datetime, timezone
@@ -591,7 +592,9 @@ def download_with_ytdlp(
     # Remove files from earlier failed downloader attempts for this shortcode.
     remove_shortcode_files(raw_dir, shortcode)
 
-    cookie_path = secret_dir() / "instagram_ytdlp_cookies.txt"
+    fd, cookie_path_raw = tempfile.mkstemp(prefix="instagram_ytdlp_", suffix=".txt")
+    os.close(fd)
+    cookie_path = Path(cookie_path_raw)
     write_netscape_cookiefile(context, cookie_path)
 
     output_template = str(raw_dir / f"{shortcode}.%(ext)s")
