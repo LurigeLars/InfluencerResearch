@@ -2792,7 +2792,14 @@ def _main_impl() -> int:
             errors_so_far=len(errors),
         )
         queue_clock = time.perf_counter()
-        queue_refresh = tts.run_research_queue(root)
+        queue_refresh = tts.run_research_queue(
+            root,
+            include_creators=[
+                str(profile.get("creator_key") or "")
+                for profile, _sources in selected
+                if str(profile.get("creator_key") or "").strip()
+            ],
+        )
         record_timing("RESEARCH_QUEUE", queue_clock)
         if not queue_refresh.get("ok"):
             errors.append({
