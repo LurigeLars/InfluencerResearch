@@ -1,9 +1,39 @@
 from __future__ import annotations
 
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import ModuleType
 from unittest.mock import patch
+
+
+class _DummyModel:
+    def __init__(self, *args, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+class _DummyMCPServer:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def tool(self, *args, **kwargs):
+        return lambda fn: fn
+
+    def custom_route(self, *args, **kwargs):
+        return lambda fn: fn
+
+
+mcp_pkg = sys.modules.setdefault("mcp", ModuleType("mcp"))
+server_pkg = sys.modules.setdefault("mcp.server", ModuleType("mcp.server"))
+mcpserver_mod = sys.modules.setdefault("mcp.server.mcpserver", ModuleType("mcp.server.mcpserver"))
+transport_mod = sys.modules.setdefault("mcp.server.transport_security", ModuleType("mcp.server.transport_security"))
+types_mod = sys.modules.setdefault("mcp.types", ModuleType("mcp.types"))
+mcpserver_mod.MCPServer = _DummyMCPServer
+transport_mod.TransportSecuritySettings = _DummyModel
+types_mod.ImageContent = _DummyModel
+types_mod.TextContent = _DummyModel
+types_mod.ToolAnnotations = _DummyModel
 
 import influencerresearch_mcp as irm
 
