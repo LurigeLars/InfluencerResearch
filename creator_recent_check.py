@@ -2028,6 +2028,23 @@ def _manifest_stage_ids(root: Path, platform: str, ids: list[str]) -> dict:
     }
 
 
+def _infer_ingestion_substage(stages: dict, selected_count: int) -> str:
+    selected_count = max(0, int(selected_count))
+    downloaded = len(stages.get("downloaded_ids") or [])
+    transcribed = len(stages.get("transcribed_ids") or [])
+    visual_done = len(stages.get("visual_done_ids") or [])
+    persisted = len(stages.get("persisted_ids") or [])
+    if selected_count and persisted >= selected_count:
+        return "PERSISTENCE"
+    if selected_count and visual_done >= selected_count:
+        return "PERSISTENCE"
+    if selected_count and transcribed >= selected_count:
+        return "VISUAL"
+    if selected_count and downloaded >= selected_count:
+        return "TRANSCRIPTION"
+    return "DOWNLOAD"
+
+
 def _evaluate_ingestion_group(
     root: Path,
     *,
@@ -2062,7 +2079,8 @@ def _evaluate_ingestion_group(
     ]
     first_failure = failures[0] if failures else {}
     ingestion_errors = list(ingestion.get("errors") or [])
-    failure_stage = str(first_failure.get("stage") or "INGESTION")
+    inferred_stage = _infer_ingestion_substage(stages, len(ids))
+    failure_stage = str(first_failure.get("stage") or inferred_stage or "INGESTION")
     error_detail = str(worker_result.get("error") or "").strip()
     if not error_detail and first_failure:
         detail = str(
@@ -2420,6 +2438,8 @@ def _main_impl() -> int:
                 )
 
                 def group_wait_progress(*, elapsed_seconds: float, timeout_seconds: int) -> None:
+                    live_stages = _manifest_stage_ids(root, platform, list(ids))
+                    current_substage = _infer_ingestion_substage(live_stages, len(ids))
                     write_progress(
                         "INGESTION",
                         phase="GROUP_WAITING",
@@ -2427,7 +2447,13 @@ def _main_impl() -> int:
                         total_groups=ingestion_group_count,
                         current_creator=creator_key,
                         current_platform=platform,
+                        current_substage=current_substage,
                         item_count=len(ids),
+                        selected_count=len(ids),
+                        downloaded_count=len(live_stages["downloaded_ids"]),
+                        transcribed_count=len(live_stages["transcribed_ids"]),
+                        visual_done_count=len(live_stages["visual_done_ids"]),
+                        persisted_count=len(live_stages["persisted_ids"]),
                         elapsed_seconds=elapsed_seconds,
                         timeout_seconds=timeout_seconds,
                         wait_reason="INGESTION_GROUP_WORKER",
