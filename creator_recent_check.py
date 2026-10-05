@@ -139,6 +139,7 @@ def _launch_recent_worker(
         "root": str(root),
         "result_path": str(result_path),
         "timeout_seconds": int(timeout_seconds),
+        "parent_pid": os.getpid(),
         **payload,
     }
     atomic_json(request_path, request)
@@ -229,25 +230,45 @@ def _internal_worker_watchdog(
     timeout_seconds: int,
     result_path: Path,
     operation: str,
+    parent_pid: int,
 ) -> threading.Event:
     stop = threading.Event()
 
-    def watchdog() -> None:
-        if stop.wait(timeout=max(1, int(timeout_seconds))):
-            return
+    def terminate_self(error: str, *, timeout: bool, exit_code: int) -> None:
         with contextlib.suppress(Exception):
             atomic_json(
                 result_path,
                 {
                     "ok": False,
                     "operation": operation,
-                    "timeout": True,
-                    "error": f"TIMEOUT:{int(timeout_seconds)}s",
+                    "timeout": timeout,
+                    "error": error,
                 },
             )
         with contextlib.suppress(Exception):
             os.killpg(os.getpgrp(), signal.SIGKILL)
-        os._exit(124)
+        os._exit(exit_code)
+
+    def watchdog() -> None:
+        deadline = time.monotonic() + max(1, int(timeout_seconds))
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                terminate_self(
+                    f"TIMEOUT:{int(timeout_seconds)}s",
+                    timeout=True,
+                    exit_code=124,
+                )
+                return
+            if stop.wait(min(1.0, remaining)):
+                return
+            if parent_pid > 1 and os.getppid() != parent_pid:
+                terminate_self(
+                    f"PARENT_EXITED:{parent_pid}",
+                    timeout=False,
+                    exit_code=125,
+                )
+                return
 
     threading.Thread(
         target=watchdog,
@@ -2082,6 +2103,7 @@ def _internal_worker_main(request_path: Path) -> int:
         timeout_seconds=timeout_seconds,
         result_path=result_path,
         operation=operation,
+        parent_pid=int(request.get("parent_pid") or 0),
     )
     try:
         if operation == "STORY_PREFETCH":
