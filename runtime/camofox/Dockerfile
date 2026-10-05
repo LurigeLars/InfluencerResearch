@@ -1,4 +1,4 @@
-FROM node:22.23.2-trixie-slim
+FROM node:26.10.0-trixie-slim
 
 ARG CAMOUFOX_VERSION=152.0.4
 ARG CAMOUFOX_RELEASE=beta.28
