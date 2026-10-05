@@ -15,6 +15,7 @@ class CamofoxContainerRuntimeTests(TestCase):
         self.assertIn("FROM node:26.10.0-trixie-slim", text)
         self.assertIn("CAMOUFOX_VERSION=152.0.4", text)
         self.assertIn("CAMOUFOX_RELEASE=beta.30", text)
+        self.assertIn("CAMOUFOX_SHA256=5720d45b894ce1770543de024c6f10d514b38be560fa2dc3226b3d8586caf672", text)
         self.assertIn("/opt/camoufox/version.json", text)
         self.assertIn("test -d /opt/camoufox/fontconfig", text)
         self.assertIn("npm ci --ignore-scripts", text)
