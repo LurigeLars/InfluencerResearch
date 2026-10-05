@@ -325,6 +325,49 @@ class CreatorRecentLifecycleTests(unittest.TestCase):
             self.assertIn("TIMEOUT", outcome["error"])
             self.assertIsNotNone(proc.poll())
 
+    def test_group_timeout_after_download_reports_transcription_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            state = root / "state"
+            state.mkdir(parents=True)
+            manifest = {
+                "schema_version": 1,
+                "items": {
+                    "RECOVERME": {
+                        "creator": "fixture",
+                        "source_platform": "INSTAGRAM",
+                        "source_id": "RECOVERME",
+                        "download_status": "DONE",
+                        "video_file": "output/fixture/raw/RECOVERME.mp4",
+                        "transcription_status": "PENDING",
+                    }
+                },
+            }
+            (state / "manifest.json").write_text(
+                json.dumps(manifest),
+                encoding="utf-8",
+            )
+            summary = crc._evaluate_ingestion_group(
+                root,
+                creator_key="fixture",
+                platform="INSTAGRAM",
+                ids=["RECOVERME"],
+                worker_result={
+                    "ok": False,
+                    "timeout": True,
+                    "elapsed_ms": 360000.0,
+                    "error": "TIMEOUT:360s",
+                },
+                skipped_already_ingested_count=0,
+            )
+            self.assertEqual(summary["result"], "FAILED")
+            self.assertEqual(summary["terminal_reason"], "GROUP_TIMEOUT")
+            self.assertEqual(summary["failure_stage"], "TRANSCRIPTION")
+            self.assertEqual(
+                crc._infer_ingestion_substage(summary["stages"], 1),
+                "TRANSCRIPTION",
+            )
+
     def test_transcription_or_visual_provider_failure_cannot_look_complete(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
