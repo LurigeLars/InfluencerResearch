@@ -358,7 +358,7 @@ class CreatorRecentLifecycleTests(unittest.TestCase):
                 pending_extraction=[],
             )
             self.assertEqual(final_state, "PARTIAL")
-            self.assertTrue(readiness)
+            self.assertFalse(readiness)
 
     def test_nicholas_crown_fixture_real_ids_persist_complete(self) -> None:
         with tempfile.TemporaryDirectory() as td:
