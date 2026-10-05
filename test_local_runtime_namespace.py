@@ -70,7 +70,7 @@ class LocalRuntimeNamespaceTests(unittest.TestCase):
         compose = (BASE / "compose.yaml").read_text(encoding="utf-8")
         self.assertIn("gemini_api_key.dpapi", runtime)
         self.assertIn("/run/influencerresearch-secrets/gemini_api_key", runtime)
-        self.assertIn("/run/influencerresearch-secrets:", compose)
+        self.assertIn("target: /run/influencerresearch-secrets", compose)
 
     def test_camofox_runtime_secrets_use_dpapi_and_restart_safe_tmpfs_not_service_env(self) -> None:
         runtime = (BASE / "scripts/runtime.ps1").read_text(encoding="utf-8")
@@ -88,8 +88,9 @@ class LocalRuntimeNamespaceTests(unittest.TestCase):
         self.assertIn("influencerresearch-mcp-secrets", compose)
         self.assertIn("influencerresearch-camofox-secrets", compose)
         self.assertIn("influencerresearch-camofox-proxy-secrets", compose)
-        self.assertIn("/run/influencerresearch-secrets/camofox_access_key", compose)
-        self.assertIn("/run/influencerresearch-secrets/camofox_admin_key", compose)
+        self.assertIn("target: /run/influencerresearch-secrets", compose)
+        self.assertIn("/run/secret-store/mcp/camofox_access_key", runtime)
+        self.assertIn("/run/secret-store/mcp/camofox_admin_key", runtime)
         self.assertIn("/run/camofox-secrets/access_key", compose)
         self.assertIn("/run/camofox-secrets/admin_key", compose)
         self.assertIn("Write-SecretHolderFile", runtime)
