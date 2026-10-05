@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import json
 import tempfile
-import unittest
+import unittest.mock
 from pathlib import Path
-from unittest import mock
 
 import tiktok_camofox_sync as sync
 
@@ -13,12 +12,12 @@ class PublicProxyFallbackTests(unittest.TestCase):
     def setUp(self) -> None:
         with sync._CAMOFOX_PROXY_ROUTE_LOCK:
             sync._CAMOFOX_PROXY_USERS.clear()
-        sync._CAMOFOX_PUBLIC_PROXY_SERVER = None
+        sync._CAMOFOX_PUBLIC_PROXY_STATE["server"] = None
 
     def tearDown(self) -> None:
         with sync._CAMOFOX_PROXY_ROUTE_LOCK:
             sync._CAMOFOX_PROXY_USERS.clear()
-        sync._CAMOFOX_PUBLIC_PROXY_SERVER = None
+        sync._CAMOFOX_PUBLIC_PROXY_STATE["server"] = None
 
     def _metric_patch(self, root: Path):
         return unittest.mock.patch.object(
