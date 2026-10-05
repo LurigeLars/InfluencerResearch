@@ -2,7 +2,7 @@
 
 This directory defines the reviewed Camofox/Camoufox container used by the InfluencerResearch Docker runtime.
 
-- Direct dependency: `@askjo/camofox-browser` `1.18.1` from reviewed fork merge commit `4b9b06982fba6fab858bfa2c5ce56ca77cacc75c`
+- Direct dependency: `@askjo/camofox-browser` `1.18.1` from reviewed fork merge commit `f05fea8b999a262ac6fa9d6d75bcdc4d2b3bf795`
 - Transitive browser client: `camoufox-js` `0.11.5`
 - Container Node.js baseline: `v26.10.0`
 - Camoufox browser baseline: `152.0.4` / `beta.30`
