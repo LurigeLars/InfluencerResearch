@@ -293,6 +293,7 @@ def _youtube_surface_coverage_complete(
                 try:
                     known_times.append(parse_iso_utc(str(raw)))
                 except (TypeError, ValueError, OverflowError):
+                    # Ignore malformed optional timestamps; coverage falls back to valid observations.
                     pass
         return _coverage_complete(
             discovered_count=len(entries),
