@@ -10,6 +10,12 @@ BASE = Path(__file__).resolve().parent
 
 
 class CamofoxContainerRuntimeTests(TestCase):
+    def test_redeploy_force_recreates_rebuilt_services(self) -> None:
+        runtime = (BASE / "scripts" / "runtime.ps1").read_text(encoding="utf-8")
+        self.assertIn("Invoke-ComposeUp([bool]$Build = $true, [bool]$ForceRecreate = $false)", runtime)
+        self.assertIn('$composeArgs += "--force-recreate"', runtime)
+        self.assertIn('Invoke-ComposeUp -ForceRecreate $true', runtime)
+
     def test_dockerfile_pins_reviewed_runtime_and_skips_dynamic_postinstall(self) -> None:
         text = (BASE / "runtime" / "camofox" / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("FROM node:26.10.0-trixie-slim", text)
