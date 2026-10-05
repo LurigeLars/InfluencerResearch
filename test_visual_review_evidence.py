@@ -3,9 +3,8 @@ from __future__ import annotations
 import ast
 import json
 import tempfile
-import unittest
+import unittest.mock
 from pathlib import Path
-from unittest import mock
 
 import video_visual_evidence as vve
 import youtube_creator_evaluation as yte
