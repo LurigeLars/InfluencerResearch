@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -188,6 +189,29 @@ class TranscriptionBackendTests(unittest.TestCase):
         self.assertEqual(result["fallback_from"], "gemini")
         self.assertIn("RuntimeError", result["fallback_error"])
         self.assertNotIn("secret", result["fallback_error"])
+
+    def test_extract_audio_timeout_removes_temporary_file(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            temp_audio = Path(td) / "timeout.mp3"
+            temp_audio.write_bytes(b"partial")
+
+            with (
+                patch.object(
+                    tb.tempfile,
+                    "mkstemp",
+                    return_value=(os.open(temp_audio, os.O_RDWR), str(temp_audio)),
+                ),
+                patch("imageio_ffmpeg.get_ffmpeg_exe", return_value="ffmpeg"),
+                patch.object(
+                    tb.subprocess,
+                    "run",
+                    side_effect=subprocess.TimeoutExpired("ffmpeg", 60),
+                ),
+            ):
+                with self.assertRaisesRegex(TimeoutError, "audio extraction timed out"):
+                    tb._extract_audio(Path("video.mp4"), timeout_seconds=60)
+
+            self.assertFalse(temp_audio.exists())
 
     def test_explicit_gemini_does_not_silently_use_environment_key(self) -> None:
         with patch.object(tb, "read_gemini_api_key", return_value=None):
