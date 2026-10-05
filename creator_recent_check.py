@@ -43,7 +43,7 @@ def _bounded_env_int(
     return max(minimum, min(maximum, value))
 
 
-RECENT_CHECK_VERSION = "0.3.0"
+RECENT_CHECK_VERSION = "0.3.1"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
@@ -1460,6 +1460,80 @@ def _ingest_tiktok(root: Path, profile: dict, source: dict, ids: list[str], disc
     }
 
 
+def _analysis_candidate_coverage(
+    root: Path,
+    queue_snapshot: dict,
+    item_keys: set[str],
+) -> dict:
+    queued = {
+        str(item.get("queue_id") or item.get("shortcode") or "")
+        for item in (queue_snapshot.get("items") or [])
+        if isinstance(item, dict)
+    }
+    explicit_nonready: set[str] = set()
+    for field in (
+        "insufficient_content_items",
+        "deferred_extraction_items",
+        "extraction_error_items",
+        "pending_extraction_items",
+    ):
+        explicit_nonready.update(
+            str(item.get("queue_id") or "")
+            for item in (queue_snapshot.get(field) or [])
+            if isinstance(item, dict) and item.get("queue_id")
+        )
+
+    decisions = load_json(
+        root / "state" / "research_decisions.json",
+        {"items": {}},
+    )
+    finalized = {
+        str(key)
+        for key, value in (decisions.get("items") or {}).items()
+        if isinstance(value, dict)
+        and str(value.get("decision") or "").upper()
+        in {
+            "IGNORE",
+            "RESEARCH",
+            "TEST_CANDIDATE",
+            "BACKLOG_CANDIDATE",
+            "TEST",
+            "BACKLOG",
+        }
+    }
+
+    manifest = load_json(root / "state" / "manifest.json", {"items": {}})
+    duplicate = {
+        str(key)
+        for key, value in (manifest.get("items") or {}).items()
+        if isinstance(value, dict)
+        and (
+            str(value.get("research_status") or "").upper() == "DUPLICATE"
+            or bool(value.get("duplicate_of"))
+        )
+    }
+
+    requested = {str(value) for value in item_keys if str(value)}
+    remaining = set(requested)
+
+    queued_selected = remaining & queued
+    remaining -= queued_selected
+    nonready_selected = remaining & explicit_nonready
+    remaining -= nonready_selected
+    finalized_selected = remaining & finalized
+    remaining -= finalized_selected
+    duplicate_selected = remaining & duplicate
+    remaining -= duplicate_selected
+
+    return {
+        "queued": sorted(queued_selected),
+        "explicit_nonready": sorted(nonready_selected),
+        "finalized": sorted(finalized_selected),
+        "duplicate": sorted(duplicate_selected),
+        "missing": sorted(remaining),
+    }
+
+
 def _queue_targets(root: Path, item_keys: set[str]) -> list[dict]:
     queue = load_json(root / "state" / "research_queue.json", {"items": []})
     out = []
@@ -2761,6 +2835,11 @@ def _main_impl() -> int:
         analysis_candidate_keys = {x["item_key"] for x in all_recent}
         analysis_candidate_keys.update(x["item_key"] for x in story_available)
         analysis_targets = _queue_targets(root, analysis_candidate_keys)
+        analysis_candidate_coverage = _analysis_candidate_coverage(
+            root,
+            queue_snapshot,
+            analysis_candidate_keys,
+        )
         completed_keys = {x["queue_id"] for x in analysis_targets}
         write_progress(
             "ANALYSIS_QUEUE",
@@ -2804,6 +2883,47 @@ def _main_impl() -> int:
             annotate_content_state(item)
 
         recent_content_items = all_recent + story_available
+        recent_content_by_key = {
+            str(item.get("item_key") or ""): item
+            for item in recent_content_items
+            if item.get("item_key")
+        }
+        analysis_state_by_key: dict[str, str] = {}
+        for coverage_key, state_name in (
+            ("queued", "QUEUED"),
+            ("explicit_nonready", "NONREADY"),
+            ("finalized", "FINALIZED"),
+            ("duplicate", "DUPLICATE"),
+            ("missing", "MISSING"),
+        ):
+            for item_key in analysis_candidate_coverage[coverage_key]:
+                analysis_state_by_key[item_key] = state_name
+        analysis_candidate_states = [
+            {
+                "item_key": item_key,
+                "creator_key": (recent_content_by_key.get(item_key) or {}).get("creator_key"),
+                "platform": (recent_content_by_key.get(item_key) or {}).get("platform"),
+                "source_id": (recent_content_by_key.get(item_key) or {}).get("source_id"),
+                "published_at": (recent_content_by_key.get(item_key) or {}).get("published_at"),
+                "analysis_state": analysis_state_by_key.get(item_key, "MISSING"),
+            }
+            for item_key in sorted(analysis_candidate_keys)
+        ]
+        analysis_missing_items = [
+            {
+                **item,
+                "reason": "NOT_QUEUED_NOT_NONREADY_NOT_FINALIZED_NOT_DUPLICATE",
+            }
+            for item in analysis_candidate_states
+            if item["analysis_state"] == "MISSING"
+        ]
+        if analysis_missing_items:
+            errors.append({
+                "stage": "ANALYSIS_QUEUE",
+                "error": f"ANALYSIS_TARGET_MISSING:{len(analysis_missing_items)}",
+                "items": analysis_missing_items[:100],
+            })
+
         insufficient_recent = [
             {
                 "item_key": item["item_key"],
@@ -3037,6 +3157,19 @@ def _main_impl() -> int:
             "story_identity_aliases_retired_count": story_identity_aliases_retired_count,
             "deferred_due_to_cap_count": len(deferred),
             "queued_for_analysis_count": len(analysis_targets),
+            "analysis_accounted_count": (
+                len(analysis_candidate_coverage["queued"])
+                + len(analysis_candidate_coverage["explicit_nonready"])
+                + len(analysis_candidate_coverage["finalized"])
+                + len(analysis_candidate_coverage["duplicate"])
+            ),
+            "analysis_missing_count": len(analysis_missing_items),
+            "analysis_missing_items": analysis_missing_items[:100],
+            "analysis_candidate_coverage": {
+                key: len(value)
+                for key, value in analysis_candidate_coverage.items()
+            },
+            "analysis_candidate_states": analysis_candidate_states[:100],
             "analysis_readiness_complete": analysis_readiness_complete,
             "story_visual_enrichment": story_visual_enrichment,
             "insufficient_content_count": len(insufficient_recent),
