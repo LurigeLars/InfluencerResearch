@@ -838,6 +838,12 @@ def enrich_visual_evidence(root: Path, manifest: dict, keys: list[str]) -> dict:
             transcript_path = root / str(transcript_rel)
             if transcript_path.is_file():
                 transcript_text = transcript_path.read_text(encoding="utf-8", errors="replace").strip()
+
+        item["visual_evidence_status"] = "RUNNING"
+        item["visual_evidence_started_at"] = utc_now()
+        item.pop("visual_evidence_error", None)
+        checkpoint()
+
         try:
             result = capture_local_video_visual_evidence(
                 root,
@@ -851,6 +857,7 @@ def enrich_visual_evidence(root: Path, manifest: dict, keys: list[str]) -> dict:
             result = {"ok": False, "error": f"{type(exc).__name__}:visual_evidence_unavailable"}
 
         item["visual_review_policy_version"] = VISUAL_REVIEW_POLICY_VERSION
+        item.pop("visual_evidence_started_at", None)
         if result.get("ok"):
             bundle = result.get("agent_visual_bundle") if isinstance(result.get("agent_visual_bundle"), dict) else {}
             item["visual_evidence_status"] = "DONE"
