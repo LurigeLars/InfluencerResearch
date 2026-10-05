@@ -1974,14 +1974,14 @@ def update_main_manifest(
 def run_research_queue(
     root: Path,
     *,
-    include_creators: list[str] | None = None,
+    must_include: list[str] | None = None,
 ) -> dict:
     script = root / "app" / "research_queue.py"
     if not script.exists():
         return {"ok": False, "error": f"missing {script}"}
     cmd = [sys.executable, str(script), "--root", str(root)]
-    for creator in include_creators or []:
-        cmd.extend(["--include-creator", str(creator)])
+    for shortcode in must_include or []:
+        cmd.extend(["--must-include-shortcode", str(shortcode)])
     result = subprocess.run(
         cmd,
         capture_output=True,
