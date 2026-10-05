@@ -1971,12 +1971,19 @@ def update_main_manifest(
     return manifest["items"][key]
 
 
-def run_research_queue(root: Path) -> dict:
+def run_research_queue(
+    root: Path,
+    *,
+    must_include: list[str] | None = None,
+) -> dict:
     script = root / "app" / "research_queue.py"
     if not script.exists():
         return {"ok": False, "error": f"missing {script}"}
+    cmd = [sys.executable, str(script), "--root", str(root)]
+    for shortcode in must_include or []:
+        cmd.extend(["--must-include-shortcode", str(shortcode)])
     result = subprocess.run(
-        [sys.executable, str(script), "--root", str(root)],
+        cmd,
         capture_output=True,
         text=True,
         timeout=120,

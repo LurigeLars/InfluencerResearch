@@ -30,6 +30,9 @@ OLLAMA_VISUAL_MIN_GROUNDING_OVERLAP = 0.25
 
 GEMINI_HTTP_TIMEOUT_MS = 45_000
 GEMINI_RETRY_ATTEMPTS = 2
+TRANSCRIPTION_GEMINI_HTTP_TIMEOUT_MS = 15_000
+TRANSCRIPTION_GEMINI_RETRY_ATTEMPTS = 1
+TRANSCRIPTION_AUDIO_EXTRACT_TIMEOUT_SECONDS = 60
 STORY_GEMINI_HTTP_TIMEOUT_MS = 12_000
 STORY_GEMINI_RETRY_ATTEMPTS = 1
 ALLOWED_PROVIDERS = {"auto", "gemini", "faster-whisper"}
@@ -38,6 +41,18 @@ _WHISPER_MODEL_CACHE: dict[tuple[str, str, str], Any] = {}
 
 def bounded_story_gemini_timeout_ms(value: int = STORY_GEMINI_HTTP_TIMEOUT_MS) -> int:
     return max(5_000, min(int(value), 30_000))
+
+
+def bounded_transcription_gemini_timeout_ms(
+    value: int = TRANSCRIPTION_GEMINI_HTTP_TIMEOUT_MS,
+) -> int:
+    return max(5_000, min(int(value), 30_000))
+
+
+def bounded_transcription_audio_timeout_seconds(
+    value: int = TRANSCRIPTION_AUDIO_EXTRACT_TIMEOUT_SECONDS,
+) -> int:
+    return max(15, min(int(value), 120))
 
 
 def gemini_http_options(
@@ -167,7 +182,11 @@ def _safe_error(exc: Exception) -> str:
     return safe_gemini_error(exc, operation="transcription")
 
 
-def _extract_audio(video_path: Path) -> Path:
+def _extract_audio(
+    video_path: Path,
+    *,
+    timeout_seconds: int = TRANSCRIPTION_AUDIO_EXTRACT_TIMEOUT_SECONDS,
+) -> Path:
     import imageio_ffmpeg
 
     ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
@@ -175,26 +194,31 @@ def _extract_audio(video_path: Path) -> Path:
     os.close(fd)
     audio_path = Path(tmp_name)
 
-    proc = subprocess.run(
-        [
-            ffmpeg,
-            "-y",
-            "-i",
-            str(video_path),
-            "-vn",
-            "-ac",
-            "1",
-            "-ar",
-            "16000",
-            "-b:a",
-            "64k",
-            str(audio_path),
-        ],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        text=True,
-        timeout=180,
-    )
+    try:
+        proc = subprocess.run(
+            [
+                ffmpeg,
+                "-y",
+                "-i",
+                str(video_path),
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "16000",
+                "-b:a",
+                "64k",
+                str(audio_path),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=bounded_transcription_audio_timeout_seconds(timeout_seconds),
+        )
+    except subprocess.TimeoutExpired as exc:
+        with contextlib.suppress(OSError):
+            audio_path.unlink(missing_ok=True)
+        raise TimeoutError("ffmpeg audio extraction timed out.") from exc
     if proc.returncode != 0:
         with contextlib.suppress(OSError):
             audio_path.unlink(missing_ok=True)
@@ -210,13 +234,23 @@ def transcribe_gemini(
     *,
     model: str = DEFAULT_GEMINI_MODEL,
     secret_path: Path | None = None,
+    timeout_ms: int = TRANSCRIPTION_GEMINI_HTTP_TIMEOUT_MS,
+    retry_attempts: int = TRANSCRIPTION_GEMINI_RETRY_ATTEMPTS,
+    audio_timeout_seconds: int = TRANSCRIPTION_AUDIO_EXTRACT_TIMEOUT_SECONDS,
 ) -> dict[str, Any]:
     api_key = read_gemini_api_key(secret_path)
     if not api_key:
         raise RuntimeError("Gemini runtime secret is not available.")
 
-    audio_path = _extract_audio(video_path)
-    client = _gemini_client(api_key)
+    audio_path = _extract_audio(
+        video_path,
+        timeout_seconds=audio_timeout_seconds,
+    )
+    client = _gemini_client(
+        api_key,
+        timeout_ms=bounded_transcription_gemini_timeout_ms(timeout_ms),
+        retry_attempts=max(1, min(int(retry_attempts), 2)),
+    )
     uploaded = None
     try:
         uploaded = client.files.upload(file=str(audio_path))
@@ -598,8 +632,37 @@ def transcribe_video(video_path: Path, settings: dict[str, Any] | None = None) -
     if not gemini_model:
         raise ValueError("gemini_model must not be empty")
 
+    gemini_timeout_ms = bounded_transcription_gemini_timeout_ms(
+        int(settings.get(
+            "gemini_transcription_timeout_ms",
+            TRANSCRIPTION_GEMINI_HTTP_TIMEOUT_MS,
+        ))
+    )
+    gemini_retry_attempts = max(
+        1,
+        min(
+            int(settings.get(
+                "gemini_transcription_retry_attempts",
+                TRANSCRIPTION_GEMINI_RETRY_ATTEMPTS,
+            )),
+            2,
+        ),
+    )
+    audio_timeout_seconds = bounded_transcription_audio_timeout_seconds(
+        int(settings.get(
+            "audio_extract_timeout_seconds",
+            TRANSCRIPTION_AUDIO_EXTRACT_TIMEOUT_SECONDS,
+        ))
+    )
+    gemini_kwargs = {
+        "model": gemini_model,
+        "timeout_ms": gemini_timeout_ms,
+        "retry_attempts": gemini_retry_attempts,
+        "audio_timeout_seconds": audio_timeout_seconds,
+    }
+
     if provider == "gemini":
-        return transcribe_gemini(video_path, model=gemini_model)
+        return transcribe_gemini(video_path, **gemini_kwargs)
 
     if provider == "faster-whisper":
         return transcribe_faster_whisper(video_path, settings)
@@ -607,7 +670,7 @@ def transcribe_video(video_path: Path, settings: dict[str, Any] | None = None) -
     # auto: prefer Gemini only when the runtime-only secret is present, then fall back locally.
     if read_gemini_api_key() is not None:
         try:
-            return transcribe_gemini(video_path, model=gemini_model)
+            return transcribe_gemini(video_path, **gemini_kwargs)
         except Exception as exc:
             fallback = transcribe_faster_whisper(video_path, settings)
             fallback["fallback_from"] = "gemini"

@@ -171,7 +171,10 @@ class CreatorRecentLifecycleTests(unittest.TestCase):
                     },
                 }
 
-            def fake_queue(_root):
+            queue_calls: list[dict] = []
+
+            def fake_queue(_root, **kwargs):
+                queue_calls.append(dict(kwargs))
                 queue_path = root / "state" / "research_queue.json"
                 queue_path.write_text(
                     json.dumps({
@@ -254,6 +257,8 @@ class CreatorRecentLifecycleTests(unittest.TestCase):
             self.assertEqual(status["queued_for_analysis_count"], 2)
             self.assertEqual(status["analysis_missing_count"], 0)
             self.assertEqual(status["analysis_candidate_coverage"]["queued"], 2)
+            self.assertEqual(len(queue_calls), 1)
+            self.assertEqual(set(queue_calls[0]["must_include"]), set(ids))
             self.assertEqual(
                 {row["analysis_state"] for row in status["analysis_candidate_states"]},
                 {"QUEUED"},

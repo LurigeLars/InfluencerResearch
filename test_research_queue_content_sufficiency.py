@@ -108,6 +108,69 @@ class ResearchQueueContentSufficiencyTests(unittest.TestCase):
             self.assertEqual(queue["items"][0]["analysis_content_reason"], "TRANSCRIPT")
 
 
+    def test_exact_must_include_bypasses_screening_allowlist_only_for_that_item(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            transcript = root / "output" / "thetradingfraternity" / "youtube" / "transcripts" / "abc.txt"
+            transcript.parent.mkdir(parents=True)
+            transcript.write_text(
+                "Market breadth is weakening while defensive sectors gain relative strength into the close.",
+                encoding="utf-8",
+            )
+            manifest = {
+                "schema_version": 1,
+                "items": {
+                    "yt_abc": {
+                        "creator": "thetradingfraternity",
+                        "source_platform": "YOUTUBE",
+                        "source_type": "VIDEO",
+                        "source_id": "abc",
+                        "url": "https://www.youtube.com/watch?v=abc",
+                        "published_at": "2026-10-05T20:00:00+00:00",
+                        "download_status": "DONE",
+                        "transcription_status": "DONE",
+                        "transcript_txt": str(transcript.relative_to(root)),
+                    }
+                },
+            }
+            self._write_common(root, manifest)
+            (root / "control" / "research_screening.json").write_text(
+                json.dumps({
+                    "max_queue_items": 100,
+                    "creators": ["nicholascrown"],
+                }),
+                encoding="utf-8",
+            )
+
+            with unittest.mock.patch.object(
+                sys,
+                "argv",
+                ["research_queue.py", "--root", str(root)],
+            ):
+                self.assertEqual(research_queue.main(), 0)
+            queue = json.loads(
+                (root / "state" / "research_queue.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(queue["count"], 0)
+
+            with unittest.mock.patch.object(
+                sys,
+                "argv",
+                [
+                    "research_queue.py",
+                    "--root",
+                    str(root),
+                    "--must-include-shortcode",
+                    "yt_abc",
+                ],
+            ):
+                self.assertEqual(research_queue.main(), 0)
+            queue = json.loads(
+                (root / "state" / "research_queue.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(queue["count"], 1)
+            self.assertEqual(queue["items"][0]["queue_id"], "yt_abc")
+
     def test_visible_text_recovers_empty_audio_transcript(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

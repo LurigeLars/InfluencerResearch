@@ -424,7 +424,7 @@ def main() -> int:
         "--must-include-shortcode",
         action="append",
         default=[],
-        help="Bounded creator-evaluation queue admission reservation.",
+        help="Bounded exact-item queue admission reservation.",
     )
     args = parser.parse_args()
     root = args.root.resolve()
@@ -438,8 +438,8 @@ def main() -> int:
         if shortcode not in seen_must_include:
             seen_must_include.add(shortcode)
             must_include.append(shortcode)
-    if len(must_include) > 20:
-        raise ValueError(f"TOO_MANY_MUST_INCLUDE_SHORTCODES:{len(must_include)}>20")
+    if len(must_include) > 100:
+        raise ValueError(f"TOO_MANY_MUST_INCLUDE_SHORTCODES:{len(must_include)}>100")
 
     manifest_path = root / "state" / "manifest.json"
     queue_path = root / "state" / "research_queue.json"
@@ -510,7 +510,12 @@ def main() -> int:
             item.get("evaluation_mode") == "CREATOR_EVALUATION"
             and item.get("permanent_source") is False
         )
-        if creators_allow and creator not in creators_allow and not is_creator_evaluation:
+        if (
+            creators_allow
+            and creator not in creators_allow
+            and shortcode not in seen_must_include
+            and not is_creator_evaluation
+        ):
             continue
 
         transcript_path = normalize_manifest_path(root, item.get("transcript_txt"))

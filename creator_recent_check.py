@@ -43,7 +43,7 @@ def _bounded_env_int(
     return max(minimum, min(maximum, value))
 
 
-RECENT_CHECK_VERSION = "0.3.1"
+RECENT_CHECK_VERSION = "0.3.2"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
@@ -2781,9 +2781,21 @@ def _main_impl() -> int:
             errors_so_far=len(errors),
         )
 
-        # Rebuild the queue even when all recent items were already ingested. This
-        # migrates older evidence through the current content-readiness gate instead
-        # of silently treating an empty/weak transcript as analysis-ready.
+        # Pending analysis can include a recent item ingested by an earlier run.
+        # Stories captured by an earlier run remain valid candidates while they
+        # are active/current. Fresh promotion is not required for target exposure.
+        story_available_by_key = {
+            str(item["item_key"]): item
+            for item in story_available
+            if item.get("item_key")
+        }
+        story_available = list(story_available_by_key.values())
+        analysis_candidate_keys = {x["item_key"] for x in all_recent}
+        analysis_candidate_keys.update(x["item_key"] for x in story_available)
+
+        # Rebuild the queue even when all recent items were already ingested. Exact
+        # recent candidates are reserved through screening so an explicit recent
+        # check cannot silently lose its own evidence to a persistent creator filter.
         write_progress(
             "ANALYSIS_QUEUE",
             phase="REFRESHING",
@@ -2792,7 +2804,10 @@ def _main_impl() -> int:
             errors_so_far=len(errors),
         )
         queue_clock = time.perf_counter()
-        queue_refresh = tts.run_research_queue(root)
+        queue_refresh = tts.run_research_queue(
+            root,
+            must_include=sorted(analysis_candidate_keys),
+        )
         record_timing("RESEARCH_QUEUE", queue_clock)
         if not queue_refresh.get("ok"):
             errors.append({
@@ -2822,18 +2837,7 @@ def _main_impl() -> int:
         extraction_error_by_key = by_queue_id("extraction_error_items")
         pending_extraction_by_key = by_queue_id("pending_extraction_items")
 
-        # Pending analysis can include a recent item ingested by an earlier run.
-        # Return those targets too; do not require a fresh download in this run.
-        # Stories captured by an earlier run remain valid candidates while they
-        # are active/current. Fresh promotion is not required for target exposure.
-        story_available_by_key = {
-            str(item["item_key"]): item
-            for item in story_available
-            if item.get("item_key")
-        }
-        story_available = list(story_available_by_key.values())
-        analysis_candidate_keys = {x["item_key"] for x in all_recent}
-        analysis_candidate_keys.update(x["item_key"] for x in story_available)
+        # Return exact recent targets too; do not require a fresh download in this run.
         analysis_targets = _queue_targets(root, analysis_candidate_keys)
         analysis_candidate_coverage = _analysis_candidate_coverage(
             root,
