@@ -1,0 +1,284 @@
+from __future__ import annotations
+
+import json
+import tempfile
+import unittest
+from pathlib import Path
+
+from analysis_queue import (
+    get_analysis_queue_item,
+    list_analysis_queue,
+    record_analysis_decision,
+    record_analysis_decision_batch,
+)
+
+
+DECISIONS = ("IGNORE", "RESEARCH", "TEST_CANDIDATE", "BACKLOG_CANDIDATE")
+
+
+def write_json(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def build_fixture(root: Path, *, creator_status: str = "ACTIVE", queue_id: str = "tt_123") -> dict:
+    transcript_path = root / "output" / "creator" / "tiktok" / "transcripts" / "123.txt"
+    evidence_path = root / "output" / "creator" / "tiktok" / "visual" / "123.json"
+    transcript_path.parent.mkdir(parents=True, exist_ok=True)
+    evidence_path.parent.mkdir(parents=True, exist_ok=True)
+    transcript_path.write_text("Fixture transcript about a falsifiable market claim.\n", encoding="utf-8")
+    evidence_path.write_text('{"fixture":"visual evidence"}\n', encoding="utf-8")
+
+    write_json(
+        root / "control" / "creator_registry.json",
+        {
+            "schema_version": 1,
+            "creators": {
+                "creator": {
+                    "creator_key": "creator",
+                    "status": creator_status,
+                    "sources": [],
+                }
+            },
+        },
+    )
+    manifest_item = {
+        "schema_version": 1,
+        "shortcode": queue_id,
+        "source_platform": "TIKTOK",
+        "source_type": "VIDEO",
+        "source_id": "123",
+        "creator": "creator",
+        "url": "https://www.tiktok.com/@creator/video/123",
+        "caption": "Fixture caption",
+        "published_at": "2026-10-01T12:00:00+00:00",
+        "transcript_txt": str(transcript_path.relative_to(root)),
+        "visual_evidence_index": str(evidence_path.relative_to(root)),
+        "evidence_lineage_id": "lineage-fixture-123",
+        "downloaded_at": "2026-10-01T12:01:00+00:00",
+        "transcribed_at": "2026-10-01T12:02:00+00:00",
+        "research_status": "PENDING",
+    }
+    queue_item = {
+        "schema_version": 2,
+        "queue_id": queue_id,
+        "shortcode": queue_id,
+        "creator": "creator",
+        "source_platform": "TIKTOK",
+        "source_id": "123",
+        "source_url": manifest_item["url"],
+        "published_at": manifest_item["published_at"],
+        "analysis_owner": "EKONOMI",
+        "analysis_status": "PENDING_ANALYSIS",
+        "analysis_content_status": "READY",
+        "evidence_lineage_id": "lineage-fixture-123",
+        "caption": "Fixture caption",
+        "transcript_file": str(transcript_path.relative_to(root)),
+        "transcript_text": "Fixture transcript about a falsifiable market claim.",
+        "visual_evidence_index": str(evidence_path.relative_to(root)),
+        "discovery_tags": ["market", "fixture"],
+    }
+    write_json(
+        root / "state" / "manifest.json",
+        {"schema_version": 1, "items": {queue_id: manifest_item}},
+    )
+    write_json(
+        root / "state" / "research_queue.json",
+        {
+            "items": [queue_item],
+            "count": 1,
+            "analysis_owner": "EKONOMI",
+            "status": "PENDING_ANALYSIS",
+            "screen_version": "0.2.0",
+        },
+    )
+    write_json(
+        root / "state" / "research_decisions.json",
+        {"schema_version": 2, "screen_version": "0.2.0", "items": {}},
+    )
+    return {
+        "queue_id": queue_id,
+        "queue_item": queue_item,
+        "manifest_item": manifest_item,
+        "transcript_path": transcript_path,
+        "evidence_path": evidence_path,
+    }
+
+
+def decision_payload(decision: str, *, queue_id: str = "tt_123") -> dict:
+    return {
+        "queue_id": queue_id,
+        "decision": decision,
+        "idea_type": "MARKET_STRUCTURE",
+        "claim_summary": "A testable fixture claim.",
+        "claims": [{"claim": "Fixture claim"}],
+        "existing_system_overlap": "None known.",
+        "verification_plan": ["Check primary market data."],
+        "falsifiable_test": "Reject if primary data contradicts the claim.",
+        "main_risk": "Selection bias.",
+        "confidence": 0.6,
+        "rationale": "Useful enough for fixture validation.",
+        "evidence_lineage_id": "lineage-fixture-123",
+        "duplicate_of": None,
+        "duplicate_basis": None,
+    }
+
+
+class AnalysisQueueTests(unittest.TestCase):
+    def test_pending_to_each_canonical_decision(self) -> None:
+        for decision in DECISIONS:
+            with self.subTest(decision=decision), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                fixture = build_fixture(root)
+                result = record_analysis_decision(root, fixture["queue_id"], decision_payload(decision))
+                self.assertEqual(result["result"], "WRITTEN")
+                self.assertEqual(result["decision"], decision)
+
+                queue = json.loads((root / "state" / "research_queue.json").read_text(encoding="utf-8"))
+                ledger = json.loads((root / "state" / "research_decisions.json").read_text(encoding="utf-8"))
+                self.assertEqual(queue["count"], 0)
+                self.assertEqual(ledger["items"][fixture["queue_id"]]["decision"], decision)
+
+    def test_provenance_transcript_and_evidence_are_preserved(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fixture = build_fixture(root)
+            before_manifest = json.loads((root / "state" / "manifest.json").read_text(encoding="utf-8"))
+            before_transcript = fixture["transcript_path"].read_bytes()
+            before_evidence = fixture["evidence_path"].read_bytes()
+
+            result = record_analysis_decision(root, fixture["queue_id"], decision_payload("IGNORE"))
+            self.assertEqual(result["result"], "WRITTEN")
+
+            after_manifest = json.loads((root / "state" / "manifest.json").read_text(encoding="utf-8"))
+            before_item = before_manifest["items"][fixture["queue_id"]]
+            after_item = after_manifest["items"][fixture["queue_id"]]
+            for field in (
+                "creator",
+                "url",
+                "source_platform",
+                "source_id",
+                "published_at",
+                "downloaded_at",
+                "transcribed_at",
+                "transcript_txt",
+                "visual_evidence_index",
+                "evidence_lineage_id",
+            ):
+                self.assertEqual(after_item[field], before_item[field])
+            self.assertEqual(fixture["transcript_path"].read_bytes(), before_transcript)
+            self.assertEqual(fixture["evidence_path"].read_bytes(), before_evidence)
+
+    def test_identical_replay_is_true_noop(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fixture = build_fixture(root)
+            payload = decision_payload("IGNORE")
+            first = record_analysis_decision(root, fixture["queue_id"], payload)
+            self.assertEqual(first["result"], "WRITTEN")
+            paths = [
+                root / "state" / "research_queue.json",
+                root / "state" / "research_decisions.json",
+                root / "state" / "manifest.json",
+                root / "state" / "research_followups.json",
+            ]
+            before = {path: path.read_bytes() for path in paths}
+
+            second = record_analysis_decision(root, fixture["queue_id"], payload)
+            self.assertEqual(second["result"], "NO_OP")
+            for path in paths:
+                self.assertEqual(path.read_bytes(), before[path])
+
+    def test_conflicting_second_decision_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fixture = build_fixture(root)
+            self.assertEqual(
+                record_analysis_decision(root, fixture["queue_id"], decision_payload("IGNORE"))["result"],
+                "WRITTEN",
+            )
+            conflict = record_analysis_decision(
+                root,
+                fixture["queue_id"],
+                decision_payload("RESEARCH"),
+            )
+            self.assertEqual(conflict["result"], "CONFLICT")
+            ledger = json.loads((root / "state" / "research_decisions.json").read_text(encoding="utf-8"))
+            self.assertEqual(ledger["items"][fixture["queue_id"]]["decision"], "IGNORE")
+
+    def test_unknown_queue_id_and_invalid_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            build_fixture(root)
+            missing = record_analysis_decision(root, "missing", decision_payload("IGNORE", queue_id="missing"))
+            self.assertEqual(missing["result"], "NOT_FOUND")
+            invalid = decision_payload("IGNORE")
+            invalid["decision"] = "TRADE"
+            with self.assertRaisesRegex(ValueError, "BAD_DECISION"):
+                record_analysis_decision(root, "tt_123", invalid)
+
+    def test_batch_reports_per_item_results(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            build_fixture(root, queue_id="tt_123")
+            second = build_fixture(root, queue_id="tt_456")
+            queue = json.loads((root / "state" / "research_queue.json").read_text(encoding="utf-8"))
+            first_item = {
+                **second["queue_item"],
+                "queue_id": "tt_123",
+                "shortcode": "tt_123",
+                "source_id": "123",
+                "source_url": "https://www.tiktok.com/@creator/video/123",
+            }
+            queue["items"] = [first_item, second["queue_item"]]
+            queue["count"] = 2
+            write_json(root / "state" / "research_queue.json", queue)
+            manifest = json.loads((root / "state" / "manifest.json").read_text(encoding="utf-8"))
+            manifest["items"]["tt_123"] = {
+                **second["manifest_item"],
+                "shortcode": "tt_123",
+                "source_id": "123",
+                "url": "https://www.tiktok.com/@creator/video/123",
+            }
+            write_json(root / "state" / "manifest.json", manifest)
+
+            first_payload = decision_payload("IGNORE", queue_id="tt_123")
+            second_payload = decision_payload("RESEARCH", queue_id="tt_456")
+            batch = record_analysis_decision_batch(root, [first_payload, second_payload])
+            self.assertEqual(batch["written"], 2)
+            self.assertEqual(batch["no_op"], 0)
+            self.assertEqual(batch["failed"], 0)
+            self.assertEqual([x["result"] for x in batch["results"]], ["WRITTEN", "WRITTEN"])
+
+    def test_retired_creator_is_hidden_from_pending_list_but_history_is_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fixture = build_fixture(root, creator_status="RETIRED")
+            listing = list_analysis_queue(root)
+            self.assertEqual(listing["total"], 0)
+            historical = get_analysis_queue_item(root, fixture["queue_id"])
+            self.assertEqual(historical["result"], "FOUND")
+            self.assertEqual(historical["queue_item"]["creator"], "creator")
+
+    def test_queue_read_filters_and_get_full_analysis_input(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fixture = build_fixture(root)
+            listing = list_analysis_queue(
+                root,
+                creator_key="creator",
+                source_platform="TIKTOK",
+                published_after="2026-09-30T00:00:00+00:00",
+                published_before="2026-10-02T00:00:00+00:00",
+                limit=10,
+                offset=0,
+            )
+            self.assertEqual(listing["total"], 1)
+            self.assertEqual(listing["items"][0]["queue_id"], fixture["queue_id"])
+            full = get_analysis_queue_item(root, fixture["queue_id"])
+            self.assertEqual(full["queue_item"]["transcript_text"], fixture["queue_item"]["transcript_text"])
+            self.assertEqual(full["queue_item"]["discovery_tags"], ["market", "fixture"])
+
+
+if __name__ == "__main__":
+    unittest.main()
