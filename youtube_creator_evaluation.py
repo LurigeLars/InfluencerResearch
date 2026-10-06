@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -17,8 +18,12 @@ from typing import Any, Callable
 from evaluation_progress import heartbeat, sample_outcome, terminalize
 from urllib.parse import urlparse
 
-YOUTUBE_EVAL_VERSION = "0.8.0"
+YOUTUBE_EVAL_VERSION = "0.8.1"
 DEFAULT_MAX_UNPINNED_WHISPER_DURATION_SECONDS = 20 * 60
+DEFAULT_VISUAL_CAPTURE_MAX_CHILD_RSS_MB = 512
+VISUAL_CAPTURE_POLL_SECONDS = 0.25
+VISUAL_CAPTURE_HEARTBEAT_SECONDS = 5.0
+VISUAL_CAPTURE_TIMEOUT_SECONDS = 600
 
 
 def utc_now() -> str:
@@ -40,6 +45,160 @@ def load_json(path: Path, default: Any) -> Any:
     if path.exists():
         return json.loads(path.read_text(encoding="utf-8"))
     return default
+
+
+def visual_capture_max_child_rss_bytes() -> int:
+    raw = os.environ.get(
+        "INFLUENCER_RESEARCH_YOUTUBE_VISUAL_CAPTURE_MAX_CHILD_RSS_MB",
+        str(DEFAULT_VISUAL_CAPTURE_MAX_CHILD_RSS_MB),
+    )
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = DEFAULT_VISUAL_CAPTURE_MAX_CHILD_RSS_MB
+    return max(256, min(value, 1024)) * 1024 * 1024
+
+
+def _process_tree_rss_bytes(pid: int) -> int:
+    """Best-effort Linux RSS sum for one process tree.
+
+    The production runtime is Linux-in-Docker. Returning zero when /proc is
+    unavailable keeps non-Linux unit/dev environments functional without
+    pretending that an RSS sample exists.
+    """
+    pending = [int(pid)]
+    seen: set[int] = set()
+    total = 0
+    while pending:
+        current = pending.pop()
+        if current <= 0 or current in seen:
+            continue
+        seen.add(current)
+        status_path = Path(f"/proc/{current}/status")
+        children_path = Path(f"/proc/{current}/task/{current}/children")
+        with contextlib.suppress(OSError, ValueError):
+            for line in status_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                if line.startswith("VmRSS:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        total += int(parts[1]) * 1024
+                    break
+        with contextlib.suppress(OSError, ValueError):
+            child_text = children_path.read_text(encoding="utf-8", errors="replace").strip()
+            if child_text:
+                pending.extend(int(value) for value in child_text.split())
+    return total
+
+
+def _terminate_process(proc: Any) -> None:
+    if proc is None or proc.poll() is not None:
+        return
+    with contextlib.suppress(OSError, ProcessLookupError):
+        proc.terminate()
+    try:
+        proc.wait(timeout=2)
+        return
+    except (subprocess.TimeoutExpired, OSError):
+        pass
+    with contextlib.suppress(OSError, ProcessLookupError):
+        proc.kill()
+    with contextlib.suppress(subprocess.TimeoutExpired, OSError):
+        proc.wait(timeout=2)
+
+
+def _tail_text_file(path: Path, max_bytes: int = 8192) -> str:
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - max_bytes), os.SEEK_SET)
+            return handle.read(max_bytes).decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _showinfo_times_file(path: Path, instance: str) -> list[float]:
+    marker = f"showinfo@{instance}"
+    times: list[float] = []
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                if marker not in line:
+                    continue
+                match = re.search(r"pts_time:([0-9]+(?:\.[0-9]+)?)", line)
+                if match:
+                    times.append(float(match.group(1)))
+    except OSError:
+        return []
+    return times
+
+
+def _wait_visual_capture(
+    ff_proc: Any,
+    yt_proc: Any,
+    evidence_dir: Path,
+    *,
+    progress_callback: Callable[[dict], None] | None = None,
+    timeout_seconds: float = VISUAL_CAPTURE_TIMEOUT_SECONDS,
+    memory_limit_bytes: int | None = None,
+) -> dict:
+    memory_limit = int(memory_limit_bytes or visual_capture_max_child_rss_bytes())
+    started = time.monotonic()
+    last_heartbeat: float | None = None
+    peak_rss = 0
+
+    while True:
+        now = time.monotonic()
+        rss = _process_tree_rss_bytes(int(getattr(ff_proc, "pid", 0))) + _process_tree_rss_bytes(
+            int(getattr(yt_proc, "pid", 0))
+        )
+        peak_rss = max(peak_rss, rss)
+        elapsed = max(0.0, now - started)
+
+        if progress_callback is not None and (
+            last_heartbeat is None or now - last_heartbeat >= VISUAL_CAPTURE_HEARTBEAT_SECONDS
+        ):
+            frame_count = sum(1 for _ in evidence_dir.glob("*.jpg"))
+            progress_callback({
+                "visual_capture_elapsed_seconds": round(elapsed, 1),
+                "visual_capture_child_rss_mib": round(rss / (1024 * 1024), 1),
+                "visual_capture_child_rss_peak_mib": round(peak_rss / (1024 * 1024), 1),
+                "visual_capture_frame_files": frame_count,
+            })
+            last_heartbeat = now
+
+        if rss > memory_limit:
+            _terminate_process(ff_proc)
+            _terminate_process(yt_proc)
+            return {
+                "ok": False,
+                "error": "VISUAL_CAPTURE_MEMORY_LIMIT",
+                "elapsed_seconds": round(elapsed, 1),
+                "child_rss_peak_mib": round(peak_rss / (1024 * 1024), 1),
+                "memory_limit_mib": round(memory_limit / (1024 * 1024), 1),
+            }
+
+        if elapsed > float(timeout_seconds):
+            _terminate_process(ff_proc)
+            _terminate_process(yt_proc)
+            return {
+                "ok": False,
+                "error": "VISUAL_CAPTURE_TIMEOUT",
+                "elapsed_seconds": round(elapsed, 1),
+                "child_rss_peak_mib": round(peak_rss / (1024 * 1024), 1),
+                "memory_limit_mib": round(memory_limit / (1024 * 1024), 1),
+            }
+
+        returncode = ff_proc.poll()
+        if returncode is not None:
+            return {
+                "ok": True,
+                "returncode": int(returncode),
+                "elapsed_seconds": round(elapsed, 1),
+                "child_rss_peak_mib": round(peak_rss / (1024 * 1024), 1),
+                "memory_limit_mib": round(memory_limit / (1024 * 1024), 1),
+            }
+        time.sleep(VISUAL_CAPTURE_POLL_SECONDS)
 
 
 def published_iso(info: dict) -> str | None:
@@ -1170,7 +1329,14 @@ def build_agent_visual_bundle(
         "representative_frames": [public_row(row) for row in representative],
     }
 
-def capture_visual_evidence(root: Path, creator_key: str, url: str, video_id: str) -> dict:
+def capture_visual_evidence(
+    root: Path,
+    creator_key: str,
+    url: str,
+    video_id: str,
+    *,
+    progress_callback: Callable[[dict], None] | None = None,
+) -> dict:
     evidence_dir = root / "output" / creator_key / "youtube" / "frames" / video_id
     index_path = evidence_dir / "visual_index.json"
     if index_path.exists():
@@ -1231,37 +1397,82 @@ def capture_visual_evidence(root: Path, creator_key: str, url: str, video_id: st
 
     with tempfile.NamedTemporaryFile(mode="w+b", delete=False) as yt_err:
         yt_err_path = Path(yt_err.name)
+    with tempfile.NamedTemporaryFile(mode="w+b", delete=False) as ff_err:
+        ff_err_path = Path(ff_err.name)
+
+    monitor: dict = {}
+    yt_rc = -1
+    ff_rc = -1
+    yt_stderr = ""
+    ff_stderr = ""
+    fps_times: list[float] = []
+    scene_times: list[float] = []
     try:
         yt = None
-        with yt_err_path.open("wb") as yt_err_file:
+        ff = None
+        with yt_err_path.open("wb") as yt_err_file, ff_err_path.open("wb") as ff_err_file:
             try:
-                yt = subprocess.Popen(yt_cmd, stdout=subprocess.PIPE, stderr=yt_err_file)
-                try:
-                    ff = subprocess.run(ff_cmd, stdin=yt.stdout, capture_output=True, timeout=600)
-                finally:
-                    if yt.stdout is not None:
-                        yt.stdout.close()
-                try:
-                    yt_rc = yt.wait(timeout=30)
-                except subprocess.TimeoutExpired:
-                    yt.kill()
-                    yt_rc = yt.wait(timeout=10)
-            finally:
-                if yt is not None and yt.poll() is None:
-                    yt.terminate()
+                yt = subprocess.Popen(
+                    yt_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=yt_err_file,
+                )
+                if yt.stdout is None:
+                    raise RuntimeError("yt_dlp_stdout_pipe_missing")
+                ff = subprocess.Popen(
+                    ff_cmd,
+                    stdin=yt.stdout,
+                    stdout=subprocess.DEVNULL,
+                    stderr=ff_err_file,
+                )
+                # The ffmpeg child owns the read end now. Closing the parent's
+                # duplicate avoids keeping yt-dlp alive if ffmpeg exits early.
+                yt.stdout.close()
+                monitor = _wait_visual_capture(
+                    ff,
+                    yt,
+                    evidence_dir,
+                    progress_callback=progress_callback,
+                )
+                ff_rc = int(ff.poll() if ff.poll() is not None else -1)
+                if monitor.get("ok"):
                     try:
-                        yt.wait(timeout=10)
+                        yt_rc = int(yt.wait(timeout=30))
                     except subprocess.TimeoutExpired:
-                        yt.kill()
-                        yt.wait(timeout=10)
-        yt_stderr = yt_err_path.read_text(encoding="utf-8", errors="replace")
+                        _terminate_process(yt)
+                        yt_rc = int(yt.poll() if yt.poll() is not None else -1)
+                else:
+                    yt_rc = int(yt.poll() if yt.poll() is not None else -1)
+            finally:
+                _terminate_process(ff)
+                _terminate_process(yt)
+        yt_stderr = _tail_text_file(yt_err_path)
+        ff_stderr = _tail_text_file(ff_err_path)
+        fps_times = _showinfo_times_file(ff_err_path, "fps")
+        scene_times = _showinfo_times_file(ff_err_path, "scene")
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        monitor = {
+            "ok": False,
+            "error": f"{type(exc).__name__}:VISUAL_CAPTURE_PROCESS_FAILED",
+        }
+        yt_stderr = _tail_text_file(yt_err_path)
+        ff_stderr = _tail_text_file(ff_err_path)
     finally:
         with contextlib.suppress(OSError):
             yt_err_path.unlink()
+        with contextlib.suppress(OSError):
+            ff_err_path.unlink()
 
-    ff_stderr = (ff.stderr or b"").decode("utf-8", errors="replace")
-    fps_times = _showinfo_times(ff_stderr, "fps")
-    scene_times = _showinfo_times(ff_stderr, "scene")
+    if not monitor.get("ok"):
+        shutil.rmtree(evidence_dir, ignore_errors=True)
+        return {
+            "ok": False,
+            "error": monitor.get("error") or "VISUAL_CAPTURE_FAILED",
+            "diagnostic_tail": (yt_stderr + "\n" + ff_stderr)[-2500:],
+            "visual_capture_elapsed_seconds": monitor.get("elapsed_seconds"),
+            "visual_capture_child_rss_peak_mib": monitor.get("child_rss_peak_mib"),
+            "visual_capture_memory_limit_mib": monitor.get("memory_limit_mib"),
+        }
     records = _frame_records(evidence_dir, "fps", fps_times, "ONE_FPS")
     records += _frame_records(evidence_dir, "scene", scene_times, "SCENE_CHANGE")
     candidate_count = len(records)
@@ -1278,7 +1489,10 @@ def capture_visual_evidence(root: Path, creator_key: str, url: str, video_id: st
         })
 
     summary = {
-        "capture_strategy": "1FPS_PLUS_SCENE_CHANGE_WITH_FFMPEG_MPDECIMATE",
+        "capture_strategy": "1FPS_PLUS_SCENE_CHANGE_WITH_FFMPEG_MPDECIMATE_BOUNDED_RSS",
+        "visual_capture_elapsed_seconds": monitor.get("elapsed_seconds"),
+        "visual_capture_child_rss_peak_mib": monitor.get("child_rss_peak_mib"),
+        "visual_capture_memory_limit_mib": monitor.get("memory_limit_mib"),
         "candidate_frames": candidate_count,
         "retained_frames": len(frames),
         "scene_change_frames": sum(1 for x in frames if x["reason"] == "SCENE_CHANGE"),
@@ -1298,7 +1512,8 @@ def capture_visual_evidence(root: Path, creator_key: str, url: str, video_id: st
         "agent_visual_bundle": agent_visual_bundle,
         "diagnostics": {
             "yt_dlp_returncode": yt_rc,
-            "ffmpeg_returncode": ff.returncode,
+            "ffmpeg_returncode": ff_rc,
+            "visual_capture_monitor": monitor,
             "yt_dlp_tail": yt_stderr[-2000:],
             "ffmpeg_tail": ff_stderr[-2000:],
             "js_runtime": js_diag,
@@ -1309,7 +1524,7 @@ def capture_visual_evidence(root: Path, creator_key: str, url: str, video_id: st
     # produced valid frames. Treat only that specific empty-scene condition as
     # non-fatal; other ffmpeg failures still fail closed.
     benign_empty_scene = (
-        ff.returncode != 0
+        ff_rc != 0
         and bool(frames)
         and any(x.get("reason") == "ONE_FPS" for x in frames)
         and "Nothing was written into output file" in ff_stderr
@@ -1322,7 +1537,7 @@ def capture_visual_evidence(root: Path, creator_key: str, url: str, video_id: st
     index["summary"] = summary
     index["diagnostics"]["benign_empty_scene"] = bool(benign_empty_scene)
     atomic_json(index_path, index)
-    ok = yt_rc == 0 and bool(frames) and (ff.returncode == 0 or benign_empty_scene)
+    ok = yt_rc == 0 and bool(frames) and (ff_rc == 0 or benign_empty_scene)
     return {"ok": ok, "index": index_path, **summary, "diagnostic_tail": (yt_stderr + "\n" + ff_stderr)[-2500:]}
 
 
@@ -1586,6 +1801,8 @@ def main() -> int:
         is_complete_entry=is_complete_entry,
     )
     candidates = [entry for entry in selected_entries if not is_complete_entry(entry)]
+    selected_queue_ids = [f"yt_{entry['id']}" for entry in selected_entries]
+    candidate_queue_ids = [f"yt_{entry['id']}" for entry in candidates]
     existing_delivery_targets = [
         f"yt_{entry['id']}"
         for entry in selected_entries
@@ -1601,6 +1818,9 @@ def main() -> int:
         selected_count=len(selected_entries),
         deferred_count=len(deferred_items),
         duplicate_count=duplicate_count,
+        selected_queue_ids=selected_queue_ids,
+        candidate_queue_ids=candidate_queue_ids,
+        existing_delivery_target_ids=existing_delivery_targets,
     )
 
     model_holder = {"model": None}
@@ -1626,7 +1846,25 @@ def main() -> int:
             completed_count=len(completed) + len(existing_delivery_targets),
             failed_count=len(failures),
         )
-        visual = capture_visual_evidence(root, creator_key, url, vid)
+        def visual_capture_progress(metrics: dict) -> None:
+            heartbeat(
+                status_path,
+                "EVIDENCE",
+                current_index=index,
+                current_source_id=vid,
+                selected_count=len(selected_entries),
+                completed_count=len(completed) + len(existing_delivery_targets),
+                failed_count=len(failures),
+                **metrics,
+            )
+
+        visual = capture_visual_evidence(
+            root,
+            creator_key,
+            url,
+            vid,
+            progress_callback=visual_capture_progress,
+        )
         if not visual.get("ok"):
             failures.append({"video_id": vid, "url": url, "stage": "visual_capture", "detail": visual.get("diagnostic_tail") or visual.get("error")})
             continue
@@ -1780,6 +2018,9 @@ def main() -> int:
             "discovered_count": len(entries),
             "eligible_count": eligible_count,
             "selected_count": len(selected_entries),
+            "selected_queue_ids": selected_queue_ids,
+            "candidate_queue_ids": candidate_queue_ids,
+            "existing_delivery_target_ids": existing_delivery_targets,
             "candidate_count": 0,
             "deferred_count": len(deferred_items),
             "deferred": deferred_items[:50],
@@ -1891,6 +2132,9 @@ def main() -> int:
         "discovered_count": len(entries),
         "eligible_count": eligible_count,
         "selected_count": len(selected_entries),
+        "selected_queue_ids": selected_queue_ids,
+        "candidate_queue_ids": candidate_queue_ids,
+        "existing_delivery_target_ids": existing_delivery_targets,
         "candidate_count": len(candidates),
         "deferred_count": len(deferred_items),
         "deferred": deferred_items[:50],
