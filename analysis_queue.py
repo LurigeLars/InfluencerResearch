@@ -146,6 +146,7 @@ def get_analysis_queue_item(root: Path, queue_id: str) -> dict:
         raise ValueError("BAD_QUEUE_ID")
     queue = load_json(root / "state" / "research_queue.json", {"items": []})
     decisions = load_json(root / "state" / "research_decisions.json", {"items": {}})
+    manifest = load_json(root / "state" / "manifest.json", {"items": {}})
     for item in queue.get("items", []) if isinstance(queue.get("items"), list) else []:
         if isinstance(item, dict) and _queue_id(item) == wanted:
             return {
@@ -154,15 +155,234 @@ def get_analysis_queue_item(root: Path, queue_id: str) -> dict:
                 "decision": (decisions.get("items") or {}).get(wanted),
             }
     existing = (decisions.get("items") or {}).get(wanted)
+    manifest_item = (manifest.get("items") or {}).get(wanted)
     if isinstance(existing, dict):
-        manifest = load_json(root / "state" / "manifest.json", {"items": {}})
         return {
             "result": "FINALIZED",
             "queue_item": None,
-            "manifest_item": (manifest.get("items") or {}).get(wanted),
+            "manifest_item": manifest_item,
             "decision": existing,
         }
+    if isinstance(manifest_item, dict) and str(
+        manifest_item.get("analysis_content_status")
+        or manifest_item.get("research_status")
+        or ""
+    ).upper() == "INSUFFICIENT_CONTENT":
+        return {
+            "result": "INSUFFICIENT_CONTENT",
+            "queue_item": None,
+            "manifest_item": manifest_item,
+            "decision": None,
+        }
     return {"result": "NOT_FOUND", "queue_id": wanted}
+
+
+def list_analysis_decisions(
+    root: Path,
+    *,
+    creator_key: str | None = None,
+    source_platform: str | None = None,
+    decision: str | None = None,
+    evaluation_run_id: str | None = None,
+    screened_after: str | None = None,
+    screened_before: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> dict:
+    root = root.resolve()
+    decisions = load_json(root / "state" / "research_decisions.json", {"items": {}})
+    manifest = load_json(root / "state" / "manifest.json", {"items": {}})
+    after = parse_iso(screened_after) if screened_after else None
+    before = parse_iso(screened_before) if screened_before else None
+    if screened_after and after is None:
+        raise ValueError("BAD_SCREENED_AFTER")
+    if screened_before and before is None:
+        raise ValueError("BAD_SCREENED_BEFORE")
+
+    wanted_decision = str(decision or "").upper()
+    if wanted_decision and wanted_decision not in {
+        *CURRENT_DECISIONS,
+        "TEST",
+        "BACKLOG",
+    }:
+        raise ValueError("BAD_DECISION")
+
+    rows: list[dict] = []
+    decision_items = decisions.get("items", {}) if isinstance(decisions.get("items"), dict) else {}
+    manifest_items = manifest.get("items", {}) if isinstance(manifest.get("items"), dict) else {}
+    for queue_id, record in decision_items.items():
+        if not isinstance(record, dict):
+            continue
+        item = manifest_items.get(queue_id, {})
+        if not isinstance(item, dict):
+            item = {}
+        row_decision = str(record.get("decision") or "").upper()
+        creator = str(item.get("creator") or "")
+        platform = str(item.get("source_platform") or "").upper()
+        run_id = str(item.get("evaluation_run_id") or "")
+        screened = parse_iso(record.get("screened_at"))
+        if creator_key and creator != creator_key:
+            continue
+        if source_platform and platform != source_platform:
+            continue
+        if wanted_decision and row_decision != wanted_decision:
+            continue
+        if evaluation_run_id and run_id != evaluation_run_id:
+            continue
+        if after and (screened is None or screened < after):
+            continue
+        if before and (screened is None or screened > before):
+            continue
+        rows.append({
+            "queue_id": str(queue_id),
+            "decision": record.get("decision"),
+            "idea_type": record.get("idea_type"),
+            "claim_summary": record.get("claim_summary"),
+            "confidence": record.get("confidence"),
+            "screened_at": record.get("screened_at"),
+            "creator": item.get("creator"),
+            "source_platform": item.get("source_platform"),
+            "source_type": item.get("source_type"),
+            "source_subtype": item.get("source_subtype"),
+            "source_id": item.get("source_id"),
+            "source_url": record.get("source_url") or item.get("url"),
+            "published_at": item.get("published_at"),
+            "evaluation_mode": item.get("evaluation_mode"),
+            "evaluation_run_id": item.get("evaluation_run_id"),
+            "evidence_lineage_id": record.get("evidence_lineage_id") or item.get("evidence_lineage_id"),
+            "duplicate_of": record.get("duplicate_of"),
+            "duplicate_basis": record.get("duplicate_basis"),
+        })
+
+    rows.sort(key=lambda x: (str(x.get("screened_at") or ""), str(x.get("queue_id") or "")), reverse=True)
+    total = len(rows)
+    page = rows[offset: offset + limit]
+    return {
+        "status": "FINALIZED_DECISIONS",
+        "count": len(page),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "items": page,
+    }
+
+
+def mark_analysis_insufficient(
+    root: Path,
+    queue_id: str,
+    *,
+    reason: str,
+    evidence_lineage_id: str,
+) -> dict:
+    root = root.resolve()
+    wanted = str(queue_id or "").strip()
+    reason = str(reason or "").strip()
+    supplied_lineage = str(evidence_lineage_id or "").strip()
+    if not wanted:
+        raise ValueError("BAD_QUEUE_ID")
+    if not reason or len(reason) > 500:
+        raise ValueError("BAD_REASON")
+    if not supplied_lineage:
+        raise ValueError("BAD_EVIDENCE_LINEAGE_ID")
+
+    queue_path = root / "state" / "research_queue.json"
+    manifest_path = root / "state" / "manifest.json"
+    decisions_path = root / "state" / "research_decisions.json"
+
+    queue = load_json(queue_path, {"items": []})
+    manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
+    decisions = load_json(decisions_path, {"schema_version": 2, "items": {}})
+    decision = (decisions.get("items") or {}).get(wanted)
+    if isinstance(decision, dict):
+        return {
+            "result": "CONFLICT",
+            "queue_id": wanted,
+            "error": "FINALIZED_DECISION_EXISTS",
+            "decision": decision.get("decision"),
+        }
+
+    manifest_item = (manifest.get("items") or {}).get(wanted)
+    if not isinstance(manifest_item, dict):
+        return {"result": "NOT_FOUND", "queue_id": wanted, "error": "MANIFEST_ITEM_NOT_FOUND"}
+
+    old_queue_items = queue.get("items", []) if isinstance(queue.get("items"), list) else []
+    queue_item = next(
+        (item for item in old_queue_items if isinstance(item, dict) and _queue_id(item) == wanted),
+        None,
+    )
+    expected_lineage = (
+        (queue_item or {}).get("evidence_lineage_id")
+        or manifest_item.get("evidence_lineage_id")
+    )
+    if expected_lineage and supplied_lineage != expected_lineage:
+        return {
+            "result": "VALIDATION_ERROR",
+            "queue_id": wanted,
+            "errors": ["EVIDENCE_LINEAGE_MISMATCH"],
+        }
+
+    existing_insufficient = (
+        str(manifest_item.get("analysis_content_status") or "").upper() == "INSUFFICIENT_CONTENT"
+        and str(manifest_item.get("research_status") or "").upper() == "INSUFFICIENT_CONTENT"
+    )
+    existing_reason = str(manifest_item.get("analysis_insufficient_reason") or "")
+    if existing_insufficient and existing_reason and existing_reason != reason:
+        return {
+            "result": "CONFLICT",
+            "queue_id": wanted,
+            "error": "INSUFFICIENT_REASON_CONFLICT",
+            "existing_reason": existing_reason,
+        }
+    if queue_item is None and not existing_insufficient:
+        return {"result": "CONFLICT", "queue_id": wanted, "error": "ITEM_NOT_PENDING"}
+
+    desired = {
+        "analysis_owner": ANALYSIS_OWNER,
+        "analysis_status": "INSUFFICIENT_CONTENT",
+        "analysis_content_status": "INSUFFICIENT_CONTENT",
+        "analysis_content_reason": reason,
+        "research_status": "INSUFFICIENT_CONTENT",
+        "analysis_insufficient_reason": reason,
+        "analysis_insufficient_evidence_lineage_id": supplied_lineage,
+    }
+    changed = any(manifest_item.get(key) != value for key, value in desired.items())
+    if not manifest_item.get("analysis_insufficient_marked_at"):
+        manifest_item["analysis_insufficient_marked_at"] = utc_now()
+        changed = True
+    manifest_item.update(desired)
+
+    queue_items = [
+        item for item in old_queue_items
+        if not isinstance(item, dict) or _queue_id(item) != wanted
+    ]
+    queue_changed = len(queue_items) != len(old_queue_items)
+
+    if not changed and not queue_changed:
+        return {
+            "result": "NO_OP",
+            "queue_id": wanted,
+            "analysis_status": "INSUFFICIENT_CONTENT",
+            "reason": reason,
+            "remaining_pending": len(queue_items),
+        }
+
+    queue["items"] = queue_items
+    queue["count"] = len(queue_items)
+    queue["analysis_owner"] = ANALYSIS_OWNER
+    queue["status"] = "PENDING_ANALYSIS" if queue_items else "EMPTY"
+    queue["screen_version"] = SCREEN_VERSION
+    queue["updated_at"] = utc_now()
+    manifest["items"][wanted] = manifest_item
+
+    atomic_write_json(manifest_path, manifest)
+    atomic_write_json(queue_path, queue)
+    return {
+        "result": "WRITTEN",
+        "queue_id": wanted,
+        "analysis_status": "INSUFFICIENT_CONTENT",
+        "reason": reason,
+        "remaining_pending": len(queue_items),
+    }
 
 
 def _decision_payload(payload: dict, *, source_url: str, screened_at: str) -> dict:
