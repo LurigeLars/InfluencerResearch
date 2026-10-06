@@ -9,6 +9,7 @@ export const ALLOWED_TOOLS = new Set([
   'creator_evaluate',
   'creator_monitor',
   'creator_recent_check',
+  'creator_evaluation_item_list',
   'analysis_queue_list',
   'analysis_queue_get',
   'analysis_queue_mark_insufficient',
