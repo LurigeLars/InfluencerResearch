@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import re
 from pathlib import Path
 from typing import Any
 
@@ -80,8 +81,8 @@ def _compact_queue_item(item: dict) -> dict:
             "queue_id": _queue_id(item),
             "analysis_status": item.get("analysis_status"),
             "analysis_content_status": item.get("analysis_content_status"),
-            "creator": item.get("creator"),
-            "source_platform": item.get("source_platform"),
+            "creator": item.get("creator") or run_status.get("creator"),
+            "source_platform": item.get("source_platform") or run_status.get("source_platform"),
             "source_type": item.get("source_type"),
             "source_id": item.get("source_id"),
             "source_url": item.get("source_url") or item.get("url"),
@@ -258,8 +259,10 @@ def list_analysis_decisions(
             "source_id": item.get("source_id"),
             "source_url": record.get("source_url") or item.get("url"),
             "published_at": item.get("published_at"),
-            "evaluation_mode": item.get("evaluation_mode"),
-            "evaluation_run_id": item.get("evaluation_run_id"),
+            "evaluation_mode": item.get("evaluation_mode") or run_status.get("evaluation_mode"),
+            "evaluation_run_id": wanted_run if run_membership_ids else item.get("evaluation_run_id"),
+            "origin_evaluation_run_id": item.get("evaluation_run_id"),
+            "selected_via_run_membership": bool(run_membership_ids),
             "evidence_lineage_id": record.get("evidence_lineage_id") or item.get("evidence_lineage_id"),
             "duplicate_of": record.get("duplicate_of"),
             "duplicate_basis": record.get("duplicate_basis"),
@@ -345,6 +348,38 @@ def _evaluation_item_disposition(
     )
 
 
+EVALUATION_RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,160}$")
+
+
+def _evaluation_run_membership(root: Path, run_id: str) -> tuple[list[str], dict]:
+    if not EVALUATION_RUN_ID_RE.fullmatch(run_id):
+        raise ValueError("BAD_EVALUATION_RUN_ID")
+
+    paths = [
+        root / "state" / "creator_evaluation_status.json",
+        root / "state" / "evaluations" / f"{run_id}.json",
+    ]
+    for path in paths:
+        status = load_json(path, {})
+        if not isinstance(status, dict) or str(status.get("evaluation_run_id") or "") != run_id:
+            continue
+        progress = status.get("progress") if isinstance(status.get("progress"), dict) else {}
+        for container in (status, progress):
+            for field in ("selected_queue_ids", "completed", "delivery_targets"):
+                values = container.get(field)
+                if not isinstance(values, list) or not values:
+                    continue
+                ids = list(dict.fromkeys(
+                    str(value).strip()
+                    for value in values
+                    if str(value).strip()
+                ))
+                if ids:
+                    return ids, status
+        return [], status
+    return [], {}
+
+
 def list_creator_evaluation_items(
     root: Path,
     *,
@@ -384,20 +419,37 @@ def list_creator_evaluation_items(
         else {}
     )
 
+    run_membership_ids: list[str] = []
+    run_status: dict = {}
+    if wanted_run:
+        run_membership_ids, run_status = _evaluation_run_membership(root, wanted_run)
+
+    if run_membership_ids:
+        source_rows = [
+            (queue_id, manifest_items.get(queue_id, {}))
+            for queue_id in run_membership_ids
+        ]
+    else:
+        source_rows = list(manifest_items.items())
+
     rows: list[dict] = []
-    for queue_id, item in manifest_items.items():
+    for queue_id, item in source_rows:
         if not isinstance(item, dict):
+            item = {}
+        origin_run_id = str(item.get("evaluation_run_id") or "")
+        if (
+            not run_membership_ids
+            and not origin_run_id
+            and str(item.get("evaluation_mode") or "").upper() != "CREATOR_EVALUATION"
+        ):
             continue
-        run_id = str(item.get("evaluation_run_id") or "")
-        if not run_id and str(item.get("evaluation_mode") or "").upper() != "CREATOR_EVALUATION":
-            continue
-        creator = str(item.get("creator") or "").lower()
-        platform = str(item.get("source_platform") or "").upper()
+        creator = str(item.get("creator") or run_status.get("creator") or "").lower()
+        platform = str(item.get("source_platform") or run_status.get("source_platform") or "").upper()
         if wanted_creator and creator != wanted_creator:
             continue
         if wanted_platform and platform != wanted_platform:
             continue
-        if wanted_run and run_id != wanted_run:
+        if wanted_run and not run_membership_ids and origin_run_id != wanted_run:
             continue
 
         completed = _evaluation_item_completed(item)
