@@ -717,6 +717,31 @@ def load_registry(root: Path) -> dict:
     return validate_registry(load_json(path))
 
 
+def list_creator_summaries(root: Path, *, include_retired: bool = False) -> list[dict]:
+    registry = load_registry(root)
+    visible_statuses = {"ACTIVE", "RETIRED"} if include_retired else {"ACTIVE"}
+    summaries: list[dict] = []
+    for profile in sorted(
+        registry["creators"].values(),
+        key=lambda value: str(value.get("creator_key") or ""),
+    ):
+        status = str(profile.get("status") or "ACTIVE").upper()
+        if status not in visible_statuses:
+            continue
+        summaries.append({
+            "creator_key": profile.get("creator_key"),
+            "display_name": profile.get("display_name"),
+            "status": status,
+            "monitoring_enabled": bool(profile.get("monitoring_enabled")),
+            "platforms": [
+                source.get("platform")
+                for source in profile.get("sources", [])
+                if source.get("enabled")
+            ],
+        })
+    return summaries
+
+
 def update_creator(root: Path, req: dict) -> dict:
     root = root.resolve()
     key = str(req.get("creator_key") or "").strip().lower()
