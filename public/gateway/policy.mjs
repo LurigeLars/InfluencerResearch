@@ -4,6 +4,8 @@ export const ALLOWED_TOOLS = new Set([
   'creator_list',
   'creator_get',
   'creator_register',
+  'creator_update',
+  'creator_retire',
   'creator_evaluate',
   'creator_monitor',
   'creator_recent_check',
