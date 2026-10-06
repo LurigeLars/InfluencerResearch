@@ -43,10 +43,11 @@ def _bounded_env_int(
     return max(minimum, min(maximum, value))
 
 
-RECENT_CHECK_VERSION = "0.3.5"
+RECENT_CHECK_VERSION = "0.3.6"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
+INSTAGRAM_INITIAL_DISCOVERY_LIMIT = 60
 YOUTUBE_METADATA_PROBE_WORKERS = 4
 # Default remains conservative. The worker count is configurable for bounded
 # capacity experiments, but the reviewed Compose deployment currently uses 2.
@@ -776,27 +777,101 @@ def discover_instagram(
     run_index: int = 1,
     root: Path | None = None,
 ) -> dict:
-    target = min(20, max(1, int(discovery_limit)))
+    target = min(
+        MAX_DISCOVERY_PER_SOURCE,
+        max(INSTAGRAM_INITIAL_DISCOVERY_LIMIT, int(discovery_limit)),
+    )
     handle = _instagram_handle(source)
     cached_times = _instagram_known_reel_times(
         root,
         str(profile["creator_key"]),
     )
-    probe = instagram.discover_reels_authenticated(
-        handle,
-        max_scan=target,
-        known_reel_times=cached_times,
-    )
-    entries = list(probe.get("reel_items") or [])
-    timestamp_cache_size = _update_instagram_discovery_catalog(
-        root,
-        str(profile["creator_key"]),
-        entries,
-    )
+    probe: dict = {}
+    entries: list[dict] = []
     known_times: list[datetime] = []
-    items: list[dict] = []
     missing_time: list[str] = []
+    attempts: list[dict] = []
+    timestamp_cache_size = len(cached_times)
+    natural_window_complete = False
+    discovery_ok = False
+    blocked = False
+    media_auth_gated = False
 
+    while True:
+        probe = instagram.discover_reels_authenticated(
+            handle,
+            max_scan=target,
+            known_reel_times=cached_times,
+        )
+        entries = list(probe.get("reel_items") or [])
+        timestamp_cache_size = _update_instagram_discovery_catalog(
+            root,
+            str(profile["creator_key"]),
+            entries,
+        )
+        known_times = []
+        missing_time = []
+        for entry in entries:
+            try:
+                reel_url = instagram.canonical_reel_url(str(entry.get("url") or ""))
+                shortcode = instagram.reel_shortcode(reel_url)
+            except (TypeError, ValueError):
+                continue
+            raw = entry.get("published_at")
+            if not raw:
+                missing_time.append(shortcode)
+                continue
+            try:
+                published = parse_iso_utc(str(raw))
+            except Exception:
+                missing_time.append(shortcode)
+                continue
+            known_times.append(published)
+            cached_times[shortcode] = published.isoformat()
+
+        natural_window_complete = _coverage_complete(
+            discovered_count=len(entries),
+            requested_limit=target,
+            known_times=known_times,
+            cutoff=cutoff,
+        )
+        discovery_ok = bool(probe.get("ok"))
+        blocked = bool(probe.get("blocked"))
+        media_auth_gated = bool(probe.get("media_auth_gated"))
+        attempt_complete = (
+            natural_window_complete
+            and discovery_ok
+            and not blocked
+            and not media_auth_gated
+        )
+        attempts.append({
+            "requested_limit": target,
+            "discovered_count": len(entries),
+            "oldest_known_published_at": (
+                min(known_times).isoformat() if known_times else None
+            ),
+            "window_complete": attempt_complete,
+            "discovery": {
+                "ok": discovery_ok,
+                "authenticated": bool(probe.get("authenticated")),
+                "blocked": blocked,
+                "media_auth_gated": media_auth_gated,
+                "error": probe.get("error"),
+                "timings": probe.get("timings") or {},
+            },
+        })
+
+        if (
+            attempt_complete
+            or blocked
+            or media_auth_gated
+            or not discovery_ok
+            or target >= MAX_DISCOVERY_PER_SOURCE
+        ):
+            break
+        target = _next_discovery_limit(target)
+
+    items: list[dict] = []
     for entry in entries:
         try:
             reel_url = instagram.canonical_reel_url(str(entry.get("url") or ""))
@@ -805,14 +880,11 @@ def discover_instagram(
             continue
         raw = entry.get("published_at")
         if not raw:
-            missing_time.append(shortcode)
             continue
         try:
             published = parse_iso_utc(str(raw))
         except Exception:
-            missing_time.append(shortcode)
             continue
-        known_times.append(published)
         if cutoff <= published <= end + timedelta(minutes=5):
             items.append({
                 "creator_key": profile["creator_key"],
@@ -825,24 +897,18 @@ def discover_instagram(
                 "profile_url": source["profile_url"],
             })
 
-    natural_window_complete = _coverage_complete(
-        discovered_count=len(entries),
-        requested_limit=target,
-        known_times=known_times,
-        cutoff=cutoff,
-    )
-    discovery_ok = bool(probe.get("ok"))
-    blocked = bool(probe.get("blocked"))
-    media_auth_gated = bool(probe.get("media_auth_gated"))
     coverage_limited_reason = None
     if blocked:
         coverage_limited_reason = "HARD_BLOCK"
-    elif media_auth_gated and len(entries) < target:
+    elif media_auth_gated:
         coverage_limited_reason = "MEDIA_AUTH_GATE"
     elif not discovery_ok:
         coverage_limited_reason = "DISCOVERY_ERROR"
-    elif not natural_window_complete:
+    elif not natural_window_complete and target >= MAX_DISCOVERY_PER_SOURCE:
         coverage_limited_reason = "DISCOVERY_LIMIT_REACHED_BEFORE_CUTOFF"
+    elif not natural_window_complete:
+        coverage_limited_reason = "DISCOVERY_INCOMPLETE_BEFORE_CUTOFF"
+
     window_complete = natural_window_complete and coverage_limited_reason is None
 
     return {
@@ -852,6 +918,7 @@ def discover_instagram(
         "items": items,
         "discovery_count": len(entries),
         "discovery_limit_used": target,
+        "discovery_passes": attempts,
         "window_complete": window_complete,
         "coverage_limit_reached": (
             coverage_limited_reason == "DISCOVERY_LIMIT_REACHED_BEFORE_CUTOFF"
@@ -867,6 +934,7 @@ def discover_instagram(
             "error": probe.get("error"),
             "timestamp_cache_size": timestamp_cache_size,
             "timings": probe.get("timings") or {},
+            "passes": len(attempts),
         },
     }
 
