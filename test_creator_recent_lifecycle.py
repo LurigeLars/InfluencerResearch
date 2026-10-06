@@ -311,6 +311,88 @@ class CreatorRecentLifecycleTests(unittest.TestCase):
             ["ONLYONE"],
         )
 
+    def test_story_prefetch_batch_defers_heavy_postprocess(self) -> None:
+        profile = {"creator_key": "fixture"}
+        source = {
+            "platform": "INSTAGRAM",
+            "profile_url": "https://www.instagram.com/fixture/",
+        }
+        captured = {
+            "state": "DONE",
+            "capture": {"visited_frames": 1, "visited_item_keys": ["story:1"]},
+            "postprocess_deferred": True,
+            "errors": [],
+        }
+        with patch.object(
+            crc,
+            "_capture_instagram_story_run",
+            return_value=captured,
+        ) as capture:
+            result = crc._run_story_capture_batch(
+                Path("."),
+                [(profile, [source])],
+                5,
+                gemini_circuit={},
+                ollama_budget_state={},
+            )
+
+        self.assertEqual(result["creator_count"], 1)
+        self.assertTrue(result["results"][0]["run"]["postprocess_deferred"])
+        self.assertTrue(capture.call_args.kwargs["defer_postprocess"])
+
+    def test_story_postprocess_timeout_is_bounded_and_fail_closed(self) -> None:
+        profile = {"creator_key": "fixture"}
+        source = {
+            "platform": "INSTAGRAM",
+            "profile_url": "https://www.instagram.com/fixture/",
+        }
+        precomputed = {
+            "state": "DONE",
+            "capture": {"reason": "OK", "visited_frames": 1},
+            "video_download": {"ok": True},
+            "visual_enrichment": {"errors": [], "postprocess_deferred": True},
+            "transcription": {"errors": [], "postprocess_deferred": True},
+            "timings": {},
+            "postprocess_deferred": True,
+            "errors": [],
+        }
+        bridge = {
+            "promoted": [{"item_key": "ig_story_1"}],
+            "available": [{"item_key": "ig_story_1"}],
+            "reused_existing_count": 0,
+            "reattributed_count": 0,
+            "identity_aliases_retired_count": 0,
+            "conflicts": [],
+            "manifest_changed": False,
+        }
+        with (
+            patch.object(crc, "_launch_recent_worker", return_value={"worker": True}),
+            patch.object(
+                crc,
+                "_wait_recent_worker",
+                return_value={
+                    "ok": False,
+                    "timeout": True,
+                    "error": "TIMEOUT:180s",
+                    "elapsed_ms": 180000.0,
+                },
+            ),
+            patch.object(crc, "_promote_story_items", return_value=bridge),
+        ):
+            result = crc._ingest_instagram_stories(
+                Path("."),
+                profile,
+                source,
+                datetime.now(timezone.utc),
+                5,
+                gemini_circuit={},
+                ollama_budget_state={},
+                precomputed_run=precomputed,
+            )
+
+        self.assertEqual(result["promoted"][0]["item_key"], "ig_story_1")
+        self.assertIn("STORY_POSTPROCESS:TIMEOUT:180s", result["warnings"])
+
     def test_instagram_ingestion_worker_hang_is_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
