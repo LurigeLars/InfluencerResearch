@@ -28,9 +28,11 @@ from analysis_queue import (
     get_analysis_queue_item,
     list_analysis_decisions,
     list_analysis_queue,
+    list_creator_evaluation_items,
     mark_analysis_insufficient,
     record_analysis_decision,
     record_analysis_decision_batch,
+    summarize_creator_evaluation_run,
 )
 from creator_registry import (
     get_creator,
@@ -74,6 +76,48 @@ def as_text(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+def _persist_creator_evaluation_accounting(status_path: Path, run_id: str) -> dict:
+    try:
+        accounting = summarize_creator_evaluation_run(ROOT, run_id)
+    except Exception as exc:
+        return {"ok": False, "error": f"ACCOUNTING_FAILED:{type(exc).__name__}:{exc}"}
+
+    status = load_json(status_path, {})
+    if not isinstance(status, dict):
+        status = {}
+    public_fields = {
+        key: accounting[key]
+        for key in (
+            "analysis_completed_manifest_count",
+            "queued_for_analysis_count",
+            "analysis_finalized_count",
+            "analysis_duplicate_count",
+            "analysis_insufficient_count",
+            "analysis_not_ready_count",
+            "analysis_queue_missing_count",
+            "analysis_unaccounted_count",
+            "analysis_accounted_count",
+            "analysis_disposition_counts",
+            "analysis_unaccounted_items",
+        )
+    }
+    changed = any(status.get(key) != value for key, value in public_fields.items())
+    status.update(public_fields)
+
+    progress = status.get("progress")
+    if not isinstance(progress, dict):
+        progress = {}
+    progress_changed = any(progress.get(key) != value for key, value in public_fields.items())
+    if progress_changed:
+        progress.update(public_fields)
+        status["progress"] = progress
+        changed = True
+
+    if changed:
+        atomic_json(status_path, status)
+    return {"ok": True, **accounting}
+
+
 def _reconcile_completed_creator_evaluation(status_path: Path) -> dict:
     status = load_json(status_path, {})
     run_id = str(status.get("evaluation_run_id") or "").strip()
@@ -93,7 +137,13 @@ def _reconcile_completed_creator_evaluation(status_path: Path) -> dict:
             targets.append(str(shortcode))
 
     if not targets:
-        return {"ok": True, "skipped": "NO_COMPLETED_ITEMS", "target_count": 0}
+        accounting = _persist_creator_evaluation_accounting(status_path, run_id)
+        return {
+            "ok": True,
+            "skipped": "NO_COMPLETED_ITEMS",
+            "target_count": 0,
+            "analysis_accounting": accounting,
+        }
 
     cmd = [sys.executable, str(APP_DIR / "research_queue.py"), "--root", str(ROOT)]
     for shortcode in sorted(set(targets)):
@@ -108,16 +158,21 @@ def _reconcile_completed_creator_evaluation(status_path: Path) -> dict:
             shell=False,
         )
     except subprocess.TimeoutExpired:
+        accounting = _persist_creator_evaluation_accounting(status_path, run_id)
         return {
             "ok": False,
             "error": "DELIVERY_RECONCILIATION_TIMEOUT",
             "target_count": len(set(targets)),
+            "analysis_accounting": accounting,
         }
+
+    accounting = _persist_creator_evaluation_accounting(status_path, run_id)
     return {
         "ok": result.returncode == 0,
         "returncode": int(result.returncode),
         "target_count": len(set(targets)),
         "stderr_tail": (result.stderr or "")[-1000:],
+        "analysis_accounting": accounting,
     }
 
 
@@ -684,6 +739,49 @@ def creator_recent_check(
         "max_items": cap,
     }
     return as_text(jobs.start("creator_recent_check", params))
+
+
+@mcp.tool(
+    description=(
+        "List canonical creator-evaluation items and their current analysis disposition. "
+        "This is a read-only join over manifest, analysis queue, and finalized decisions."
+    ),
+    annotations=READ,
+    structured_output=False,
+)
+def creator_evaluation_item_list(
+    creator_key: str = "",
+    source_platform: Literal["YOUTUBE", "TIKTOK", "INSTAGRAM"] | None = None,
+    evaluation_run_id: str = "",
+    disposition: Literal[
+        "PENDING_ANALYSIS",
+        "FINALIZED_DECISION",
+        "DUPLICATE",
+        "INSUFFICIENT_CONTENT",
+        "NOT_ANALYSIS_READY",
+        "PIPELINE_INCOMPLETE",
+        "QUEUE_MISSING",
+        "UNACCOUNTED",
+    ] | None = None,
+    completed_only: bool = False,
+    limit: int = 20,
+    offset: int = 0,
+) -> str:
+    try:
+        return as_text(
+            list_creator_evaluation_items(
+                ROOT,
+                creator_key=creator_key.strip().lower() or None,
+                source_platform=source_platform,
+                evaluation_run_id=evaluation_run_id.strip() or None,
+                disposition=disposition,
+                completed_only=completed_only,
+                limit=max(1, min(int(limit), 100)),
+                offset=max(0, int(offset)),
+            )
+        )
+    except Exception as exc:
+        return as_text({"result": "REJECTED", "error": f"{type(exc).__name__}:{exc}"})
 
 
 @mcp.tool(
