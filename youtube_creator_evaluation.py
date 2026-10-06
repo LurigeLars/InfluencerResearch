@@ -1467,6 +1467,8 @@ def main() -> int:
             "transcript_order": ["YOUTUBE_CAPTIONS", "FASTER_WHISPER_FALLBACK"],
             "visual_capture": "1FPS_PLUS_SCENE_CHANGE_WITH_LOCAL_DEDUPE",
             "full_video_persisted": False,
+            "max_unpinned_whisper_duration_seconds": max_unpinned_whisper_duration_seconds(),
+            "longform_policy": "DEFER_UNPINNED_NO_CAPTIONS_AND_BACKFILL",
         },
         "requested_sample_size": sample_size,
     }
@@ -1557,7 +1559,7 @@ def main() -> int:
         "SELECTION",
         requested_sample_size=sample_size,
         discovered_count=len(entries),
-        eligible_count=len(entries),
+        eligible_count=eligible_count,
         duplicate_count=duplicate_count,
     )
 
@@ -1571,20 +1573,32 @@ def main() -> int:
             and known[key].get("visual_evidence_status") == "DONE"
         )
 
-    selected_entries = entries[:sample_size]
+    must_include_ids = set(exact_ids or seed_ids)
+    selected_entries, deferred_items, selection_cursor = select_bounded_evidence_sample(
+        root,
+        creator_key,
+        entries,
+        sample_size,
+        must_include_ids=must_include_ids,
+        channel_url=args.channel_url,
+        required_attribution_term=required_attribution_term,
+        is_complete_entry=is_complete_entry,
+    )
     candidates = [entry for entry in selected_entries if not is_complete_entry(entry)]
     existing_delivery_targets = [
         f"yt_{entry['id']}"
         for entry in selected_entries
         if is_complete_entry(entry)
     ]
+    eligible_count = max(0, len(entries) - len(deferred_items))
     heartbeat(
         status_path,
         "SELECTION",
         requested_sample_size=sample_size,
         discovered_count=len(entries),
-        eligible_count=len(entries),
+        eligible_count=eligible_count,
         selected_count=len(selected_entries),
+        deferred_count=len(deferred_items),
         duplicate_count=duplicate_count,
     )
 
@@ -1594,6 +1608,7 @@ def main() -> int:
     caption_count = 0
     whisper_count = 0
     visual_frame_count = 0
+    incremental_delivery_failures: list[dict] = []
 
     for index, entry in enumerate(candidates, start=1):
         vid = entry["id"]
@@ -1718,13 +1733,24 @@ def main() -> int:
         completed.append(key)
         atomic_json(manifest_path, manifest)
 
+        # Make each completed evidence item analysis-reachable before moving to
+        # the next expensive candidate. A later STOP/watchdog must not strand
+        # already-persisted work outside the canonical queue.
+        incremental_queue_result, _, incremental_delivery = reconcile_delivery(root, [key])
+        if not incremental_queue_result.get("ok") or incremental_delivery["undelivered"]:
+            incremental_delivery_failures.append({
+                "queue_id": key,
+                "returncode": incremental_queue_result.get("returncode"),
+                "undelivered": incremental_delivery["undelivered"],
+            })
+
     if not candidates:
         heartbeat(
             status_path,
             "QUEUE_WRITE",
             requested_sample_size=sample_size,
             discovered_count=len(entries),
-            eligible_count=len(entries),
+            eligible_count=eligible_count,
             selected_count=len(selected_entries),
             completed_count=len(existing_delivery_targets),
             duplicate_count=duplicate_count,
@@ -1747,6 +1773,8 @@ def main() -> int:
             "eligible_count": len(entries),
             "selected_count": len(selected_entries),
             "candidate_count": 0,
+            "deferred_count": len(deferred_items),
+            "deferred": deferred_items[:50],
             "completed_count": len(existing_delivery_targets),
             "completed": existing_delivery_targets,
             "duplicate_count": duplicate_count,
@@ -1797,7 +1825,7 @@ def main() -> int:
         "QUEUE_WRITE",
         requested_sample_size=sample_size,
         discovered_count=len(entries),
-        eligible_count=len(entries),
+        eligible_count=eligible_count,
         selected_count=len(selected_entries),
         completed_count=len(completed) + len(existing_delivery_targets),
         duplicate_count=duplicate_count,
@@ -1831,7 +1859,7 @@ def main() -> int:
         "FINALIZING",
         requested_sample_size=sample_size,
         discovered_count=len(entries),
-        eligible_count=len(entries),
+        eligible_count=eligible_count,
         selected_count=len(selected_entries),
         completed_count=completed_count,
         duplicate_count=duplicate_count,
@@ -1850,6 +1878,8 @@ def main() -> int:
         "eligible_count": len(entries),
         "selected_count": len(selected_entries),
         "candidate_count": len(candidates),
+        "deferred_count": len(deferred_items),
+        "deferred": deferred_items[:50],
         "completed_count": completed_count,
         "completed": delivery_targets,
         "duplicate_count": duplicate_count,
@@ -1861,6 +1891,8 @@ def main() -> int:
         "retained_visual_frames": visual_frame_count,
         "failure_count": len(failures),
         "failures": failures[:50],
+        "incremental_delivery_failure_count": len(incremental_delivery_failures),
+        "incremental_delivery_failures": incremental_delivery_failures[:50],
         "queue": queue_result,
         "queued_for_run_count": len(queued_for_run),
         "queued_for_run": queued_for_run,
