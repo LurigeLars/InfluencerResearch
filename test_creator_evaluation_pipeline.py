@@ -134,7 +134,7 @@ class CreatorEvaluationPipelineTests(unittest.TestCase):
 
             visual_calls = {"count": 0}
 
-            def fake_visual(root_arg, creator_key, url, video_id):
+            def fake_visual(root_arg, creator_key, url, video_id, *, progress_callback=None):
                 visual_calls["count"] += 1
                 if video_id == "vid003":
                     raise KeyboardInterrupt("simulated cancellation")
@@ -231,6 +231,15 @@ class CreatorEvaluationPipelineTests(unittest.TestCase):
             self.assertIn("yt_vid002", queued)
             self.assertNotIn("yt_vid003", queued)
             self.assertEqual(visual_calls["count"], 3)
+            status = json.loads(
+                (root / "state" / "creator_evaluation_status.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                status["progress"]["selected_queue_ids"],
+                ["yt_vid001", "yt_vid002", "yt_vid003"],
+            )
+            self.assertEqual(status["progress"]["candidate_queue_ids"], status["progress"]["selected_queue_ids"])
+            self.assertEqual(status["progress"]["existing_delivery_target_ids"], [])
 
     def test_sample_shortfall_is_explicit(self) -> None:
         complete, reason = sample_outcome(20, 2, 2, 0)

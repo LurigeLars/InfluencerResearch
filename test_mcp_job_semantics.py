@@ -294,6 +294,79 @@ class MCPJobSemanticsTests(unittest.TestCase):
             self.assertNotIn("yt_incomplete", cmd)
 
 
+    def test_terminal_reconciliation_uses_explicit_run_membership_for_reused_items(self) -> None:
+        import json
+        from types import SimpleNamespace
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            state_dir = root / "state"
+            app_dir = root / "app"
+            state_dir.mkdir(parents=True)
+            app_dir.mkdir(parents=True)
+
+            run_id = "eval-current"
+            status_path = state_dir / "creator_evaluation_status.json"
+            status_path.write_text(
+                json.dumps({
+                    "evaluation_run_id": run_id,
+                    "state": "RUNNING",
+                    "creator": "kathylien",
+                    "source_platform": "YOUTUBE",
+                    "progress": {
+                        "phase": "EVIDENCE",
+                        "selected_queue_ids": ["yt_new", "yt_reused"],
+                    },
+                }),
+                encoding="utf-8",
+            )
+            complete = {
+                "creator": "kathylien",
+                "source_platform": "YOUTUBE",
+                "evaluation_mode": "CREATOR_EVALUATION",
+                "download_status": "DONE",
+                "transcription_status": "DONE",
+                "visual_evidence_status": "DONE",
+                "analysis_content_status": "READY",
+                "research_status": "PENDING_ANALYSIS",
+            }
+            (state_dir / "manifest.json").write_text(
+                json.dumps({
+                    "items": {
+                        "yt_new": {**complete, "evaluation_run_id": run_id},
+                        "yt_reused": {**complete, "evaluation_run_id": "eval-older"},
+                    }
+                }),
+                encoding="utf-8",
+            )
+            (state_dir / "research_queue.json").write_text(
+                json.dumps({"items": []}),
+                encoding="utf-8",
+            )
+            (state_dir / "research_decisions.json").write_text(
+                json.dumps({"items": {}}),
+                encoding="utf-8",
+            )
+
+            with (
+                patch.object(irm, "ROOT", root),
+                patch.object(irm, "STATE_DIR", state_dir),
+                patch.object(irm, "APP_DIR", app_dir),
+                patch.object(
+                    irm.subprocess,
+                    "run",
+                    return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+                ) as run_mock,
+            ):
+                result = irm._reconcile_completed_creator_evaluation(status_path)
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["membership_source"], "STATUS_MEMBERSHIP")
+            self.assertEqual(result["target_count"], 2)
+            cmd = run_mock.call_args.args[0]
+            self.assertIn("yt_new", cmd)
+            self.assertIn("yt_reused", cmd)
+
     def test_terminal_reconciliation_persists_analysis_disposition_accounting(self) -> None:
         import json
         from types import SimpleNamespace

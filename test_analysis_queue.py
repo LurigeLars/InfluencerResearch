@@ -357,6 +357,75 @@ class AnalysisQueueTests(unittest.TestCase):
             self.assertEqual(row["decision"], "RESEARCH")
             self.assertEqual(row["evidence_lineage_id"], "lineage-fixture-123")
 
+    def test_evaluation_run_membership_joins_reused_items_without_overwriting_origin(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            run_id = "eval-current"
+            old_run_id = "eval-older"
+            state = root / "state"
+            write_json(
+                state / "creator_evaluation_status.json",
+                {
+                    "evaluation_run_id": run_id,
+                    "creator": "creator",
+                    "source_platform": "YOUTUBE",
+                    "progress": {
+                        "phase": "EVIDENCE",
+                        "selected_queue_ids": ["yt_new", "yt_reused"],
+                    },
+                },
+            )
+            common = {
+                "creator": "creator",
+                "source_platform": "YOUTUBE",
+                "source_type": "VIDEO",
+                "evaluation_mode": "CREATOR_EVALUATION",
+                "download_status": "DONE",
+                "transcription_status": "DONE",
+                "visual_evidence_status": "DONE",
+                "analysis_content_status": "READY",
+                "research_status": "PENDING_ANALYSIS",
+            }
+            write_json(
+                state / "manifest.json",
+                {
+                    "items": {
+                        "yt_new": {**common, "source_id": "new", "evaluation_run_id": run_id},
+                        "yt_reused": {**common, "source_id": "reused", "evaluation_run_id": old_run_id},
+                    }
+                },
+            )
+            write_json(
+                state / "research_queue.json",
+                {
+                    "items": [
+                        {"queue_id": "yt_new", "analysis_status": "PENDING_ANALYSIS"},
+                        {"queue_id": "yt_reused", "analysis_status": "PENDING_ANALYSIS"},
+                    ]
+                },
+            )
+            write_json(state / "research_decisions.json", {"items": {}})
+
+            listing = list_creator_evaluation_items(
+                root,
+                creator_key="creator",
+                source_platform="YOUTUBE",
+                evaluation_run_id=run_id,
+                completed_only=True,
+                limit=20,
+                offset=0,
+            )
+            self.assertEqual(listing["total"], 2)
+            rows = {row["queue_id"]: row for row in listing["items"]}
+            self.assertEqual(rows["yt_reused"]["evaluation_run_id"], run_id)
+            self.assertEqual(rows["yt_reused"]["origin_evaluation_run_id"], old_run_id)
+            self.assertTrue(rows["yt_reused"]["selected_via_run_membership"])
+
+            accounting = summarize_creator_evaluation_run(root, run_id)
+            self.assertEqual(accounting["analysis_completed_manifest_count"], 2)
+            self.assertEqual(accounting["queued_for_analysis_count"], 2)
+            self.assertEqual(accounting["analysis_unaccounted_count"], 0)
+
     def test_retired_creator_is_hidden_from_pending_list_but_history_is_readable(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

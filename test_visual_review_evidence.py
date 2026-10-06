@@ -243,6 +243,54 @@ class VisualReviewClassifierTests(unittest.TestCase):
                 )
         self.assertFalse(bundle["visual_review_recommended"])
 
+    def test_youtube_visual_capture_monitor_enforces_memory_ceiling_and_heartbeats(self) -> None:
+        class FakeProc:
+            def __init__(self, pid: int) -> None:
+                self.pid = pid
+                self.returncode = None
+                self.terminated = False
+
+            def poll(self):
+                return self.returncode
+
+            def terminate(self):
+                self.terminated = True
+                self.returncode = -15
+
+            def wait(self, timeout=None):
+                return self.returncode
+
+            def kill(self):
+                self.returncode = -9
+
+        with tempfile.TemporaryDirectory() as td:
+            evidence_dir = Path(td)
+            (evidence_dir / "fps_00001.jpg").write_bytes(b"jpeg")
+            ff = FakeProc(1001)
+            yt = FakeProc(1002)
+            progress: list[dict] = []
+            with unittest.mock.patch.object(
+                yte,
+                "_process_tree_rss_bytes",
+                return_value=400 * 1024 * 1024,
+            ):
+                result = yte._wait_visual_capture(
+                    ff,
+                    yt,
+                    evidence_dir,
+                    progress_callback=progress.append,
+                    memory_limit_bytes=512 * 1024 * 1024,
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "VISUAL_CAPTURE_MEMORY_LIMIT")
+        self.assertGreaterEqual(result["child_rss_peak_mib"], 800.0)
+        self.assertTrue(ff.terminated)
+        self.assertTrue(yt.terminated)
+        self.assertEqual(len(progress), 1)
+        self.assertEqual(progress[0]["visual_capture_frame_files"], 1)
+        self.assertGreaterEqual(progress[0]["visual_capture_child_rss_mib"], 800.0)
+
     def test_existing_visual_index_backfills_agent_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

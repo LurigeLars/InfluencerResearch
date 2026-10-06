@@ -76,6 +76,21 @@ def as_text(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
+def _creator_evaluation_membership_ids(status: dict) -> list[str]:
+    progress = status.get("progress") if isinstance(status.get("progress"), dict) else {}
+    for container in (status, progress):
+        for field in ("selected_queue_ids", "completed", "delivery_targets"):
+            values = container.get(field)
+            if not isinstance(values, list) or not values:
+                continue
+            return list(dict.fromkeys(
+                str(value).strip()
+                for value in values
+                if str(value).strip()
+            ))
+    return []
+
+
 def _persist_creator_evaluation_accounting(status_path: Path, run_id: str) -> dict:
     try:
         accounting = summarize_creator_evaluation_run(ROOT, run_id)
@@ -125,9 +140,24 @@ def _reconcile_completed_creator_evaluation(status_path: Path) -> dict:
         return {"ok": True, "skipped": "NO_EVALUATION_RUN_ID", "target_count": 0}
 
     manifest = load_json(STATE_DIR / "manifest.json", {"items": {}})
+    manifest_items = manifest.get("items") if isinstance(manifest.get("items"), dict) else {}
+    membership_ids = _creator_evaluation_membership_ids(status)
     targets: list[str] = []
-    for shortcode, item in (manifest.get("items") or {}).items():
-        if not isinstance(item, dict) or str(item.get("evaluation_run_id") or "") != run_id:
+    if membership_ids:
+        candidate_items = (
+            (queue_id, manifest_items.get(queue_id))
+            for queue_id in membership_ids
+        )
+    else:
+        candidate_items = (
+            (str(shortcode), item)
+            for shortcode, item in manifest_items.items()
+            if isinstance(item, dict)
+            and str(item.get("evaluation_run_id") or "") == run_id
+        )
+
+    for shortcode, item in candidate_items:
+        if not isinstance(item, dict):
             continue
         if (
             item.get("download_status") == "DONE"
@@ -142,6 +172,7 @@ def _reconcile_completed_creator_evaluation(status_path: Path) -> dict:
             "ok": True,
             "skipped": "NO_COMPLETED_ITEMS",
             "target_count": 0,
+            "membership_source": "STATUS_MEMBERSHIP" if membership_ids else "MANIFEST_RUN_ID",
             "analysis_accounting": accounting,
         }
 
@@ -163,6 +194,7 @@ def _reconcile_completed_creator_evaluation(status_path: Path) -> dict:
             "ok": False,
             "error": "DELIVERY_RECONCILIATION_TIMEOUT",
             "target_count": len(set(targets)),
+            "membership_source": "STATUS_MEMBERSHIP" if membership_ids else "MANIFEST_RUN_ID",
             "analysis_accounting": accounting,
         }
 
@@ -171,6 +203,7 @@ def _reconcile_completed_creator_evaluation(status_path: Path) -> dict:
         "ok": result.returncode == 0,
         "returncode": int(result.returncode),
         "target_count": len(set(targets)),
+        "membership_source": "STATUS_MEMBERSHIP" if membership_ids else "MANIFEST_RUN_ID",
         "stderr_tail": (result.stderr or "")[-1000:],
         "analysis_accounting": accounting,
     }
