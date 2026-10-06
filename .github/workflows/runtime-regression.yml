@@ -102,3 +102,7 @@ jobs:
           test_tiktok_adaptive_visual_review
           test_url_domain_validation
           test_video_visual_evidence
+          test_camofox_manifest_validation
+          test_instagram_camofox_public_smoke
+          test_smoke_production_separation
+          test_tiktok_media_transport
