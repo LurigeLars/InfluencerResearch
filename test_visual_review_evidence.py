@@ -291,6 +291,36 @@ class VisualReviewClassifierTests(unittest.TestCase):
         self.assertEqual(progress[0]["visual_capture_frame_files"], 1)
         self.assertGreaterEqual(progress[0]["visual_capture_child_rss_mib"], 800.0)
 
+    def test_youtube_visual_bundle_reports_ocr_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            records = self._records(root, count=4)
+            progress: list[dict] = []
+            with unittest.mock.patch.object(
+                yte,
+                "_ocr_visual_frame",
+                return_value="NASDAQ QQQ 500 support resistance 495",
+            ), unittest.mock.patch.object(yte, "_make_contact_sheet", return_value=None):
+                bundle = yte.build_agent_visual_bundle(
+                    root,
+                    "nicholascrown",
+                    records,
+                    "ffmpeg",
+                    root,
+                    progress_callback=progress.append,
+                )
+
+        ocr_events = [
+            event for event in progress
+            if event.get("visual_postprocess_phase") == "OCR"
+        ]
+        self.assertEqual(ocr_events[0]["visual_ocr_completed"], 0)
+        self.assertEqual(ocr_events[-1]["visual_ocr_completed"], 4)
+        self.assertEqual(ocr_events[-1]["visual_ocr_total"], 4)
+        self.assertEqual(progress[-2]["visual_postprocess_phase"], "CONTACT_SHEET")
+        self.assertEqual(progress[-1]["visual_postprocess_phase"], "DONE")
+        self.assertTrue(bundle["available"])
+
     def test_existing_visual_index_backfills_agent_bundle(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

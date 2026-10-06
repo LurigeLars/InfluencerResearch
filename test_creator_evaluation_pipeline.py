@@ -16,6 +16,36 @@ from evaluation_progress import heartbeat, sample_outcome, terminalize
 
 
 class CreatorEvaluationPipelineTests(unittest.TestCase):
+    def test_youtube_visual_capture_default_ceiling_is_768_mib_and_bounded(self) -> None:
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(
+                yce.visual_capture_max_child_rss_bytes(),
+                768 * 1024 * 1024,
+            )
+        with patch.dict(
+            "os.environ",
+            {"INFLUENCER_RESEARCH_YOUTUBE_VISUAL_CAPTURE_MAX_CHILD_RSS_MB": "9999"},
+            clear=True,
+        ):
+            self.assertEqual(
+                yce.visual_capture_max_child_rss_bytes(),
+                1024 * 1024 * 1024,
+            )
+
+    def test_runtime_image_provides_pinned_node_for_ytdlp(self) -> None:
+        dockerfile = (
+            Path(__file__).resolve().parent
+            / "runtime"
+            / "influencerresearch"
+            / "Dockerfile"
+        ).read_text(encoding="utf-8")
+        self.assertIn("FROM node:26.10.0-trixie-slim AS node-runtime", dockerfile)
+        self.assertIn(
+            "COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node",
+            dockerfile,
+        )
+        self.assertIn('test "$(node --version)" = "v26.10.0"', dockerfile)
+
     def test_seeded_sample_includes_pins_and_fills_to_requested_unique_count(self) -> None:
         seeds = [{"id": "seed1"}, {"id": "seed2"}]
         discovered = [{"id": "seed1"}] + [{"id": f"video{i}"} for i in range(1, 25)]

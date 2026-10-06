@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 
 YOUTUBE_EVAL_VERSION = "0.8.1"
 DEFAULT_MAX_UNPINNED_WHISPER_DURATION_SECONDS = 20 * 60
-DEFAULT_VISUAL_CAPTURE_MAX_CHILD_RSS_MB = 512
+DEFAULT_VISUAL_CAPTURE_MAX_CHILD_RSS_MB = 768
 VISUAL_CAPTURE_POLL_SECONDS = 0.25
 VISUAL_CAPTURE_HEARTBEAT_SECONDS = 5.0
 VISUAL_CAPTURE_TIMEOUT_SECONDS = 600
@@ -1266,9 +1266,21 @@ def _make_contact_sheet(ffmpeg: str, evidence_dir: Path, selected: list[dict]) -
 
 
 def build_agent_visual_bundle(
-    root: Path, creator_key: str, records: list[dict], ffmpeg: str, evidence_dir: Path
+    root: Path,
+    creator_key: str,
+    records: list[dict],
+    ffmpeg: str,
+    evidence_dir: Path,
+    *,
+    progress_callback: Callable[[dict], None] | None = None,
 ) -> dict:
     sampled = _sample_visual_records(records)
+    if progress_callback is not None:
+        progress_callback({
+            "visual_postprocess_phase": "OCR",
+            "visual_ocr_total": len(sampled),
+            "visual_ocr_completed": 0,
+        })
 
     def inspect(row: dict) -> dict:
         text = _ocr_visual_frame(Path(row["file"]))
@@ -1276,8 +1288,16 @@ def build_agent_visual_bundle(
         return {**row, "ocr_text": text[:1200], "visual_score": score, "visual_signals": reasons}
 
     if sampled:
+        inspected = []
         with ThreadPoolExecutor(max_workers=min(4, len(sampled)), thread_name_prefix="visual-ocr") as executor:
-            inspected = list(executor.map(inspect, sampled))
+            for completed_count, row in enumerate(executor.map(inspect, sampled), start=1):
+                inspected.append(row)
+                if progress_callback is not None:
+                    progress_callback({
+                        "visual_postprocess_phase": "OCR",
+                        "visual_ocr_total": len(sampled),
+                        "visual_ocr_completed": completed_count,
+                    })
     else:
         inspected = []
 
@@ -1301,7 +1321,19 @@ def build_agent_visual_bundle(
     if len(representative) < min(3, len(inspected)):
         representative = inspected[: min(VISUAL_REPRESENTATIVE_FRAMES, len(inspected))]
     representative = sorted(representative, key=lambda row: float(row.get("timestamp_s") or 0.0))
+    if progress_callback is not None:
+        progress_callback({
+            "visual_postprocess_phase": "CONTACT_SHEET",
+            "visual_ocr_total": len(sampled),
+            "visual_ocr_completed": len(inspected),
+        })
     contact_sheet = _make_contact_sheet(ffmpeg, evidence_dir, representative)
+    if progress_callback is not None:
+        progress_callback({
+            "visual_postprocess_phase": "DONE",
+            "visual_ocr_total": len(sampled),
+            "visual_ocr_completed": len(inspected),
+        })
 
     def public_row(row: dict) -> dict:
         path = Path(row["file"])
@@ -1359,7 +1391,12 @@ def capture_visual_evidence(
                             if row.get("file")
                         ]
                         agent_visual_bundle = build_agent_visual_bundle(
-                            root, creator_key, records, ffmpeg, evidence_dir
+                            root,
+                            creator_key,
+                            records,
+                            ffmpeg,
+                            evidence_dir,
+                            progress_callback=progress_callback,
                         )
                         existing["agent_visual_bundle"] = agent_visual_bundle
                         summary["agent_visual_bundle"] = agent_visual_bundle
@@ -1477,7 +1514,14 @@ def capture_visual_evidence(
     records += _frame_records(evidence_dir, "scene", scene_times, "SCENE_CHANGE")
     candidate_count = len(records)
     records = _merge_frame_records(records)
-    agent_visual_bundle = build_agent_visual_bundle(root, creator_key, records, ffmpeg, evidence_dir)
+    agent_visual_bundle = build_agent_visual_bundle(
+        root,
+        creator_key,
+        records,
+        ffmpeg,
+        evidence_dir,
+        progress_callback=progress_callback,
+    )
 
     frames = []
     for rec in records:
