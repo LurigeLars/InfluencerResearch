@@ -827,7 +827,7 @@ def discover_instagram(
                 missing_time.append(shortcode)
                 continue
             known_times.append(published)
-            cached_times[shortcode] = published.isoformat()
+            cached_times = {**cached_times, shortcode: published.isoformat()}
 
         natural_window_complete = _coverage_complete(
             discovered_count=len(entries),
