@@ -22,7 +22,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Callable
 
 import camofox_container as camofox_container_config
 from transcription_backend import extract_visible_text_gemini, transcribe_video
@@ -2027,8 +2027,21 @@ def _catalog_covers_video_ids(catalog: dict, video_ids: set[str] | None) -> bool
     )
 
 
-def process_source(root: Path, source: dict, *, max_new_override: int | None = None, include_video_ids: set[str] | None = None, discovery_target_override: int | None = None) -> dict:
+def process_source(
+    root: Path,
+    source: dict,
+    *,
+    max_new_override: int | None = None,
+    include_video_ids: set[str] | None = None,
+    discovery_target_override: int | None = None,
+    progress_callback: Callable[[str, dict[str, Any]], None] | None = None,
+) -> dict:
     process_started = time.perf_counter()
+
+    def report(phase: str, **metrics: Any) -> None:
+        if progress_callback is not None:
+            progress_callback(phase, metrics)
+
     creator_key = str(source["creator_key"])
     handle = str(source["handle"]).lstrip("@")
     profile_url = str(source.get("profile_url") or f"https://www.tiktok.com/@{handle}")
@@ -2176,11 +2189,22 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
     if max_new_downloads is not None:
         candidates = candidates[:max_new_downloads]
 
+    report(
+        "SELECTION",
+        discovered_count=len(ordered_urls),
+        eligible_count=len(candidates),
+        selected_count=len(candidates),
+        duplicate_count=max(0, len(ordered_urls) - len({video_id_from_url(url) for url in ordered_urls})),
+    )
+
     video_dir = root / "output" / creator_key / "tiktok" / "videos"
     model_holder: dict[str, Any] = {"model": None}
     completed = []
     failures = []
     downloaded_network = 0
+    ingested_count = 0
+    transcribed_count = 0
+    evidence_count = 0
     stage_totals = {
         "download": 0.0,
         "transcription": 0.0,
@@ -2189,11 +2213,20 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
         "manifest": 0.0,
     }
 
-    for url in candidates:
+    for index, url in enumerate(candidates, start=1):
         video_started = time.perf_counter()
         vid = video_id_from_url(url)
         item_timings: dict[str, float] = {}
 
+        report(
+            "INGESTION",
+            current_index=index,
+            current_source_id=vid,
+            selected_count=len(candidates),
+            ingested_count=ingested_count,
+            transcribed_count=transcribed_count,
+            failed_count=len(failures),
+        )
         stage_started = time.perf_counter()
         download = download_one(url, video_dir)
         item_timings["download"] = round((time.perf_counter() - stage_started) * 1000, 1)
@@ -2209,8 +2242,27 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
                 "detail": download.get("diagnostic_tail") or download.get("validation"),
                 "timings_ms": item_timings,
             })
+            report(
+                "INGESTION",
+                current_index=index,
+                current_source_id=vid,
+                selected_count=len(candidates),
+                ingested_count=ingested_count,
+                transcribed_count=transcribed_count,
+                failed_count=len(failures),
+            )
             continue
 
+        ingested_count += 1
+        report(
+            "TRANSCRIPTION",
+            current_index=index,
+            current_source_id=vid,
+            selected_count=len(candidates),
+            ingested_count=ingested_count,
+            transcribed_count=transcribed_count,
+            failed_count=len(failures),
+        )
         stage_started = time.perf_counter()
         try:
             transcription = transcribe(
@@ -2241,8 +2293,28 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
                 "detail": transcription.get("error"),
                 "timings_ms": item_timings,
             })
+            report(
+                "TRANSCRIPTION",
+                current_index=index,
+                current_source_id=vid,
+                selected_count=len(candidates),
+                ingested_count=ingested_count,
+                transcribed_count=transcribed_count,
+                failed_count=len(failures),
+            )
             continue
 
+        transcribed_count += 1
+        report(
+            "EVIDENCE",
+            current_index=index,
+            current_source_id=vid,
+            selected_count=len(candidates),
+            ingested_count=ingested_count,
+            transcribed_count=transcribed_count,
+            evidence_count=evidence_count,
+            failed_count=len(failures),
+        )
         visual_text = None
         transcript_text = str(transcription.get("text") or "").strip()
         stage_started = time.perf_counter()
@@ -2305,6 +2377,7 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
             })
             continue
 
+        evidence_count += 1
         completed.append({
             "video_id": vid,
             "url": url,
@@ -2321,6 +2394,16 @@ def process_source(root: Path, source: dict, *, max_new_override: int | None = N
             "visual_evidence_timings_ms": visual_evidence.get("timings_ms") if isinstance(visual_evidence, dict) else None,
             "timings_ms": item_timings,
         })
+        report(
+            "EVIDENCE",
+            current_index=index,
+            current_source_id=vid,
+            selected_count=len(candidates),
+            ingested_count=ingested_count,
+            transcribed_count=transcribed_count,
+            evidence_count=evidence_count,
+            failed_count=len(failures),
+        )
 
     timings_ms = {
         "discovery": discovery_ms,
