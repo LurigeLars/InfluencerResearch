@@ -1,13 +1,8 @@
 from __future__ import annotations
 
-import sys
 import tempfile
 import unittest
 from pathlib import Path
-from types import ModuleType
-
-sys.modules.setdefault("instagram_camofox_public_smoke", ModuleType("instagram_camofox_public_smoke"))
-sys.modules.setdefault("ephemeral_ingest", ModuleType("ephemeral_ingest"))
 
 from creator_registry import register_creator
 import creator_recent_check as crc

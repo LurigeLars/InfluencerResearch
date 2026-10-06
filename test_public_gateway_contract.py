@@ -28,7 +28,7 @@ class PublicGatewayContractTests(unittest.TestCase):
 
     def test_public_tool_allowlist_matches_mcp_surface(self) -> None:
         policy = (BASE / "public" / "gateway" / "policy.mjs").read_text(encoding="utf-8")
-        match = re.search(r"ALLOWED_TOOLS = new Set\\(\\[(.*?)\\]\\);", policy, re.DOTALL)
+        match = re.search(r"ALLOWED_TOOLS = new Set\(\[(.*?)\]\);", policy, re.DOTALL)
         self.assertIsNotNone(match)
         public_tools = set(re.findall(r"'([^']+)'", match.group(1)))
 
