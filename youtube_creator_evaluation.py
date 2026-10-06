@@ -1680,7 +1680,11 @@ def main() -> int:
         },
         "evidence_policy": {
             "transcript_order": ["YOUTUBE_CAPTIONS", "FASTER_WHISPER_FALLBACK"],
-            "visual_capture": "1FPS_PLUS_SCENE_CHANGE_WITH_LOCAL_DEDUPE",
+            "visual_capture": "1FPS_PLUS_SCENE_CHANGE_WITH_BOUNDED_CHILD_RSS",
+            "visual_capture_max_child_rss_mb": round(
+                visual_capture_max_child_rss_bytes() / (1024 * 1024)
+            ),
+            "visual_capture_heartbeat_seconds": VISUAL_CAPTURE_HEARTBEAT_SECONDS,
             "full_video_persisted": False,
             "max_unpinned_whisper_duration_seconds": max_unpinned_whisper_duration_seconds(),
             "longform_policy": "DEFER_UNPINNED_NO_CAPTIONS_AND_BACKFILL",
