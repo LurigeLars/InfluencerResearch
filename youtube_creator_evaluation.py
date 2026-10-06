@@ -17,7 +17,8 @@ from typing import Any, Callable
 from evaluation_progress import heartbeat, sample_outcome, terminalize
 from urllib.parse import urlparse
 
-YOUTUBE_EVAL_VERSION = "0.7.1"
+YOUTUBE_EVAL_VERSION = "0.8.0"
+DEFAULT_MAX_UNPINNED_WHISPER_DURATION_SECONDS = 20 * 60
 
 
 def utc_now() -> str:
@@ -76,6 +77,53 @@ def parse_exact_video_ids(value: str, *, cap: int = EXACT_VIDEO_ID_CAP) -> list[
     return out
 
 
+def max_unpinned_whisper_duration_seconds() -> int:
+    raw = os.environ.get(
+        "INFLUENCER_RESEARCH_YOUTUBE_MAX_UNPINNED_WHISPER_DURATION_SECONDS",
+        str(DEFAULT_MAX_UNPINNED_WHISPER_DURATION_SECONDS),
+    )
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = DEFAULT_MAX_UNPINNED_WHISPER_DURATION_SECONDS
+    return max(300, min(value, 3600))
+
+
+def _duration_seconds(info: dict) -> float | None:
+    raw = info.get("duration")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _preferred_caption_availability(info: dict) -> bool | None:
+    sources_present = False
+    for field in ("subtitles", "automatic_captions"):
+        tracks = info.get(field)
+        if not isinstance(tracks, dict):
+            continue
+        sources_present = True
+        for language, variants in tracks.items():
+            lang = str(language or "").casefold()
+            if not (lang == "en" or lang.startswith("en-") or lang == "sv" or lang.startswith("sv-")):
+                continue
+            if isinstance(variants, list) and variants:
+                return True
+    return False if sources_present else None
+
+
+def _deferred_entry(entry: dict, reason: str, **extra: Any) -> dict:
+    return {
+        "video_id": str(entry.get("id") or ""),
+        "url": entry.get("url"),
+        "surface": entry.get("surface"),
+        "reason": reason,
+        **{key: value for key, value in extra.items() if value is not None},
+    }
+
+
 def select_seeded_sample(
     seed_entries: list[dict],
     discovered_entries: list[dict],
@@ -95,6 +143,120 @@ def select_seeded_sample(
         seen.add(video_id)
         selected_pool.append(entry)
     return selected_pool[:max(1, int(sample_size))], duplicate_count
+
+
+def preflight_evidence_cost(
+    root: Path,
+    creator_key: str,
+    entry: dict,
+    *,
+    channel_url: str,
+    required_attribution_term: str,
+    must_include: bool,
+) -> tuple[dict | None, dict | None]:
+    """Return an enriched accepted entry or a bounded-cost defer record."""
+    accepted = dict(entry)
+    accepted["must_include_seed"] = bool(must_include)
+    if must_include:
+        return accepted, None
+
+    limit_seconds = max_unpinned_whisper_duration_seconds()
+    duration = _duration_seconds({"duration": accepted.get("duration_seconds")})
+    caption_available = accepted.get("caption_track_available")
+
+    if duration is None or duration > limit_seconds:
+        verified, diag = probe_exact_video(
+            str(accepted.get("id") or ""),
+            channel_url=channel_url,
+            required_attribution_term=required_attribution_term,
+        )
+        if verified is None:
+            return None, _deferred_entry(
+                accepted,
+                "EVIDENCE_COST_PREFLIGHT_UNAVAILABLE",
+                detail=diag.get("reason"),
+            )
+        accepted = {**accepted, **verified, "must_include_seed": False}
+        duration = _duration_seconds({"duration": accepted.get("duration_seconds")})
+        caption_available = accepted.get("caption_track_available")
+
+    if duration is None:
+        return None, _deferred_entry(
+            accepted,
+            "UNPINNED_DURATION_UNKNOWN",
+            live_status=accepted.get("live_status"),
+        )
+
+    if duration <= limit_seconds:
+        return accepted, None
+
+    if caption_available is not True:
+        return None, _deferred_entry(
+            accepted,
+            "UNPINNED_LONGFORM_NO_CAPTIONS",
+            duration_seconds=round(duration, 3),
+            max_unpinned_whisper_duration_seconds=limit_seconds,
+        )
+
+    # Metadata can advertise subtitle tracks that later fail to materialize. For
+    # expensive long-form candidates, prove that a usable caption transcript is
+    # actually retrievable before admitting the item to the sample.
+    caption_probe = fetch_captions(
+        root,
+        creator_key,
+        str(accepted.get("url") or ""),
+        str(accepted.get("id") or ""),
+    )
+    if not caption_probe.get("ok"):
+        return None, _deferred_entry(
+            accepted,
+            "UNPINNED_LONGFORM_CAPTIONS_UNUSABLE",
+            duration_seconds=round(duration, 3),
+            max_unpinned_whisper_duration_seconds=limit_seconds,
+            detail=caption_probe.get("source") or caption_probe.get("diagnostic_tail"),
+        )
+    accepted["caption_preflight_verified"] = True
+    return accepted, None
+
+
+def select_bounded_evidence_sample(
+    root: Path,
+    creator_key: str,
+    entries: list[dict],
+    sample_size: int,
+    *,
+    must_include_ids: set[str],
+    channel_url: str,
+    required_attribution_term: str,
+    is_complete_entry: Callable[[dict], bool],
+) -> tuple[list[dict], list[dict], int]:
+    selected: list[dict] = []
+    deferred: list[dict] = []
+    cursor = 0
+    target = max(1, int(sample_size))
+    while cursor < len(entries) and len(selected) < target:
+        entry = entries[cursor]
+        cursor += 1
+        video_id = str(entry.get("id") or "")
+        if not video_id:
+            continue
+        if is_complete_entry(entry):
+            selected.append(dict(entry))
+            continue
+        accepted, defer = preflight_evidence_cost(
+            root,
+            creator_key,
+            entry,
+            channel_url=channel_url,
+            required_attribution_term=required_attribution_term,
+            must_include=video_id in must_include_ids,
+        )
+        if defer is not None:
+            deferred.append(defer)
+            continue
+        if accepted is not None:
+            selected.append(accepted)
+    return selected, deferred, cursor
 
 
 def _youtube_profile_identity(channel_url: str) -> tuple[str, str]:
@@ -213,6 +375,9 @@ def probe_exact_video(video_id: str, *, channel_url: str, required_attribution_t
         "url": url,
         "title": str(info.get("title") or "").strip(),
         "published_at": published_iso(info),
+        "duration_seconds": _duration_seconds(info),
+        "caption_track_available": _preferred_caption_availability(info),
+        "live_status": info.get("live_status"),
         "attribution": {
             "channel_identity_verified": True,
             "required_term": str(required_attribution_term or "").strip() or None,
@@ -311,6 +476,9 @@ def _enumerate_channel_surface(
             "title": str(obj.get("title") or "").strip(),
             "published_at": published_iso(obj),
             "surface": surface.upper(),
+            "duration_seconds": _duration_seconds(obj),
+            "caption_track_available": _preferred_caption_availability(obj),
+            "live_status": obj.get("live_status"),
         })
         if len(entries) >= requested:
             break
