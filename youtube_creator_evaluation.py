@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from evaluation_progress import heartbeat, terminalize
+from evaluation_progress import heartbeat, sample_outcome, terminalize
 from urllib.parse import urlparse
 
 YOUTUBE_EVAL_VERSION = "0.7.0"
@@ -1555,12 +1555,18 @@ def main() -> int:
             "duplicate_count": duplicate_count,
             "failed_count": 0,
             "requested_sample_size": sample_size,
-            "sample_complete": len(existing_delivery_targets) >= sample_size,
-            "shortfall_reason": (
-                None
-                if len(existing_delivery_targets) >= sample_size
-                else f"ONLY_{len(selected_entries)}_ELIGIBLE_ITEMS_AVAILABLE"
-            ),
+            "sample_complete": sample_outcome(
+                sample_size,
+                len(selected_entries),
+                len(existing_delivery_targets),
+                0,
+            )[0],
+            "shortfall_reason": sample_outcome(
+                sample_size,
+                len(selected_entries),
+                len(existing_delivery_targets),
+                0,
+            )[1],
             "transcript_sources": {"youtube_captions": 0, "faster_whisper_fallback": 0},
             "retained_visual_frames": 0,
             "failure_count": 0,
@@ -1609,15 +1615,12 @@ def main() -> int:
     ]
 
     completed_count = len(completed) + len(existing_delivery_targets)
-    sample_complete = completed_count >= sample_size
-    shortfall_reason = None
-    if not sample_complete:
-        if len(selected_entries) < sample_size and not failures:
-            shortfall_reason = f"ONLY_{len(selected_entries)}_ELIGIBLE_ITEMS_AVAILABLE"
-        elif failures:
-            shortfall_reason = "DOWNSTREAM_PROCESSING_FAILURES"
-        else:
-            shortfall_reason = "SAMPLE_NOT_COMPLETE"
+    sample_complete, shortfall_reason = sample_outcome(
+        sample_size,
+        len(selected_entries),
+        completed_count,
+        len(failures),
+    )
 
     complete = (
         len(completed) == len(candidates)
