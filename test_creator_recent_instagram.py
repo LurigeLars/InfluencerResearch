@@ -78,34 +78,40 @@ class RecentInstagramTests(unittest.TestCase):
         self.assertTrue(result["window_complete"])
         run.assert_called_once_with(
             "example",
-            max_scan=15,
+            max_scan=60,
             known_reel_times={},
         )
 
-    def test_instagram_discovery_cap_has_explicit_coverage_reason(self) -> None:
+    def test_instagram_discovery_expands_until_hard_cap_when_cutoff_not_reached(self) -> None:
         end = datetime(2026, 9, 29, 18, 0, tzinfo=timezone.utc)
         cutoff = end - timedelta(days=5)
-        probe = {
-            "ok": True,
-            "authenticated": True,
-            "reel_count": 15,
-            "blocked": False,
-            "media_auth_gated": False,
-            "reel_items": [
-                {
-                    "url": f"https://www.instagram.com/reel/RECENT{i:02d}/",
-                    "published_at": (end - timedelta(hours=i + 1)).isoformat(),
-                    "error": None,
-                }
-                for i in range(15)
-            ],
-            "timings": {},
-        }
+
+        def probe_for_limit(_handle, *, max_scan, known_reel_times):
+            del known_reel_times
+            return {
+                "ok": True,
+                "authenticated": True,
+                "reel_count": max_scan,
+                "blocked": False,
+                "media_auth_gated": False,
+                "reel_items": [
+                    {
+                        "url": f"https://www.instagram.com/reel/RECENT{i:03d}/",
+                        "published_at": (
+                            end - timedelta(minutes=30 * (i + 1))
+                        ).isoformat(),
+                        "error": None,
+                    }
+                    for i in range(max_scan)
+                ],
+                "timings": {},
+            }
+
         with unittest.mock.patch.object(
             crc.instagram,
             "discover_reels_authenticated",
-            return_value=probe,
-        ):
+            side_effect=probe_for_limit,
+        ) as run:
             result = crc.discover_instagram(
                 {"creator_key": "creator"},
                 {"profile_url": "https://www.instagram.com/example/"},
@@ -120,6 +126,63 @@ class RecentInstagramTests(unittest.TestCase):
             result["coverage_limited_reason"],
             "DISCOVERY_LIMIT_REACHED_BEFORE_CUTOFF",
         )
+        self.assertEqual(result["discovery_limit_used"], 200)
+        self.assertEqual(
+            [call.kwargs["max_scan"] for call in run.call_args_list],
+            [60, 120, 200],
+        )
+        self.assertEqual(len(result["discovery_passes"]), 3)
+
+    def test_instagram_discovery_stops_when_expanded_pass_crosses_cutoff(self) -> None:
+        end = datetime(2026, 9, 29, 18, 0, tzinfo=timezone.utc)
+        cutoff = end - timedelta(days=5)
+
+        def probe_for_limit(_handle, *, max_scan, known_reel_times):
+            del known_reel_times
+            if max_scan == 60:
+                ages = [timedelta(hours=i + 1) for i in range(60)]
+            else:
+                ages = [timedelta(hours=i + 1) for i in range(119)]
+                ages.append(timedelta(days=6))
+            return {
+                "ok": True,
+                "authenticated": True,
+                "reel_count": len(ages),
+                "blocked": False,
+                "media_auth_gated": False,
+                "reel_items": [
+                    {
+                        "url": f"https://www.instagram.com/reel/ITEM{i:03d}/",
+                        "published_at": (end - age).isoformat(),
+                        "error": None,
+                    }
+                    for i, age in enumerate(ages)
+                ],
+                "timings": {},
+            }
+
+        with unittest.mock.patch.object(
+            crc.instagram,
+            "discover_reels_authenticated",
+            side_effect=probe_for_limit,
+        ) as run:
+            result = crc.discover_instagram(
+                {"creator_key": "creator"},
+                {"profile_url": "https://www.instagram.com/example/"},
+                cutoff,
+                end,
+                15,
+            )
+
+        self.assertTrue(result["window_complete"])
+        self.assertFalse(result["coverage_limit_reached"])
+        self.assertIsNone(result["coverage_limited_reason"])
+        self.assertEqual(result["discovery_limit_used"], 120)
+        self.assertEqual(
+            [call.kwargs["max_scan"] for call in run.call_args_list],
+            [60, 120],
+        )
+
 
     def test_media_auth_gate_with_short_result_is_not_complete_coverage(self) -> None:
         end = datetime(2026, 9, 29, 18, 0, tzinfo=timezone.utc)
@@ -265,7 +328,7 @@ class RecentInstagramTests(unittest.TestCase):
         self.assertEqual(result["items"][0]["source_id"], "RECENT123")
         run.assert_called_once_with(
             "example",
-            max_scan=15,
+            max_scan=60,
             known_reel_times={"RECENT123": "2026-09-29T15:10:53+00:00"},
         )
 
@@ -320,7 +383,7 @@ class RecentInstagramTests(unittest.TestCase):
         self.assertTrue(result["window_complete"])
         run.assert_called_once_with(
             "example",
-            max_scan=15,
+            max_scan=60,
             known_reel_times={"CACHED123": "2026-09-29T12:00:00+00:00"},
         )
 
