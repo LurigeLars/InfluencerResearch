@@ -39,11 +39,15 @@ class TranscriptionBackendTests(unittest.TestCase):
         tb._WHISPER_MODEL_CACHE[cache_key] = Model()
         progress: list[int] = []
         try:
-            result = tb.transcribe_faster_whisper(
-                Path("fixture.mp4"),
-                {},
-                progress_callback=progress.append,
-            )
+            with patch.dict(
+                sys.modules,
+                {"faster_whisper": type("FakeWhisperModule", (), {"WhisperModel": object})()},
+            ):
+                result = tb.transcribe_faster_whisper(
+                    Path("fixture.mp4"),
+                    {},
+                    progress_callback=progress.append,
+                )
         finally:
             if previous is None:
                 tb._WHISPER_MODEL_CACHE.pop(cache_key, None)
