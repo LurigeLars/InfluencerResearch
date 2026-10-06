@@ -7,7 +7,9 @@ from pathlib import Path
 
 from analysis_queue import (
     get_analysis_queue_item,
+    list_analysis_decisions,
     list_analysis_queue,
+    mark_analysis_insufficient,
     record_analysis_decision,
     record_analysis_decision_batch,
 )
@@ -57,6 +59,8 @@ def build_fixture(root: Path, *, creator_status: str = "ACTIVE", queue_id: str =
         "evidence_lineage_id": "lineage-fixture-123",
         "downloaded_at": "2026-10-01T12:01:00+00:00",
         "transcribed_at": "2026-10-01T12:02:00+00:00",
+        "evaluation_mode": "CREATOR_EVALUATION",
+        "evaluation_run_id": "eval-fixture-1",
         "research_status": "PENDING",
     }
     queue_item = {
@@ -249,6 +253,107 @@ class AnalysisQueueTests(unittest.TestCase):
             self.assertEqual(batch["no_op"], 0)
             self.assertEqual(batch["failed"], 0)
             self.assertEqual([x["result"] for x in batch["results"]], ["WRITTEN", "WRITTEN"])
+
+    def test_mark_insufficient_removes_pending_without_creating_decision_and_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fixture = build_fixture(root)
+            before_transcript = fixture["transcript_path"].read_bytes()
+            before_evidence = fixture["evidence_path"].read_bytes()
+
+            first = mark_analysis_insufficient(
+                root,
+                fixture["queue_id"],
+                reason="RETAINED_FRAME_IS_BLANK_LOADING_SCREEN",
+                evidence_lineage_id="lineage-fixture-123",
+            )
+            self.assertEqual(first["result"], "WRITTEN")
+
+            queue = json.loads((root / "state" / "research_queue.json").read_text(encoding="utf-8"))
+            ledger = json.loads((root / "state" / "research_decisions.json").read_text(encoding="utf-8"))
+            manifest = json.loads((root / "state" / "manifest.json").read_text(encoding="utf-8"))
+            item = manifest["items"][fixture["queue_id"]]
+            self.assertEqual(queue["count"], 0)
+            self.assertEqual(ledger["items"], {})
+            self.assertEqual(item["research_status"], "INSUFFICIENT_CONTENT")
+            self.assertEqual(item["analysis_content_status"], "INSUFFICIENT_CONTENT")
+            self.assertEqual(item["analysis_insufficient_reason"], "RETAINED_FRAME_IS_BLANK_LOADING_SCREEN")
+            self.assertEqual(fixture["transcript_path"].read_bytes(), before_transcript)
+            self.assertEqual(fixture["evidence_path"].read_bytes(), before_evidence)
+
+            paths = [
+                root / "state" / "research_queue.json",
+                root / "state" / "research_decisions.json",
+                root / "state" / "manifest.json",
+            ]
+            before_replay = {path: path.read_bytes() for path in paths}
+            second = mark_analysis_insufficient(
+                root,
+                fixture["queue_id"],
+                reason="RETAINED_FRAME_IS_BLANK_LOADING_SCREEN",
+                evidence_lineage_id="lineage-fixture-123",
+            )
+            self.assertEqual(second["result"], "NO_OP")
+            for path in paths:
+                self.assertEqual(path.read_bytes(), before_replay[path])
+
+            historical = get_analysis_queue_item(root, fixture["queue_id"])
+            self.assertEqual(historical["result"], "INSUFFICIENT_CONTENT")
+            self.assertIsNone(historical["decision"])
+
+    def test_mark_insufficient_rejects_lineage_mismatch_and_finalized_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fixture = build_fixture(root)
+            mismatch = mark_analysis_insufficient(
+                root,
+                fixture["queue_id"],
+                reason="BLANK_FRAME",
+                evidence_lineage_id="wrong-lineage",
+            )
+            self.assertEqual(mismatch["result"], "VALIDATION_ERROR")
+
+            self.assertEqual(
+                record_analysis_decision(root, fixture["queue_id"], decision_payload("IGNORE"))["result"],
+                "WRITTEN",
+            )
+            conflict = mark_analysis_insufficient(
+                root,
+                fixture["queue_id"],
+                reason="BLANK_FRAME",
+                evidence_lineage_id="lineage-fixture-123",
+            )
+            self.assertEqual(conflict["result"], "CONFLICT")
+            self.assertEqual(conflict["error"], "FINALIZED_DECISION_EXISTS")
+
+    def test_finalized_decision_listing_filters_and_joins_manifest_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fixture = build_fixture(root)
+            self.assertEqual(
+                record_analysis_decision(root, fixture["queue_id"], decision_payload("RESEARCH"))["result"],
+                "WRITTEN",
+            )
+
+            listing = list_analysis_decisions(
+                root,
+                creator_key="creator",
+                source_platform="TIKTOK",
+                decision="RESEARCH",
+                evaluation_run_id="eval-fixture-1",
+                screened_after="2020-01-01T00:00:00+00:00",
+                screened_before="2100-01-01T00:00:00+00:00",
+                limit=10,
+                offset=0,
+            )
+            self.assertEqual(listing["total"], 1)
+            row = listing["items"][0]
+            self.assertEqual(row["queue_id"], fixture["queue_id"])
+            self.assertEqual(row["creator"], "creator")
+            self.assertEqual(row["source_platform"], "TIKTOK")
+            self.assertEqual(row["evaluation_run_id"], "eval-fixture-1")
+            self.assertEqual(row["decision"], "RESEARCH")
+            self.assertEqual(row["evidence_lineage_id"], "lineage-fixture-123")
 
     def test_retired_creator_is_hidden_from_pending_list_but_history_is_readable(self) -> None:
         with tempfile.TemporaryDirectory() as td:
