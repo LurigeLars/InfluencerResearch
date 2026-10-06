@@ -24,6 +24,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
+from analysis_queue import (
+    get_analysis_queue_item,
+    list_analysis_queue,
+    record_analysis_decision,
+    record_analysis_decision_batch,
+)
 from creator_registry import (
     get_creator,
     list_creator_summaries,
@@ -121,6 +127,42 @@ class CreatorSourceUpdate(BaseModel):
     evaluation_enabled: bool | None = None
     monitoring_enabled: bool | None = None
     priority: int | None = Field(default=None, ge=1, le=1000)
+
+
+class AnalysisDecisionInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    queue_id: str = Field(min_length=1, max_length=160)
+    decision: Literal["IGNORE", "RESEARCH", "TEST_CANDIDATE", "BACKLOG_CANDIDATE"]
+    idea_type: Literal[
+        "TRADE_IDEA",
+        "MARKET_STRUCTURE",
+        "MACRO",
+        "DATA_TOOL",
+        "SYSTEM_AUTOMATION",
+        "QUANT_METHOD",
+        "PORTFOLIO_RISK",
+        "EDUCATION",
+        "PROMOTIONAL",
+        "OTHER",
+    ]
+    claim_summary: str
+    claims: list[dict | str]
+    existing_system_overlap: str
+    verification_plan: list[str]
+    falsifiable_test: str
+    main_risk: str
+    confidence: float = Field(ge=0, le=1)
+    rationale: str
+    evidence_lineage_id: str = Field(min_length=1)
+    duplicate_of: str | None = None
+    duplicate_basis: Literal[
+        "TRANSCRIPT_MATCH",
+        "EXACT_SOURCE_URL",
+        "CROSS_PLATFORM_REPOST",
+        "POSSIBLE_SEMANTIC_DUPLICATE",
+        "OTHER_EXPLICIT",
+    ] | None = None
 
 
 def resolve_job_state(kind: str, returncode: int, status: dict | None) -> str:
@@ -534,6 +576,120 @@ def creator_recent_check(
         "max_items": cap,
     }
     return as_text(jobs.start("creator_recent_check", params))
+
+
+@mcp.tool(
+    description="List current analysis-queue items. Retired creators are excluded from pending targets.",
+    annotations=READ,
+    structured_output=False,
+)
+def analysis_queue_list(
+    creator_key: str = "",
+    source_platform: Literal["YOUTUBE", "TIKTOK", "INSTAGRAM"] | None = None,
+    published_after: str | None = None,
+    published_before: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> str:
+    try:
+        cap = max(1, min(int(limit), 100))
+        start = max(0, int(offset))
+        return as_text(list_analysis_queue(
+            ROOT,
+            creator_key=creator_key.strip().lower() or None,
+            source_platform=source_platform,
+            published_after=published_after,
+            published_before=published_before,
+            limit=cap,
+            offset=start,
+        ))
+    except Exception as exc:
+        return as_text({"result": "REJECTED", "error": f"{type(exc).__name__}:{exc}"})
+
+
+@mcp.tool(
+    description="Get full canonical analysis input for one queue item or its finalized historical decision.",
+    annotations=READ,
+    structured_output=False,
+)
+def analysis_queue_get(queue_id: str) -> str:
+    try:
+        return as_text(get_analysis_queue_item(ROOT, queue_id))
+    except Exception as exc:
+        return as_text({"result": "REJECTED", "error": f"{type(exc).__name__}:{exc}"})
+
+
+@mcp.tool(
+    description="Record one canonical analysis decision and apply existing IR decision governance.",
+    annotations=UPDATE,
+    structured_output=False,
+)
+def analysis_decision_record(
+    queue_id: str,
+    decision: Literal["IGNORE", "RESEARCH", "TEST_CANDIDATE", "BACKLOG_CANDIDATE"],
+    idea_type: Literal[
+        "TRADE_IDEA",
+        "MARKET_STRUCTURE",
+        "MACRO",
+        "DATA_TOOL",
+        "SYSTEM_AUTOMATION",
+        "QUANT_METHOD",
+        "PORTFOLIO_RISK",
+        "EDUCATION",
+        "PROMOTIONAL",
+        "OTHER",
+    ],
+    claim_summary: str,
+    claims: list[dict | str],
+    existing_system_overlap: str,
+    verification_plan: list[str],
+    falsifiable_test: str,
+    main_risk: str,
+    confidence: float,
+    rationale: str,
+    evidence_lineage_id: str,
+    duplicate_of: str | None = None,
+    duplicate_basis: Literal[
+        "TRANSCRIPT_MATCH",
+        "EXACT_SOURCE_URL",
+        "CROSS_PLATFORM_REPOST",
+        "POSSIBLE_SEMANTIC_DUPLICATE",
+        "OTHER_EXPLICIT",
+    ] | None = None,
+) -> str:
+    payload = {
+        "queue_id": queue_id,
+        "decision": decision,
+        "idea_type": idea_type,
+        "claim_summary": claim_summary,
+        "claims": claims,
+        "existing_system_overlap": existing_system_overlap,
+        "verification_plan": verification_plan,
+        "falsifiable_test": falsifiable_test,
+        "main_risk": main_risk,
+        "confidence": confidence,
+        "rationale": rationale,
+        "evidence_lineage_id": evidence_lineage_id,
+        "duplicate_of": duplicate_of,
+        "duplicate_basis": duplicate_basis,
+    }
+    try:
+        return as_text(record_analysis_decision(ROOT, queue_id, payload))
+    except Exception as exc:
+        return as_text({"result": "REJECTED", "queue_id": queue_id, "error": f"{type(exc).__name__}:{exc}"})
+
+
+@mcp.tool(
+    description="Record up to 20 canonical analysis decisions with per-item results.",
+    annotations=UPDATE,
+    structured_output=False,
+)
+def analysis_decision_record_batch(items: list[AnalysisDecisionInput]) -> str:
+    try:
+        payload = [item.model_dump() for item in items]
+        return as_text(record_analysis_decision_batch(ROOT, payload))
+    except Exception as exc:
+        return as_text({"result": "REJECTED", "error": f"{type(exc).__name__}:{exc}"})
 
 
 @mcp.tool(
