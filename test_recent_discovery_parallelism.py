@@ -136,6 +136,7 @@ class RecentDiscoveryParallelismTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             with (
                 patch.object(crc.tts, "start_server") as start_server,
+                patch.object(crc.tts, "stop_server") as stop_server,
                 patch.object(crc, "discover_instagram", side_effect=fake_instagram),
                 patch.object(crc, "discover_tiktok", side_effect=fake_tiktok),
                 patch.object(crc, "discover_youtube", side_effect=fake_youtube),
@@ -151,6 +152,8 @@ class RecentDiscoveryParallelismTests(unittest.TestCase):
         discoveries, errors, source_map, timings, meta = result
         self.assertEqual(errors, [])
         start_server.assert_called_once()
+        stop_server.assert_called_once()
+        self.assertIn("deadline", stop_server.call_args.kwargs)
         self.assertEqual(max_browser, crc.DISCOVERY_BROWSER_WORKERS)
         self.assertEqual(sorted(instagram_run_indexes), [1, 4])
         self.assertEqual(
@@ -172,6 +175,38 @@ class RecentDiscoveryParallelismTests(unittest.TestCase):
             len([row for row in timings if row["stage"] == "DISCOVERY"]),
             5,
         )
+
+    def test_discovery_releases_browser_run_lock_after_worker_error(self):
+        selected = [
+            (
+                {"creator_key": "beta"},
+                [{"platform": "TIKTOK", "profile_url": "https://tiktok.example/@beta"}],
+            )
+        ]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with (
+                patch.object(crc.tts, "start_server") as start_server,
+                patch.object(crc.tts, "stop_server") as stop_server,
+                patch.object(
+                    crc,
+                    "discover_tiktok",
+                    side_effect=RuntimeError("fixture discovery failure"),
+                ),
+            ):
+                discoveries, errors, _, _, _ = crc._run_discovery_batch(
+                    Path(tmp),
+                    selected,
+                    datetime(2026, 9, 28, tzinfo=timezone.utc),
+                    datetime(2026, 9, 29, tzinfo=timezone.utc),
+                    15,
+                )
+
+        start_server.assert_called_once()
+        stop_server.assert_called_once()
+        self.assertEqual(discoveries, [])
+        self.assertEqual(len(errors), 1)
+        self.assertIn("fixture discovery failure", errors[0]["error"])
 
     def test_tiktok_discovery_timings_expose_browser_diagnostics(self):
         selected = [
