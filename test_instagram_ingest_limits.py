@@ -278,12 +278,12 @@ class InstagramIngestLimitTests(unittest.TestCase):
                 ig,
                 "_collect_loaded_reel_urls",
                 return_value=([reel_url], 1),
-            ),
+            ) as collect,
             unittest.mock.patch.object(ig, "_reel_published_at") as live_time,
         ):
             result = ig.discover_reels_authenticated(
                 "example",
-                max_scan=15,
+                max_scan=60,
                 known_reel_times={
                     "RECENT123": "2026-09-29T15:10:53+00:00"
                 },
@@ -299,6 +299,7 @@ class InstagramIngestLimitTests(unittest.TestCase):
         self.assertEqual(result["timings"]["reel_time_cache_hits"], 1)
         self.assertEqual(result["timings"]["reel_time_network_probes"], 0)
         live_time.assert_not_called()
+        collect.assert_called_once_with(page, 60)
         page.goto.assert_called_once_with(
             "https://www.instagram.com/example/reels/",
             wait_until="domcontentloaded",
