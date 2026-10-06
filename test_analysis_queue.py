@@ -9,9 +9,11 @@ from analysis_queue import (
     get_analysis_queue_item,
     list_analysis_decisions,
     list_analysis_queue,
+    list_creator_evaluation_items,
     mark_analysis_insufficient,
     record_analysis_decision,
     record_analysis_decision_batch,
+    summarize_creator_evaluation_run,
 )
 
 
@@ -383,6 +385,106 @@ class AnalysisQueueTests(unittest.TestCase):
             full = get_analysis_queue_item(root, fixture["queue_id"])
             self.assertEqual(full["queue_item"]["transcript_text"], fixture["queue_item"]["transcript_text"])
             self.assertEqual(full["queue_item"]["discovery_tags"], ["market", "fixture"])
+
+    def test_creator_evaluation_item_list_explains_completed_dispositions(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fixture = build_fixture(root)
+            run_id = "eval-fixture-1"
+            manifest_path = root / "state" / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            base = dict(manifest["items"][fixture["queue_id"]])
+            base.update({
+                "download_status": "DONE",
+                "transcription_status": "DONE",
+                "visual_evidence_status": "DONE",
+            })
+            manifest["items"][fixture["queue_id"]] = base
+            manifest["items"]["tt_dup"] = {
+                **base,
+                "shortcode": "tt_dup",
+                "source_id": "dup",
+                "url": "https://www.tiktok.com/@creator/video/dup",
+                "research_status": "DUPLICATE",
+                "duplicate_of": fixture["queue_id"],
+                "duplicate_basis": "TRANSCRIPT_MATCH",
+            }
+            manifest["items"]["tt_insufficient"] = {
+                **base,
+                "shortcode": "tt_insufficient",
+                "source_id": "insufficient",
+                "url": "https://www.tiktok.com/@creator/video/insufficient",
+                "research_status": "INSUFFICIENT_CONTENT",
+                "analysis_content_status": "INSUFFICIENT_CONTENT",
+                "analysis_content_reason": "NO_USABLE_TEXT_OR_VISUAL",
+            }
+            manifest["items"]["tt_final"] = {
+                **base,
+                "shortcode": "tt_final",
+                "source_id": "final",
+                "url": "https://www.tiktok.com/@creator/video/final",
+                "research_status": "ANALYZED",
+            }
+            manifest["items"]["tt_missing"] = {
+                **base,
+                "shortcode": "tt_missing",
+                "source_id": "missing",
+                "url": "https://www.tiktok.com/@creator/video/missing",
+                "research_status": "PENDING_ANALYSIS",
+                "analysis_content_status": "READY",
+            }
+            write_json(manifest_path, manifest)
+            write_json(
+                root / "state" / "research_decisions.json",
+                {
+                    "schema_version": 2,
+                    "items": {
+                        "tt_final": {
+                            "decision": "RESEARCH",
+                            "screened_at": "2026-10-07T00:00:00+00:00",
+                            "evidence_lineage_id": "lineage-final",
+                        }
+                    },
+                },
+            )
+
+            listing = list_creator_evaluation_items(
+                root,
+                creator_key="creator",
+                source_platform="TIKTOK",
+                evaluation_run_id=run_id,
+                completed_only=True,
+                limit=20,
+                offset=0,
+            )
+            by_id = {row["queue_id"]: row for row in listing["items"]}
+            self.assertEqual(by_id[fixture["queue_id"]]["disposition"], "PENDING_ANALYSIS")
+            self.assertEqual(by_id["tt_dup"]["disposition"], "DUPLICATE")
+            self.assertEqual(by_id["tt_insufficient"]["disposition"], "INSUFFICIENT_CONTENT")
+            self.assertEqual(by_id["tt_final"]["disposition"], "FINALIZED_DECISION")
+            self.assertEqual(by_id["tt_missing"]["disposition"], "QUEUE_MISSING")
+
+            only_duplicates = list_creator_evaluation_items(
+                root,
+                evaluation_run_id=run_id,
+                disposition="DUPLICATE",
+                completed_only=True,
+                limit=20,
+                offset=0,
+            )
+            self.assertEqual(only_duplicates["total"], 1)
+            self.assertEqual(only_duplicates["items"][0]["queue_id"], "tt_dup")
+
+            accounting = summarize_creator_evaluation_run(root, run_id)
+            self.assertEqual(accounting["analysis_completed_manifest_count"], 5)
+            self.assertEqual(accounting["queued_for_analysis_count"], 1)
+            self.assertEqual(accounting["analysis_finalized_count"], 1)
+            self.assertEqual(accounting["analysis_duplicate_count"], 1)
+            self.assertEqual(accounting["analysis_insufficient_count"], 1)
+            self.assertEqual(accounting["analysis_queue_missing_count"], 1)
+            self.assertEqual(accounting["analysis_accounted_count"], 4)
+            self.assertEqual(accounting["analysis_unaccounted_count"], 1)
+            self.assertEqual(accounting["analysis_unaccounted_items"], ["tt_missing"])
 
 
 if __name__ == "__main__":
