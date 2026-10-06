@@ -1870,7 +1870,14 @@ def main() -> int:
             progress_callback=visual_capture_progress,
         )
         if not visual.get("ok"):
-            failures.append({"video_id": vid, "url": url, "stage": "visual_capture", "detail": visual.get("diagnostic_tail") or visual.get("error")})
+            failures.append({
+                "video_id": vid,
+                "url": url,
+                "stage": "visual_capture",
+                "detail": visual.get("error") or visual.get("diagnostic_tail"),
+                "visual_capture_child_rss_peak_mib": visual.get("visual_capture_child_rss_peak_mib"),
+                "visual_capture_memory_limit_mib": visual.get("visual_capture_memory_limit_mib"),
+            })
             continue
 
         heartbeat(
