@@ -26,7 +26,9 @@ from starlette.responses import JSONResponse
 
 from analysis_queue import (
     get_analysis_queue_item,
+    list_analysis_decisions,
     list_analysis_queue,
+    mark_analysis_insufficient,
     record_analysis_decision,
     record_analysis_decision_batch,
 )
@@ -70,6 +72,53 @@ def load_json(path: Path, default: dict | None = None) -> dict:
 
 def as_text(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def _reconcile_completed_creator_evaluation(status_path: Path) -> dict:
+    status = load_json(status_path, {})
+    run_id = str(status.get("evaluation_run_id") or "").strip()
+    if not run_id:
+        return {"ok": True, "skipped": "NO_EVALUATION_RUN_ID", "target_count": 0}
+
+    manifest = load_json(STATE_DIR / "manifest.json", {"items": {}})
+    targets: list[str] = []
+    for shortcode, item in (manifest.get("items") or {}).items():
+        if not isinstance(item, dict) or str(item.get("evaluation_run_id") or "") != run_id:
+            continue
+        if (
+            item.get("download_status") == "DONE"
+            and item.get("transcription_status") == "DONE"
+            and item.get("visual_evidence_status") == "DONE"
+        ):
+            targets.append(str(shortcode))
+
+    if not targets:
+        return {"ok": True, "skipped": "NO_COMPLETED_ITEMS", "target_count": 0}
+
+    cmd = [sys.executable, str(APP_DIR / "research_queue.py"), "--root", str(ROOT)]
+    for shortcode in sorted(set(targets)):
+        cmd.extend(["--must-include-shortcode", shortcode])
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=str(APP_DIR),
+            capture_output=True,
+            text=True,
+            timeout=120,
+            shell=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "error": "DELIVERY_RECONCILIATION_TIMEOUT",
+            "target_count": len(set(targets)),
+        }
+    return {
+        "ok": result.returncode == 0,
+        "returncode": int(result.returncode),
+        "target_count": len(set(targets)),
+        "stderr_tail": (result.stderr or "")[-1000:],
+    }
 
 
 def _safe_evidence_path(value: str | None) -> Path | None:
@@ -215,6 +264,8 @@ class JobManager:
         })
         if status_path is not None:
             atomic_json(status_path, status)
+            if kind == "creator_evaluate":
+                _reconcile_completed_creator_evaluation(status_path)
         recovered = {
             **persisted,
             "state": "FAILED",
@@ -257,6 +308,8 @@ class JobManager:
         self._cleanup_request()
         job["returncode"] = int(rc)
         job["finished_at"] = utc_now()
+        if job["kind"] == "creator_evaluate":
+            _reconcile_completed_creator_evaluation(job["status_path"])
         job["status"] = summarize_status(job["status_path"])
         job["state"] = resolve_job_state(job["kind"], int(rc), job["status"])
         public = self._public(job)
@@ -393,6 +446,8 @@ class JobManager:
                 finished_at = utc_now()
                 job["finished_at"] = finished_at
                 job["state"] = "STOPPED"
+                if job["kind"] == "creator_evaluate":
+                    _reconcile_completed_creator_evaluation(job["status_path"])
                 job["status"] = self._mark_status_stopped(job, finished_at)
                 public = self._public(job)
                 self._last = public
@@ -654,6 +709,68 @@ def analysis_queue_list(
 def analysis_queue_get(queue_id: str) -> str:
     try:
         return as_text(get_analysis_queue_item(ROOT, queue_id))
+    except Exception as exc:
+        return as_text({"result": "REJECTED", "error": f"{type(exc).__name__}:{exc}"})
+
+
+@mcp.tool(
+    description=(
+        "Mark one pending analysis item as canonically insufficient without creating an investment decision. "
+        "The item is removed from pending analysis, provenance is preserved in the manifest, and identical replay is idempotent."
+    ),
+    annotations=UPDATE,
+    structured_output=False,
+)
+def analysis_queue_mark_insufficient(
+    queue_id: str,
+    reason: str,
+    evidence_lineage_id: str,
+) -> str:
+    try:
+        return as_text(
+            mark_analysis_insufficient(
+                ROOT,
+                queue_id,
+                reason=reason,
+                evidence_lineage_id=evidence_lineage_id,
+            )
+        )
+    except Exception as exc:
+        return as_text({"result": "REJECTED", "queue_id": queue_id, "error": f"{type(exc).__name__}:{exc}"})
+
+
+@mcp.tool(
+    description=(
+        "List finalized canonical analysis decisions with manifest metadata. "
+        "Date filters apply to screened_at."
+    ),
+    annotations=READ,
+    structured_output=False,
+)
+def analysis_decision_list(
+    creator_key: str | None = None,
+    source_platform: Literal["YOUTUBE", "TIKTOK", "INSTAGRAM"] | None = None,
+    decision: Literal["IGNORE", "RESEARCH", "TEST_CANDIDATE", "BACKLOG_CANDIDATE"] | None = None,
+    evaluation_run_id: str | None = None,
+    screened_after: str | None = None,
+    screened_before: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> str:
+    try:
+        return as_text(
+            list_analysis_decisions(
+                ROOT,
+                creator_key=creator_key or None,
+                source_platform=source_platform,
+                decision=decision,
+                evaluation_run_id=evaluation_run_id or None,
+                screened_after=screened_after or None,
+                screened_before=screened_before or None,
+                limit=max(1, min(int(limit), 100)),
+                offset=max(0, int(offset)),
+            )
+        )
     except Exception as exc:
         return as_text({"result": "REJECTED", "error": f"{type(exc).__name__}:{exc}"})
 
