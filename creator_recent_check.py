@@ -43,7 +43,7 @@ def _bounded_env_int(
     return max(minimum, min(maximum, value))
 
 
-RECENT_CHECK_VERSION = "0.3.3"
+RECENT_CHECK_VERSION = "0.3.4"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
@@ -2019,8 +2019,16 @@ def _run_discovery_batch(
                 )
         results = [results_by_index[index] for index in sorted(results_by_index)]
     finally:
-        for executor in executors:
-            executor.shutdown(wait=True, cancel_futures=False)
+        try:
+            for executor in executors:
+                executor.shutdown(wait=True, cancel_futures=False)
+        finally:
+            # Discovery owns the process-wide CamoFox/TikTok run lock only
+            # while browser discovery is active. Recent-check ingestion runs
+            # in isolated worker processes, so retaining this lock here makes
+            # the parent deadlock its own later TikTok ingestion worker.
+            if browser_tasks:
+                tts.stop_server(deadline=time.monotonic() + 8.0)
 
     discoveries: list[dict] = []
     errors: list[dict] = []
