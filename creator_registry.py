@@ -85,6 +85,38 @@ def _clean_display_name(value: str) -> str:
     return value
 
 
+def _creator_monitoring_enabled(status: str, sources: list[dict]) -> bool:
+    """Creator-level monitoring is derived from active source-level monitoring."""
+    if str(status or "").upper() != "ACTIVE":
+        return False
+    return any(
+        bool(source.get("enabled", True)) and bool(source.get("monitoring_enabled", False))
+        for source in sources
+    )
+
+
+def _creator_state_snapshot(profile: dict) -> dict:
+    return {
+        "creator_key": profile.get("creator_key"),
+        "status": str(profile.get("status", "ACTIVE")).upper(),
+        "monitoring_enabled": bool(profile.get("monitoring_enabled", False)),
+        "sources": [
+            {
+                "platform": source.get("platform"),
+                "enabled": bool(source.get("enabled", True)),
+                "evaluation_enabled": bool(source.get("evaluation_enabled", False)),
+                "monitoring_enabled": bool(source.get("monitoring_enabled", False)),
+                "priority": int(source.get("priority", 100)),
+            }
+            for source in sorted(
+                profile.get("sources", []),
+                key=lambda source: str(source.get("platform") or ""),
+            )
+        ],
+        **({"retirement": profile.get("retirement")} if profile.get("retirement") else {}),
+    }
+
+
 def canonicalize_profile_url(platform: str, value: str) -> str:
     platform = str(platform or "").upper()
     value = str(value or "").strip()
@@ -132,7 +164,7 @@ def validate_registry(obj: dict) -> dict:
         if str(profile.get("creator_key", key)).strip().lower() != key:
             raise ValueError(f"creator_key mismatch: {key}")
         status = str(profile.get("status", "ACTIVE")).upper()
-        if status not in {"ACTIVE", "DISABLED"}:
+        if status not in {"ACTIVE", "DISABLED", "RETIRED"}:
             raise ValueError(f"invalid status for {key}: {status}")
         display_name = str(profile.get("display_name") or "").strip()
         if not display_name:
@@ -176,7 +208,7 @@ def validate_registry(obj: dict) -> dict:
             "creator_key": key,
             "display_name": display_name,
             "status": status,
-            "monitoring_enabled": bool(profile.get("monitoring_enabled", False)),
+            "monitoring_enabled": _creator_monitoring_enabled(status, normalized_sources),
             "sources": normalized_sources,
         }
     return {**obj, "creators": normalized}
@@ -685,13 +717,235 @@ def load_registry(root: Path) -> dict:
     return validate_registry(load_json(path))
 
 
-def get_creator(root: Path, creator_key: str) -> dict:
+def update_creator(root: Path, req: dict) -> dict:
+    root = root.resolve()
+    key = str(req.get("creator_key") or "").strip().lower()
+    if not CREATOR_KEY_RE.fullmatch(key):
+        raise ValueError("BAD_CREATOR_KEY")
+
+    raw_patches = req.get("sources")
+    if not isinstance(raw_patches, list) or not 1 <= len(raw_patches) <= len(SUPPORTED_PLATFORMS):
+        raise ValueError("BAD_SOURCE_UPDATES")
+
+    registry = load_registry(root)
+    profile = registry["creators"].get(key)
+    if profile is None:
+        return {
+            "result": "NOT_FOUND",
+            "creator_key": key,
+            "changed": False,
+            "timestamp": now_iso(),
+        }
+    if str(profile.get("status", "ACTIVE")).upper() != "ACTIVE":
+        raise ValueError(f"CREATOR_NOT_ACTIVE:{str(profile.get('status') or '').upper()}")
+
+    allowed_fields = {"platform", "enabled", "evaluation_enabled", "monitoring_enabled", "priority"}
+    source_by_platform = {
+        str(source.get("platform") or "").upper(): dict(source)
+        for source in profile.get("sources", [])
+    }
+    patches_by_platform: dict[str, dict] = {}
+    for patch in raw_patches:
+        if not isinstance(patch, dict):
+            raise ValueError("BAD_SOURCE_UPDATE")
+        unknown = set(patch) - allowed_fields
+        if unknown:
+            raise ValueError("UNKNOWN_SOURCE_UPDATE_FIELDS:" + ",".join(sorted(unknown)))
+        platform = str(patch.get("platform") or "").upper()
+        if platform not in SUPPORTED_PLATFORMS:
+            raise ValueError("BAD_SOURCE_PLATFORM")
+        if platform in patches_by_platform:
+            raise ValueError("DUPLICATE_SOURCE_PLATFORM")
+        if platform not in source_by_platform:
+            raise ValueError(f"SOURCE_NOT_FOUND:{platform}")
+
+        normalized = {"platform": platform}
+        for field in ("enabled", "evaluation_enabled", "monitoring_enabled"):
+            if field not in patch:
+                continue
+            value = patch[field]
+            if not isinstance(value, bool):
+                raise ValueError(f"BAD_{field.upper()}")
+            if field == "evaluation_enabled" and value and platform not in EVALUATION_PLATFORMS:
+                raise ValueError("EVALUATION_PLATFORM_NOT_SUPPORTED")
+            if field == "monitoring_enabled" and value and platform not in MONITOR_PLATFORMS:
+                raise ValueError("MONITOR_PLATFORM_NOT_SUPPORTED")
+            normalized[field] = value
+        if "priority" in patch:
+            priority = patch["priority"]
+            if isinstance(priority, bool) or not isinstance(priority, int) or not 1 <= priority <= 1000:
+                raise ValueError("BAD_SOURCE_PRIORITY")
+            normalized["priority"] = priority
+        if len(normalized) == 1:
+            raise ValueError("EMPTY_SOURCE_UPDATE")
+        patches_by_platform[platform] = normalized
+
+    previous_state = _creator_state_snapshot(profile)
+    changed_sources: list[dict] = []
+    updated_sources: list[dict] = []
+    for source in profile.get("sources", []):
+        platform = str(source.get("platform") or "").upper()
+        patch = patches_by_platform.get(platform)
+        if patch is None:
+            updated_sources.append(dict(source))
+            continue
+        updated = dict(source)
+        changes: dict[str, dict] = {}
+        for field, value in patch.items():
+            if field == "platform":
+                continue
+            old_value = updated.get(field)
+            if old_value != value:
+                updated[field] = value
+                changes[field] = {"from": old_value, "to": value}
+        updated_sources.append(updated)
+        if changes:
+            changed_sources.append({"platform": platform, "changes": changes})
+
+    if not changed_sources:
+        return {
+            "result": "NO_OP",
+            "creator_key": key,
+            "changed": False,
+            "previous_state": previous_state,
+            "resulting_state": previous_state,
+            "changed_sources": [],
+            "timestamp": now_iso(),
+        }
+
+    changed_at = now_iso()
+    updated_profile = {
+        **profile,
+        "sources": updated_sources,
+        "monitoring_enabled": _creator_monitoring_enabled("ACTIVE", updated_sources),
+        "last_mutation": {
+            "operation": "creator_update",
+            "at": changed_at,
+            "issued_by": str(req.get("issued_by") or "UNKNOWN")[:100],
+            "changed_sources": [item["platform"] for item in changed_sources],
+        },
+    }
+    merged = validate_registry({
+        **registry,
+        "updated_at": changed_at,
+        "creators": {**registry["creators"], key: updated_profile},
+    })
+    atomic_json(root / "control" / "creator_registry.json", merged)
+    resulting = merged["creators"][key]
+    return {
+        "result": "UPDATED",
+        "creator_key": key,
+        "changed": True,
+        "previous_state": previous_state,
+        "resulting_state": _creator_state_snapshot(resulting),
+        "changed_sources": changed_sources,
+        "timestamp": changed_at,
+    }
+
+
+def retire_creator(root: Path, creator_key: str, reason: str, *, issued_by: str = "UNKNOWN") -> dict:
+    root = root.resolve()
+    key = str(creator_key or "").strip().lower()
+    if not CREATOR_KEY_RE.fullmatch(key):
+        raise ValueError("BAD_CREATOR_KEY")
+    reason = str(reason or "").strip()
+    if not reason or len(reason) > 500 or any(ord(ch) < 32 for ch in reason):
+        raise ValueError("BAD_RETIRE_REASON")
+
+    registry = load_registry(root)
+    profile = registry["creators"].get(key)
+    if profile is None:
+        return {
+            "result": "NOT_FOUND",
+            "creator_key": key,
+            "changed": False,
+            "timestamp": now_iso(),
+        }
+
+    previous_state = _creator_state_snapshot(profile)
+    status = str(profile.get("status", "ACTIVE")).upper()
+    if status == "RETIRED":
+        return {
+            "result": "ALREADY_RETIRED",
+            "creator_key": key,
+            "changed": False,
+            "previous_state": previous_state,
+            "resulting_state": previous_state,
+            "changed_sources": [],
+            "timestamp": now_iso(),
+            "reason": (profile.get("retirement") or {}).get("reason"),
+            "retirement": profile.get("retirement"),
+        }
+    if status != "ACTIVE":
+        raise ValueError(f"CREATOR_NOT_ACTIVE:{status}")
+
+    changed_sources: list[dict] = []
+    retired_sources: list[dict] = []
+    for source in profile.get("sources", []):
+        updated = dict(source)
+        changes: dict[str, dict] = {}
+        for field in ("monitoring_enabled", "evaluation_enabled", "enabled"):
+            old_value = bool(updated.get(field, field == "enabled"))
+            if old_value:
+                updated[field] = False
+                changes[field] = {"from": True, "to": False}
+            else:
+                updated[field] = False
+        retired_sources.append(updated)
+        if changes:
+            changed_sources.append({
+                "platform": str(source.get("platform") or "").upper(),
+                "changes": changes,
+            })
+
+    retired_at = now_iso()
+    retirement = {
+        "retired_at": retired_at,
+        "reason": reason,
+        "retired_by": str(issued_by or "UNKNOWN")[:100],
+    }
+    retired_profile = {
+        **profile,
+        "status": "RETIRED",
+        "monitoring_enabled": False,
+        "sources": retired_sources,
+        "retirement": retirement,
+        "last_mutation": {
+            "operation": "creator_retire",
+            "at": retired_at,
+            "issued_by": retirement["retired_by"],
+            "changed_sources": [item["platform"] for item in changed_sources],
+        },
+    }
+    merged = validate_registry({
+        **registry,
+        "updated_at": retired_at,
+        "creators": {**registry["creators"], key: retired_profile},
+    })
+    atomic_json(root / "control" / "creator_registry.json", merged)
+    resulting = merged["creators"][key]
+    return {
+        "result": "RETIRED",
+        "creator_key": key,
+        "changed": True,
+        "previous_state": previous_state,
+        "resulting_state": _creator_state_snapshot(resulting),
+        "changed_sources": changed_sources,
+        "timestamp": retired_at,
+        "reason": reason,
+        "retirement": retirement,
+    }
+
+
+def get_creator(root: Path, creator_key: str, *, include_inactive: bool = False) -> dict:
     key = str(creator_key).strip().lower()
     if not CREATOR_KEY_RE.fullmatch(key):
         raise KeyError("BAD_CREATOR_KEY")
     registry = load_registry(root)
     profile = registry["creators"].get(key)
-    if not profile or profile.get("status") != "ACTIVE":
+    if not profile:
+        raise KeyError("CREATOR_NOT_REGISTERED")
+    if not include_inactive and profile.get("status") != "ACTIVE":
         raise KeyError("CREATOR_NOT_REGISTERED")
     return profile
 
