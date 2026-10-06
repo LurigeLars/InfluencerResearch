@@ -202,6 +202,64 @@ class MCPJobSemanticsTests(unittest.TestCase):
             self.assertEqual(nested["progress"]["last_phase"], "TRANSCRIPTION")
             self.assertEqual(manager.status()["last"]["state"], "FAILED")
 
+    def test_terminal_reconciliation_targets_completed_evaluation_items(self) -> None:
+        import json
+        from types import SimpleNamespace
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            state_dir = root / "state"
+            app_dir = root / "app"
+            state_dir.mkdir(parents=True)
+            app_dir.mkdir(parents=True)
+
+            run_id = "eval-fixture-youtube-1"
+            status_path = state_dir / "creator_evaluation_status.json"
+            status_path.write_text(
+                json.dumps({"evaluation_run_id": run_id, "state": "FAILED"}),
+                encoding="utf-8",
+            )
+            manifest_items = {}
+            for queue_id in ("yt_one001", "yt_two002", "yt_three03"):
+                manifest_items[queue_id] = {
+                    "evaluation_run_id": run_id,
+                    "download_status": "DONE",
+                    "transcription_status": "DONE",
+                    "visual_evidence_status": "DONE",
+                }
+            manifest_items["yt_incomplete"] = {
+                "evaluation_run_id": run_id,
+                "download_status": "DONE",
+                "transcription_status": "PENDING",
+                "visual_evidence_status": "DONE",
+            }
+            (state_dir / "manifest.json").write_text(
+                json.dumps({"schema_version": 1, "items": manifest_items}),
+                encoding="utf-8",
+            )
+
+            with (
+                patch.object(irm, "ROOT", root),
+                patch.object(irm, "STATE_DIR", state_dir),
+                patch.object(irm, "APP_DIR", app_dir),
+                patch.object(
+                    irm.subprocess,
+                    "run",
+                    return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+                ) as run_mock,
+            ):
+                result = irm._reconcile_completed_creator_evaluation(status_path)
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["target_count"], 3)
+            cmd = run_mock.call_args.args[0]
+            self.assertIn(str(app_dir / "research_queue.py"), cmd)
+            self.assertEqual(cmd.count("--must-include-shortcode"), 3)
+            self.assertIn("yt_one001", cmd)
+            self.assertIn("yt_two002", cmd)
+            self.assertIn("yt_three03", cmd)
+            self.assertNotIn("yt_incomplete", cmd)
+
     def test_creator_evaluation_terminal_state_overrides_nonzero_exit(self) -> None:
         self.assertEqual(
             irm.resolve_job_state("creator_evaluate", 1, {"state": "PARTIAL"}),

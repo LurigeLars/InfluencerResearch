@@ -17,7 +17,8 @@ from typing import Any, Callable
 from evaluation_progress import heartbeat, sample_outcome, terminalize
 from urllib.parse import urlparse
 
-YOUTUBE_EVAL_VERSION = "0.7.1"
+YOUTUBE_EVAL_VERSION = "0.8.0"
+DEFAULT_MAX_UNPINNED_WHISPER_DURATION_SECONDS = 20 * 60
 
 
 def utc_now() -> str:
@@ -76,6 +77,53 @@ def parse_exact_video_ids(value: str, *, cap: int = EXACT_VIDEO_ID_CAP) -> list[
     return out
 
 
+def max_unpinned_whisper_duration_seconds() -> int:
+    raw = os.environ.get(
+        "INFLUENCER_RESEARCH_YOUTUBE_MAX_UNPINNED_WHISPER_DURATION_SECONDS",
+        str(DEFAULT_MAX_UNPINNED_WHISPER_DURATION_SECONDS),
+    )
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        value = DEFAULT_MAX_UNPINNED_WHISPER_DURATION_SECONDS
+    return max(300, min(value, 3600))
+
+
+def _duration_seconds(info: dict) -> float | None:
+    raw = info.get("duration")
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _preferred_caption_availability(info: dict) -> bool | None:
+    sources_present = False
+    for field in ("subtitles", "automatic_captions"):
+        tracks = info.get(field)
+        if not isinstance(tracks, dict):
+            continue
+        sources_present = True
+        for language, variants in tracks.items():
+            lang = str(language or "").casefold()
+            if not (lang == "en" or lang.startswith("en-") or lang == "sv" or lang.startswith("sv-")):
+                continue
+            if isinstance(variants, list) and variants:
+                return True
+    return False if sources_present else None
+
+
+def _deferred_entry(entry: dict, reason: str, **extra: Any) -> dict:
+    return {
+        "video_id": str(entry.get("id") or ""),
+        "url": entry.get("url"),
+        "surface": entry.get("surface"),
+        "reason": reason,
+        **{key: value for key, value in extra.items() if value is not None},
+    }
+
+
 def select_seeded_sample(
     seed_entries: list[dict],
     discovered_entries: list[dict],
@@ -95,6 +143,120 @@ def select_seeded_sample(
         seen.add(video_id)
         selected_pool.append(entry)
     return selected_pool[:max(1, int(sample_size))], duplicate_count
+
+
+def preflight_evidence_cost(
+    root: Path,
+    creator_key: str,
+    entry: dict,
+    *,
+    channel_url: str,
+    required_attribution_term: str,
+    must_include: bool,
+) -> tuple[dict | None, dict | None]:
+    """Return an enriched accepted entry or a bounded-cost defer record."""
+    accepted = dict(entry)
+    accepted["must_include_seed"] = bool(must_include)
+    if must_include:
+        return accepted, None
+
+    limit_seconds = max_unpinned_whisper_duration_seconds()
+    duration = _duration_seconds({"duration": accepted.get("duration_seconds")})
+    caption_available = accepted.get("caption_track_available")
+
+    if duration is None or duration > limit_seconds:
+        verified, diag = probe_exact_video(
+            str(accepted.get("id") or ""),
+            channel_url=channel_url,
+            required_attribution_term=required_attribution_term,
+        )
+        if verified is None:
+            return None, _deferred_entry(
+                accepted,
+                "EVIDENCE_COST_PREFLIGHT_UNAVAILABLE",
+                detail=diag.get("reason"),
+            )
+        accepted = {**accepted, **verified, "must_include_seed": False}
+        duration = _duration_seconds({"duration": accepted.get("duration_seconds")})
+        caption_available = accepted.get("caption_track_available")
+
+    if duration is None:
+        return None, _deferred_entry(
+            accepted,
+            "UNPINNED_DURATION_UNKNOWN",
+            live_status=accepted.get("live_status"),
+        )
+
+    if duration <= limit_seconds:
+        return accepted, None
+
+    if caption_available is not True:
+        return None, _deferred_entry(
+            accepted,
+            "UNPINNED_LONGFORM_NO_CAPTIONS",
+            duration_seconds=round(duration, 3),
+            max_unpinned_whisper_duration_seconds=limit_seconds,
+        )
+
+    # Metadata can advertise subtitle tracks that later fail to materialize. For
+    # expensive long-form candidates, prove that a usable caption transcript is
+    # actually retrievable before admitting the item to the sample.
+    caption_probe = fetch_captions(
+        root,
+        creator_key,
+        str(accepted.get("url") or ""),
+        str(accepted.get("id") or ""),
+    )
+    if not caption_probe.get("ok"):
+        return None, _deferred_entry(
+            accepted,
+            "UNPINNED_LONGFORM_CAPTIONS_UNUSABLE",
+            duration_seconds=round(duration, 3),
+            max_unpinned_whisper_duration_seconds=limit_seconds,
+            detail=caption_probe.get("source") or caption_probe.get("diagnostic_tail"),
+        )
+    accepted["caption_preflight_verified"] = True
+    return accepted, None
+
+
+def select_bounded_evidence_sample(
+    root: Path,
+    creator_key: str,
+    entries: list[dict],
+    sample_size: int,
+    *,
+    must_include_ids: set[str],
+    channel_url: str,
+    required_attribution_term: str,
+    is_complete_entry: Callable[[dict], bool],
+) -> tuple[list[dict], list[dict], int]:
+    selected: list[dict] = []
+    deferred: list[dict] = []
+    cursor = 0
+    target = max(1, int(sample_size))
+    while cursor < len(entries) and len(selected) < target:
+        entry = entries[cursor]
+        cursor += 1
+        video_id = str(entry.get("id") or "")
+        if not video_id:
+            continue
+        if is_complete_entry(entry):
+            selected.append(dict(entry))
+            continue
+        accepted, defer = preflight_evidence_cost(
+            root,
+            creator_key,
+            entry,
+            channel_url=channel_url,
+            required_attribution_term=required_attribution_term,
+            must_include=video_id in must_include_ids,
+        )
+        if defer is not None:
+            deferred.append(defer)
+            continue
+        if accepted is not None:
+            selected.append(accepted)
+    return selected, deferred, cursor
 
 
 def _youtube_profile_identity(channel_url: str) -> tuple[str, str]:
@@ -213,6 +375,9 @@ def probe_exact_video(video_id: str, *, channel_url: str, required_attribution_t
         "url": url,
         "title": str(info.get("title") or "").strip(),
         "published_at": published_iso(info),
+        "duration_seconds": _duration_seconds(info),
+        "caption_track_available": _preferred_caption_availability(info),
+        "live_status": info.get("live_status"),
         "attribution": {
             "channel_identity_verified": True,
             "required_term": str(required_attribution_term or "").strip() or None,
@@ -311,6 +476,9 @@ def _enumerate_channel_surface(
             "title": str(obj.get("title") or "").strip(),
             "published_at": published_iso(obj),
             "surface": surface.upper(),
+            "duration_seconds": _duration_seconds(obj),
+            "caption_track_available": _preferred_caption_availability(obj),
+            "live_status": obj.get("live_status"),
         })
         if len(entries) >= requested:
             break
@@ -1299,6 +1467,8 @@ def main() -> int:
             "transcript_order": ["YOUTUBE_CAPTIONS", "FASTER_WHISPER_FALLBACK"],
             "visual_capture": "1FPS_PLUS_SCENE_CHANGE_WITH_LOCAL_DEDUPE",
             "full_video_persisted": False,
+            "max_unpinned_whisper_duration_seconds": max_unpinned_whisper_duration_seconds(),
+            "longform_policy": "DEFER_UNPINNED_NO_CAPTIONS_AND_BACKFILL",
         },
         "requested_sample_size": sample_size,
     }
@@ -1384,12 +1554,13 @@ def main() -> int:
             print(json.dumps(status, ensure_ascii=False, indent=2))
             return 4
 
+    eligible_count = len(entries)
     heartbeat(
         status_path,
         "SELECTION",
         requested_sample_size=sample_size,
         discovered_count=len(entries),
-        eligible_count=len(entries),
+        eligible_count=eligible_count,
         duplicate_count=duplicate_count,
     )
 
@@ -1403,20 +1574,32 @@ def main() -> int:
             and known[key].get("visual_evidence_status") == "DONE"
         )
 
-    selected_entries = entries[:sample_size]
+    must_include_ids = set(exact_ids or seed_ids)
+    selected_entries, deferred_items, _selection_cursor = select_bounded_evidence_sample(
+        root,
+        creator_key,
+        entries,
+        sample_size,
+        must_include_ids=must_include_ids,
+        channel_url=args.channel_url,
+        required_attribution_term=required_attribution_term,
+        is_complete_entry=is_complete_entry,
+    )
     candidates = [entry for entry in selected_entries if not is_complete_entry(entry)]
     existing_delivery_targets = [
         f"yt_{entry['id']}"
         for entry in selected_entries
         if is_complete_entry(entry)
     ]
+    eligible_count = max(0, len(entries) - len(deferred_items))
     heartbeat(
         status_path,
         "SELECTION",
         requested_sample_size=sample_size,
         discovered_count=len(entries),
-        eligible_count=len(entries),
+        eligible_count=eligible_count,
         selected_count=len(selected_entries),
+        deferred_count=len(deferred_items),
         duplicate_count=duplicate_count,
     )
 
@@ -1426,6 +1609,7 @@ def main() -> int:
     caption_count = 0
     whisper_count = 0
     visual_frame_count = 0
+    incremental_delivery_failures: list[dict] = []
 
     for index, entry in enumerate(candidates, start=1):
         vid = entry["id"]
@@ -1550,13 +1734,31 @@ def main() -> int:
         completed.append(key)
         atomic_json(manifest_path, manifest)
 
+        # Make each completed evidence item analysis-reachable before moving to
+        # the next expensive candidate. A later STOP/watchdog must not strand
+        # already-persisted work outside the canonical queue.
+        incremental_queue_result, _, incremental_delivery = reconcile_delivery(root, [key])
+        if not incremental_queue_result.get("ok") or incremental_delivery["undelivered"]:
+            incremental_delivery_failures.append({
+                "queue_id": key,
+                "returncode": incremental_queue_result.get("returncode"),
+                "undelivered": incremental_delivery["undelivered"],
+            })
+
+        # research_queue may add canonical lineage/research metadata to the
+        # manifest. Reload it before the next item so the evaluator never
+        # overwrites those queue-side updates with stale in-memory state.
+        manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
+        manifest.setdefault("items", {})
+        known = manifest["items"]
+
     if not candidates:
         heartbeat(
             status_path,
             "QUEUE_WRITE",
             requested_sample_size=sample_size,
             discovered_count=len(entries),
-            eligible_count=len(entries),
+            eligible_count=eligible_count,
             selected_count=len(selected_entries),
             completed_count=len(existing_delivery_targets),
             duplicate_count=duplicate_count,
@@ -1576,9 +1778,11 @@ def main() -> int:
             "discovery": discovery_diag,
             "entries_discovered": len(entries),
             "discovered_count": len(entries),
-            "eligible_count": len(entries),
+            "eligible_count": eligible_count,
             "selected_count": len(selected_entries),
             "candidate_count": 0,
+            "deferred_count": len(deferred_items),
+            "deferred": deferred_items[:50],
             "completed_count": len(existing_delivery_targets),
             "completed": existing_delivery_targets,
             "duplicate_count": duplicate_count,
@@ -1613,7 +1817,12 @@ def main() -> int:
             "delivery_undelivered": delivery["undelivered"],
             "delivery_dispositions": delivery["dispositions"],
         }
-        terminal_state = "COMPLETE" if delivery_ok else "FAILED"
+        sample_complete = bool(status.get("sample_complete"))
+        terminal_state = (
+            "COMPLETE"
+            if delivery_ok and sample_complete
+            else ("PARTIAL" if delivery_ok else "FAILED")
+        )
         status = terminalize(
             status_path,
             terminal_state,
@@ -1622,14 +1831,14 @@ def main() -> int:
         )
         atomic_json(immutable_status_path, status)
         print(json.dumps(status, ensure_ascii=False, indent=2))
-        return 0 if delivery_ok else 1
+        return 0 if terminal_state == "COMPLETE" else 1
 
     heartbeat(
         status_path,
         "QUEUE_WRITE",
         requested_sample_size=sample_size,
         discovered_count=len(entries),
-        eligible_count=len(entries),
+        eligible_count=eligible_count,
         selected_count=len(selected_entries),
         completed_count=len(completed) + len(existing_delivery_targets),
         duplicate_count=duplicate_count,
@@ -1652,18 +1861,19 @@ def main() -> int:
     )
 
     complete = (
-        len(completed) == len(candidates)
+        sample_complete
+        and len(completed) == len(candidates)
         and not failures
         and queue_result.get("ok")
         and not delivery["undelivered"]
     )
-    state = "COMPLETE" if complete else ("PARTIAL" if completed_count else "FAILED")
+    state = "COMPLETE" if complete else ("PARTIAL" if completed_count or deferred_items else "FAILED")
     heartbeat(
         status_path,
         "FINALIZING",
         requested_sample_size=sample_size,
         discovered_count=len(entries),
-        eligible_count=len(entries),
+        eligible_count=eligible_count,
         selected_count=len(selected_entries),
         completed_count=completed_count,
         duplicate_count=duplicate_count,
@@ -1679,9 +1889,11 @@ def main() -> int:
         "discovery": discovery_diag,
         "entries_discovered": len(entries),
         "discovered_count": len(entries),
-        "eligible_count": len(entries),
+        "eligible_count": eligible_count,
         "selected_count": len(selected_entries),
         "candidate_count": len(candidates),
+        "deferred_count": len(deferred_items),
+        "deferred": deferred_items[:50],
         "completed_count": completed_count,
         "completed": delivery_targets,
         "duplicate_count": duplicate_count,
@@ -1693,6 +1905,8 @@ def main() -> int:
         "retained_visual_frames": visual_frame_count,
         "failure_count": len(failures),
         "failures": failures[:50],
+        "incremental_delivery_failure_count": len(incremental_delivery_failures),
+        "incremental_delivery_failures": incremental_delivery_failures[:50],
         "queue": queue_result,
         "queued_for_run_count": len(queued_for_run),
         "queued_for_run": queued_for_run,
