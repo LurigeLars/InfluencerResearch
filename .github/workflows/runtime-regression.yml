@@ -49,6 +49,9 @@ jobs:
           camofox_container.py
           tiktok_camofox_sync.py
           research_queue.py
+          analysis_queue.py
+          evaluation_progress.py
+          mcp_job_worker.py
           creator_monitor.py
           creator_registry.py
           creator_recent_check.py
@@ -65,6 +68,8 @@ jobs:
           test_instagram_ingest_limits
           test_local_runtime_namespace
           test_mcp_contract
+          test_analysis_queue
+          test_creator_evaluation_pipeline
           test_research_queue_story
           test_research_queue_content_sufficiency
           test_story_local_ocr
