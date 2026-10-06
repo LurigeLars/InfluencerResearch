@@ -1,39 +1,204 @@
 # InfluencerResearch
 
-## Current deployment and security posture
+[![Runtime regression](https://github.com/LurigeLars/InfluencerResearch/actions/workflows/runtime-regression.yml/badge.svg)](https://github.com/LurigeLars/InfluencerResearch/actions/workflows/runtime-regression.yml)
+[![CodeQL](https://github.com/LurigeLars/InfluencerResearch/actions/workflows/codeql.yml/badge.svg)](https://github.com/LurigeLars/InfluencerResearch/actions/workflows/codeql.yml)
+[![Static analysis](https://github.com/LurigeLars/InfluencerResearch/actions/workflows/static-analysis.yml/badge.svg)](https://github.com/LurigeLars/InfluencerResearch/actions/workflows/static-analysis.yml)
+![Runtime](https://img.shields.io/badge/runtime-Python%203.14-blue)
 
-The maintained runtime is a bounded research-ingestion service, not a generic browser or command-execution platform.
+A bounded research-ingestion system for studying **public creator content** across
+supported platforms.
 
-- The MCP runtime runs under an explicit non-root UID; the internal browser service and public gateway also run non-root.
-- Camofox/browser access is internal-only and is not exposed as a general-purpose public browser surface.
-- Instagram session material, Gemini credentials, and internal service keys are stored on the Windows host with DPAPI and injected into container tmpfs only at runtime.
-- The public gateway uses Cloudflare Access plus an explicit eight-tool allowlist; no arbitrary command tool is exposed.
-- Long-running research is serialized to one allowlisted research job at a time.
-- Machine-specific paths, creator data, identities, Cloudflare values, browser profiles, and credentials must remain outside Git.
+InfluencerResearch discovers creator content, collects evidence, transcribes and reviews
+media, persists research state and exposes the workflow through a deliberately small MCP
+surface. Long-running work is handled as explicit jobs instead of trying to keep one MCP
+request open until an entire research run finishes.
 
-## Repository status
+It is designed as research infrastructure, not as a generic browser, social-media bot or
+arbitrary command-execution service.
 
-This is an original research-ingestion project, **not a fork of yt-dlp, Camofox/Camoufox, Playwright, or their upstream projects**. Those components are external dependencies used behind a deliberately small MCP surface.
+## Why this project exists
 
-Project-specific design includes:
+Researching creators across YouTube, TikTok and Instagram is not one API call. A useful
+workflow has to deal with:
 
-- Creator registration, evaluation, monitoring, and recent-content checks exposed through a bounded MCP toolset.
-- A Dockerized Python runtime with an internal-only Camofox service for supported browser-discovery workflows.
-- yt-dlp/Playwright ingestion plus Gemini or local faster-whisper transcription.
-- Cloudflare Access gateway support with an explicit public tool allowlist and no generic command-execution tool.
-- Host-side DPAPI secret storage with runtime-only secret injection.
-- Hardened subprocess/path boundaries, reproducible smoke tests, and security-focused CI.
+- creator identity across platforms and changing handles;
+- recent-content discovery over a defined time window;
+- browser-dependent public pages and anti-bot friction;
+- video/audio acquisition and transcription;
+- visual evidence when spoken text is not enough;
+- Stories and other ephemeral content;
+- retries, partial coverage and evidence provenance;
+- long-running jobs that must survive beyond a single chat turn;
+- a persistent registry so the next research run knows what has already been seen.
 
-Generated research data, browser state, credentials, and machine-specific configuration are intentionally kept outside the public repository.
+This repository turns those concerns into a repeatable pipeline with explicit state and
+coverage semantics.
 
-InfluencerResearch is a standalone research-ingestion and evaluation toolkit for collecting publicly available creator content from supported platforms, transcribing media, and building structured research queues.
+## What it does
+
+At a high level the system can:
+
+- register and inspect creator identities;
+- evaluate a creator from collected public evidence;
+- monitor registered creators;
+- discover and ingest recent public content;
+- collect YouTube, TikTok and Instagram evidence through platform-specific paths;
+- transcribe audio/video with Gemini or local faster-whisper;
+- extract selected visual evidence, including bounded OCR/review paths;
+- preserve analysis evidence and research artifacts;
+- expose job status/cancellation to MCP clients.
+
+The current MCP surface is intentionally limited to nine tools:
+
+- `creator_list`
+- `creator_get`
+- `creator_register`
+- `creator_evaluate`
+- `creator_monitor`
+- `creator_recent_check`
+- `analysis_evidence_get`
+- `research_status`
+- `research_stop`
+
+There is no generic shell/command tool.
+
+## Job model
+
+Some research operations take much longer than a normal interactive MCP call. They are
+therefore submitted as allowlisted jobs and tracked through durable research state.
+
+```text
+MCP client
+   |
+   | start research
+   v
+InfluencerResearch MCP
+   |
+   v
+research job/state
+   |
+   +--> discovery
+   +--> ingestion/download
+   +--> transcription
+   +--> visual evidence
+   +--> persistence
+   |
+   v
+research_status / analysis_evidence_get
+```
+
+Only one long-running research job runs at a time. That serialization is intentional:
+browser/media pipelines are expensive and shared state should not be corrupted by
+competing research runs.
 
 ## Runtime architecture
+
+The maintained deployment is Docker-based:
+
+```text
+                     local host
+                        |
+                        v
+             InfluencerResearch MCP
+                  Python 3.14
+                        |
+          +-------------+-------------+
+          |             |             |
+          v             v             v
+     research state  media/tools   Camofox
+                         |         browser service
+                         |
+              transcription / OCR
+```
+
+Camofox is an internal browser dependency, not a public browser product. It is used for
+supported discovery flows where a real browser is required. The repository also uses
+Playwright and yt-dlp in platform-specific ingestion paths.
+
+For remote MCP access:
+
+```text
+ChatGPT / remote MCP client
+      |
+      v
+Cloudflare Access
+      |
+      v
+reviewed gateway
+      |
+      v
+InfluencerResearch MCP
+```
+
+Camofox itself remains internal and has no public MCP endpoint.
+
+## Security and privacy model
+
+The project is intentionally narrower than the browser/media components underneath it.
+
+- The MCP runtime, Camofox service and public gateway run non-root.
+- The public gateway exposes the same fixed nine-tool allowlist as the MCP server.
+- Long-running research accepts fixed research operations rather than arbitrary commands.
+- Instagram session material, Gemini credentials and Camofox service keys are protected
+  on the Windows host with DPAPI and injected into tmpfs-backed runtime secret volumes.
+- Browser state and generated research data stay outside the public repository.
+- Machine-specific paths, creator datasets, identities, Cloudflare values and credentials
+  must not be committed.
+- Optional public-proxy fallback is limited to allowlisted public hosts and does not carry
+  authenticated Instagram sessions or TikTok media downloads.
+- Public content and page text are evidence/data, not instructions to the runtime.
+
+Use only accounts, content and automation flows you are authorized to access, and comply
+with applicable law and platform terms.
+
+## What this project is not
+
+- It is not a generic remote browser.
+- It is not an account-management or posting bot.
+- It does not expose arbitrary command execution.
+- It is not a fork of yt-dlp, Camofox/Camoufox, Playwright or their upstream projects.
+- It does not put browser profiles, creator research output or credentials in Git.
+- A `PARTIAL` research result is not silently treated as complete coverage.
+
+## Repository relationship to Camofox
+
+InfluencerResearch uses Camofox/Camoufox as an **internal browser runtime** for selected
+public discovery workflows. The browser dependency is built separately and accessed over
+the private Compose network.
+
+This repository owns the research semantics: creator identity, coverage windows,
+ingestion, evidence, retries, persistence and MCP job behavior. Camofox owns browser
+execution. Keeping that boundary explicit makes it possible to update or patch the
+browser implementation without turning browser internals into the public research API.
+
+## Quick start
+
+The canonical runtime is Docker Compose and is managed through the PowerShell runtime
+script:
+
+```powershell
+pwsh -NoProfile -File scripts\runtime.ps1 -Action Up
+pwsh -NoProfile -File scripts\runtime.ps1 -Action Status
+pwsh -NoProfile -File scripts\runtime.ps1 -Action Smoke
+```
+
+The MCP server is published only on loopback. The default host endpoint is:
+
+```text
+http://127.0.0.1:8770/mcp
+```
+
+The host port is configurable. Check the actual mapping before configuring a local MCP
+client.
+
+The rest of this README documents the runtime, authentication bootstrap, Camofox,
+transcription and public gateway in detail.
+
 
 The canonical runtime is Docker Compose with a networkless secret-holder, two always-on application services, and one optional public-proxy browser service:
 
 - `secret-holder` — networkless non-root helper that receives DPAPI-decrypted values from the host and writes them into tmpfs-backed Docker volumes.
-- `influencerresearch` — Python 3.12 workers plus the official MCP Python SDK. Streamable HTTP MCP is published to the Windows host only at `http://127.0.0.1:8770/mcp`.
+- `influencerresearch` — Python 3.14 workers plus the official MCP Python SDK. Streamable HTTP MCP is published to the Windows host only at `http://127.0.0.1:8770/mcp`.
 - `camofox` — direct isolated Camofox/Camoufox browser service reachable only inside Compose at `http://camofox:9377`.
 - `camofox-public-proxy` — optional internal-only Camofox service enabled by the `public-proxy` profile when the existing Firecrawl Webshare DPAPI credentials are available.
 
@@ -169,7 +334,7 @@ pwsh -NoProfile -File scripts\public.ps1 -Action Status
 pwsh -NoProfile -File scripts\public.ps1 -Action Logs
 ```
 
-Cloudflare Access remains the authentication boundary. The gateway independently verifies the Access JWT audience/issuer, restricts requests to `/mcp`, caps request size/rate, strips client credentials before proxying, and applies the same eight-tool public allowlist as the MCP server.
+Cloudflare Access remains the authentication boundary. The gateway independently verifies the Access JWT audience/issuer, restricts requests to `/mcp`, caps request size/rate, strips client credentials before proxying, and applies the same nine-tool public allowlist as the MCP server.
 
 ## Instagram authentication bootstrap
 
