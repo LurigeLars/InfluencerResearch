@@ -1745,6 +1745,13 @@ def main() -> int:
                 "undelivered": incremental_delivery["undelivered"],
             })
 
+        # research_queue may add canonical lineage/research metadata to the
+        # manifest. Reload it before the next item so the evaluator never
+        # overwrites those queue-side updates with stale in-memory state.
+        manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
+        manifest.setdefault("items", {})
+        known = manifest["items"]
+
     if not candidates:
         heartbeat(
             status_path,
