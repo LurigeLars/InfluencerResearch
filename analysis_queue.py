@@ -216,13 +216,15 @@ def _apply_record(root: Path, queue_id: str, record: dict) -> dict:
         result = "WRITTEN"
 
     desired = manifest_research_fields(canonical, item)
+    manifest_needs_reconcile = any(item.get(key) != value for key, value in desired.items())
     item.update(desired)
 
     activation = parse_iso(followups.get("activation_screened_at"))
     if activation is None:
         return {"result": "VALIDATION_ERROR", "queue_id": queue_id, "errors": ["BAD_FOLLOWUP_ACTIVATION"]}
     followup_items = followups.setdefault("items", {})
-    if queue_id not in followup_items and should_open_followup(canonical, activation):
+    followup_needed = queue_id not in followup_items and should_open_followup(canonical, activation)
+    if followup_needed:
         followup_items[queue_id] = build_followup(queue_id, canonical, item)
 
     followup_errors = validate_followup_registry(followups, decisions, manifest)
@@ -230,10 +232,24 @@ def _apply_record(root: Path, queue_id: str, record: dict) -> dict:
         return {"result": "VALIDATION_ERROR", "queue_id": queue_id, "errors": followup_errors}
 
     old_queue_items = queue.get("items", []) if isinstance(queue.get("items"), list) else []
+    queue_contains_item = any(
+        isinstance(x, dict) and _queue_id(x) == queue_id for x in old_queue_items
+    )
     queue_items = [
         x for x in old_queue_items
         if not isinstance(x, dict) or _queue_id(x) != queue_id
     ]
+
+    if result == "NO_OP" and not queue_contains_item and not manifest_needs_reconcile and not followup_needed:
+        return {
+            "result": "NO_OP",
+            "queue_id": queue_id,
+            "decision": canonical.get("decision"),
+            "analysis_status": "FINALIZED",
+            "remaining_pending": len(queue_items),
+            "screened_at": canonical.get("screened_at"),
+        }
+
     queue["items"] = queue_items
     queue["count"] = len(queue_items)
     queue["analysis_owner"] = ANALYSIS_OWNER
