@@ -215,6 +215,53 @@ class ResearchQueueContentSufficiencyTests(unittest.TestCase):
             self.assertEqual(packet["visual_text_source"], "GEMINI_VIDEO_VISIBLE_TEXT")
 
 
+    def test_deferred_story_with_retained_screenshot_uses_agent_visual_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            screenshot = root / "output" / "creator" / "stories" / "screenshots" / "123.png"
+            screenshot.parent.mkdir(parents=True)
+            screenshot.write_bytes(b"not-a-real-image-but-retained-evidence")
+            manifest = {
+                "schema_version": 1,
+                "items": {
+                    "ig_story_123": {
+                        "creator": "creator",
+                        "source_platform": "INSTAGRAM",
+                        "source_subtype": "STORY",
+                        "source_id": "story:123",
+                        "url": "https://www.instagram.com/stories/creator/123/",
+                        "caption": "",
+                        "browser_text": "creator 1h",
+                        "published_at": "2026-09-28T18:00:00+00:00",
+                        "download_status": "DONE",
+                        "transcription_status": "NOT_APPLICABLE",
+                        "screenshot_file": str(screenshot.relative_to(root)),
+                        "visual_description_status": "DEFERRED",
+                        "visual_description_deferred_reason": "PREFETCH_CAPTURE_ONLY",
+                    }
+                },
+            }
+            self._write_common(root, manifest)
+
+            with unittest.mock.patch.object(
+                sys,
+                "argv",
+                ["research_queue.py", "--root", str(root)],
+            ):
+                self.assertEqual(research_queue.main(), 0)
+
+            queue = json.loads(
+                (root / "state" / "research_queue.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(queue["count"], 1)
+            self.assertEqual(queue["deferred_extraction_count"], 0)
+            item = queue["items"][0]
+            self.assertEqual(item["analysis_content_status"], "READY")
+            self.assertEqual(
+                item["analysis_content_reason"],
+                "AGENT_VISUAL_FALLBACK",
+            )
+
     def test_deferred_visual_description_is_not_analysis_ready(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

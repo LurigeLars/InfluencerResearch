@@ -528,6 +528,29 @@ class RecentInstagramTests(unittest.TestCase):
         probe.assert_called_once()
         sleep.assert_not_called()
 
+    def test_story_prefetch_requests_capture_only_mode(self) -> None:
+        profile = {"creator_key": "creator"}
+        source = {
+            "platform": "INSTAGRAM",
+            "profile_url": "https://www.instagram.com/example/",
+        }
+        with unittest.mock.patch.object(
+            crc,
+            "_capture_instagram_story_run",
+            return_value={"state": "DONE", "capture": {"reason": "OK"}},
+        ) as capture:
+            result = crc._run_story_capture_batch(
+                Path("."),
+                [(profile, [source])],
+                3,
+                gemini_circuit={},
+                ollama_budget_state={},
+            )
+
+        self.assertEqual(result["creator_count"], 1)
+        capture.assert_called_once()
+        self.assertTrue(capture.call_args.kwargs["capture_only"])
+
     def test_story_finalize_reuses_prefetched_capture(self) -> None:
         prefetched = {
             "capture": {"reason": "OK"},

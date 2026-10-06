@@ -37,7 +37,7 @@ from transcription_backend import (
 )
 
 
-APP_VERSION = "0.5.2"
+APP_VERSION = "0.5.3"
 STORY_URL_RE = re.compile(r"/stories/(?P<user>[^/]+)/(?P<id>\d+)/?")
 HIGHLIGHT_URL_RE = re.compile(r"/stories/highlights/(?P<id>\d+)/?")
 STRICT_STORY_ROOT_PATH_RE = re.compile(r"^/stories/[A-Za-z0-9._-]{1,64}/?$")
@@ -1979,6 +1979,7 @@ def run_one(
     max_items: int,
     gemini_circuit: dict | None = None,
     ollama_budget_state: dict | None = None,
+    capture_only: bool = False,
 ) -> dict:
     run_clock = time.perf_counter()
     manifest_path = root / "state" / "ephemeral" / "manifest.json"
@@ -2040,7 +2041,16 @@ def run_one(
             atomic_write_json(manifest_path, manifest)
 
             ytdlp_clock = time.perf_counter()
-            if (
+            if source_type == "STORY" and capture_only:
+                ytdlp = {
+                    "ok": True,
+                    "returncode": 0,
+                    "files": [],
+                    "error": None,
+                    "skipped": True,
+                    "reason": "PREFETCH_CAPTURE_ONLY",
+                }
+            elif (
                 source_type == "STORY"
                 and str(capture.get("reason") or "")
                 == "NO_ACTIVE_STORY_OR_STORY_VIEW_REDIRECTED"
@@ -2110,8 +2120,37 @@ def run_one(
                 story_visual_keys.append(key)
 
     visual_enrichment_clock = time.perf_counter()
-    visual_enrichment = (
-        enrich_story_visual_evidence(
+    if source_type == "STORY" and capture_only:
+        deferred = 0
+        skipped = 0
+        changed = False
+        for key in story_visual_keys:
+            item = (manifest.get("items") or {}).get(key)
+            if not isinstance(item, dict):
+                continue
+            if not _story_visual_needs_enrichment(item):
+                skipped += 1
+                continue
+            _defer_story_visual(
+                item,
+                reason="PREFETCH_CAPTURE_ONLY",
+                retry_after=None,
+            )
+            deferred += 1
+            changed = True
+        visual_enrichment = {
+            "attempted": 0,
+            "completed": 0,
+            "skipped": skipped,
+            "deferred": deferred,
+            "provider_deferred": 0,
+            "max_attempts": 0,
+            "errors": [],
+            "changed": changed,
+            "prefetch_capture_only": True,
+        }
+    elif source_type == "STORY":
+        visual_enrichment = enrich_story_visual_evidence(
             root,
             manifest,
             story_visual_keys,
@@ -2119,8 +2158,8 @@ def run_one(
             circuit_state=gemini_circuit,
             ollama_budget_state=ollama_budget_state,
         )
-        if source_type == "STORY"
-        else {
+    else:
+        visual_enrichment = {
             "attempted": 0,
             "completed": 0,
             "skipped": 0,
@@ -2129,7 +2168,6 @@ def run_one(
             "errors": [],
             "changed": False,
         }
-    )
     visual_enrichment_duration_ms = (
         time.perf_counter() - visual_enrichment_clock
     ) * 1000
@@ -2137,7 +2175,16 @@ def run_one(
         atomic_write_json(manifest_path, manifest)
 
     transcription_clock = time.perf_counter()
-    transcription = transcribe_downloaded_videos(root, creator, source_type)
+    if source_type == "STORY" and capture_only:
+        transcription = {
+            "attempted": 0,
+            "completed": 0,
+            "errors": [],
+            "skipped": True,
+            "reason": "PREFETCH_CAPTURE_ONLY",
+        }
+    else:
+        transcription = transcribe_downloaded_videos(root, creator, source_type)
     transcription_duration_ms = (time.perf_counter() - transcription_clock) * 1000
 
     errors = []
@@ -2166,6 +2213,7 @@ def run_one(
         "ollama_budget_state": dict(ollama_budget_state or {}),
         "video_download": ytdlp,
         "transcription": transcription,
+        "capture_only": bool(capture_only),
         "timings": {
             "total_ms": round((time.perf_counter() - run_clock) * 1000, 1),
             "browser_total_ms": round(browser_total_ms, 1),

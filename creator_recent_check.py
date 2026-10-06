@@ -43,7 +43,7 @@ def _bounded_env_int(
     return max(minimum, min(maximum, value))
 
 
-RECENT_CHECK_VERSION = "0.3.2"
+RECENT_CHECK_VERSION = "0.3.3"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
@@ -1349,6 +1349,7 @@ def _capture_instagram_story_run(
     *,
     gemini_circuit: dict | None = None,
     ollama_budget_state: dict | None = None,
+    capture_only: bool = False,
 ) -> dict:
     """Capture/process one creator's Stories without promoting canonical items."""
     handle = _instagram_handle(source)
@@ -1361,6 +1362,7 @@ def _capture_instagram_story_run(
         max_items=min(6, max(1, max_new + 2)),
         gemini_circuit=gemini_circuit,
         ollama_budget_state=ollama_budget_state,
+        capture_only=capture_only,
     )
 
 
@@ -1641,6 +1643,7 @@ def _run_story_capture_batch(
                 max_items,
                 gemini_circuit=gemini_circuit,
                 ollama_budget_state=ollama_budget_state,
+                capture_only=True,
             )
             results.append({
                 "creator_key": creator_key,
