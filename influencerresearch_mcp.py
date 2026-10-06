@@ -27,7 +27,6 @@ from starlette.responses import JSONResponse
 from creator_registry import (
     get_creator,
     list_creator_summaries,
-    load_registry,
     register_creator,
     retire_creator,
     update_creator,
