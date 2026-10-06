@@ -68,6 +68,65 @@ def _kill_worker_group() -> None:
         os._exit(124)
 
 
+def evaluation_no_progress_failure(
+    status: dict,
+    *,
+    now: datetime,
+    timeout_seconds: int,
+) -> dict | None:
+    state = str(status.get("state") or "").upper()
+    if state in {"COMPLETE", "PARTIAL", "FAILED", "STOPPED"}:
+        return None
+    progress = status.get("progress")
+    if not isinstance(progress, dict):
+        progress = {}
+    heartbeat_at = (
+        progress.get("heartbeat_at")
+        or status.get("updated_at")
+        or status.get("started_at")
+    )
+    heartbeat_dt = _parse_iso(heartbeat_at)
+    if heartbeat_dt is None:
+        return None
+    age_seconds = (now.astimezone(timezone.utc) - heartbeat_dt).total_seconds()
+    if age_seconds < timeout_seconds:
+        return None
+
+    finished_at = now.astimezone(timezone.utc).isoformat()
+    last_phase = str(progress.get("phase") or "UNKNOWN")
+    progress = dict(progress)
+    progress.update({
+        "phase": "FAILED",
+        "heartbeat_at": finished_at,
+        "terminal_reason": "NO_PROGRESS_TIMEOUT",
+        "last_phase": last_phase,
+        "no_progress_timeout_seconds": timeout_seconds,
+    })
+    failed = dict(status)
+    failed.update({
+        "schema_version": int(status.get("schema_version") or 1),
+        "state": "FAILED",
+        "updated_at": finished_at,
+        "finished_at": finished_at,
+        "error": "NO_PROGRESS_TIMEOUT",
+        "progress": progress,
+    })
+    transitions = failed.get("transitions")
+    if not isinstance(transitions, list):
+        transitions = []
+    transitions = list(transitions)
+    transitions.append({
+        "event": "JOB_FINALIZED",
+        "stage": "WATCHDOG",
+        "at": finished_at,
+        "final_state": "FAILED",
+        "terminal_reason": "NO_PROGRESS_TIMEOUT",
+        "last_phase": last_phase,
+    })
+    failed["transitions"] = transitions[-200:]
+    return failed
+
+
 def _arm_evaluation_watchdog(request: dict[str, Any]) -> threading.Event | None:
     if request.get("kind") != "creator_evaluate":
         return None
@@ -89,56 +148,17 @@ def _arm_evaluation_watchdog(request: dict[str, Any]) -> threading.Event | None:
     def watchdog() -> None:
         while not stop.wait(poll_seconds):
             status = _load_status(EVALUATION_STATUS_PATH)
-            state = str(status.get("state") or "").upper()
-            if state in {"COMPLETE", "PARTIAL", "FAILED", "STOPPED"}:
-                return
-
-            progress = status.get("progress")
-            if not isinstance(progress, dict):
-                progress = {}
-            heartbeat_at = (
-                progress.get("heartbeat_at")
-                or status.get("updated_at")
-                or status.get("started_at")
+            failed = evaluation_no_progress_failure(
+                status,
+                now=datetime.now(timezone.utc),
+                timeout_seconds=timeout_seconds,
             )
-            heartbeat_dt = _parse_iso(heartbeat_at)
-            if heartbeat_dt is None:
+            if failed is None:
+                if str(status.get("state") or "").upper() in {"COMPLETE", "PARTIAL", "FAILED", "STOPPED"}:
+                    return
                 continue
-            age_seconds = (datetime.now(timezone.utc) - heartbeat_dt).total_seconds()
-            if age_seconds < timeout_seconds:
-                continue
-
-            finished_at = _now_iso()
-            last_phase = str(progress.get("phase") or "UNKNOWN")
-            progress.update({
-                "phase": "FAILED",
-                "heartbeat_at": finished_at,
-                "terminal_reason": "NO_PROGRESS_TIMEOUT",
-                "last_phase": last_phase,
-                "no_progress_timeout_seconds": timeout_seconds,
-            })
-            status.update({
-                "schema_version": int(status.get("schema_version") or 1),
-                "state": "FAILED",
-                "updated_at": finished_at,
-                "finished_at": finished_at,
-                "error": "NO_PROGRESS_TIMEOUT",
-                "progress": progress,
-            })
-            transitions = status.get("transitions")
-            if not isinstance(transitions, list):
-                transitions = []
-            transitions.append({
-                "event": "JOB_FINALIZED",
-                "stage": "WATCHDOG",
-                "at": finished_at,
-                "final_state": "FAILED",
-                "terminal_reason": "NO_PROGRESS_TIMEOUT",
-                "last_phase": last_phase,
-            })
-            status["transitions"] = transitions[-200:]
             try:
-                _atomic_json(EVALUATION_STATUS_PATH, status)
+                _atomic_json(EVALUATION_STATUS_PATH, failed)
             finally:
                 _kill_worker_group()
 
