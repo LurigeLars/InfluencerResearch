@@ -1554,6 +1554,7 @@ def main() -> int:
             print(json.dumps(status, ensure_ascii=False, indent=2))
             return 4
 
+    eligible_count = len(entries)
     heartbeat(
         status_path,
         "SELECTION",
@@ -1574,7 +1575,7 @@ def main() -> int:
         )
 
     must_include_ids = set(exact_ids or seed_ids)
-    selected_entries, deferred_items, selection_cursor = select_bounded_evidence_sample(
+    selected_entries, deferred_items, _selection_cursor = select_bounded_evidence_sample(
         root,
         creator_key,
         entries,
@@ -1770,7 +1771,7 @@ def main() -> int:
             "discovery": discovery_diag,
             "entries_discovered": len(entries),
             "discovered_count": len(entries),
-            "eligible_count": len(entries),
+            "eligible_count": eligible_count,
             "selected_count": len(selected_entries),
             "candidate_count": 0,
             "deferred_count": len(deferred_items),
@@ -1809,7 +1810,12 @@ def main() -> int:
             "delivery_undelivered": delivery["undelivered"],
             "delivery_dispositions": delivery["dispositions"],
         }
-        terminal_state = "COMPLETE" if delivery_ok else "FAILED"
+        sample_complete = bool(status.get("sample_complete"))
+        terminal_state = (
+            "COMPLETE"
+            if delivery_ok and sample_complete
+            else ("PARTIAL" if delivery_ok else "FAILED")
+        )
         status = terminalize(
             status_path,
             terminal_state,
@@ -1818,7 +1824,7 @@ def main() -> int:
         )
         atomic_json(immutable_status_path, status)
         print(json.dumps(status, ensure_ascii=False, indent=2))
-        return 0 if delivery_ok else 1
+        return 0 if terminal_state == "COMPLETE" else 1
 
     heartbeat(
         status_path,
@@ -1848,12 +1854,13 @@ def main() -> int:
     )
 
     complete = (
-        len(completed) == len(candidates)
+        sample_complete
+        and len(completed) == len(candidates)
         and not failures
         and queue_result.get("ok")
         and not delivery["undelivered"]
     )
-    state = "COMPLETE" if complete else ("PARTIAL" if completed_count else "FAILED")
+    state = "COMPLETE" if complete else ("PARTIAL" if completed_count or deferred_items else "FAILED")
     heartbeat(
         status_path,
         "FINALIZING",
@@ -1875,7 +1882,7 @@ def main() -> int:
         "discovery": discovery_diag,
         "entries_discovered": len(entries),
         "discovered_count": len(entries),
-        "eligible_count": len(entries),
+        "eligible_count": eligible_count,
         "selected_count": len(selected_entries),
         "candidate_count": len(candidates),
         "deferred_count": len(deferred_items),
