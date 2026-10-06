@@ -194,6 +194,7 @@ client.
 The rest of this README documents the runtime, authentication bootstrap, Camofox,
 transcription and public gateway in detail.
 
+## Detailed runtime deployment
 
 The canonical runtime is Docker Compose with a networkless secret-holder, two always-on application services, and one optional public-proxy browser service:
 
