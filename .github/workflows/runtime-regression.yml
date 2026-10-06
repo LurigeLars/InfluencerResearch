@@ -58,7 +58,7 @@ jobs:
           ephemeral_ingest.py
           influencerresearch_mcp.py
           youtube_creator_evaluation.py
-      - name: Run runtime secret regression tests
+      - name: Run deterministic regression tests
         run: >-
           python -m unittest -v
           test_camofox_container_config
@@ -89,3 +89,16 @@ jobs:
           test_recent_discovery_parallelism
           test_mcp_status_summary
           test_visual_review_evidence
+          test_command_line_hardening
+          test_creator_recent_visual_review_status
+          test_creator_recent_window_timezone
+          test_creator_registry_bootstrap
+          test_instagram_adaptive_visual_review
+          test_legacy_bat_cleanup
+          test_public_gateway_contract
+          test_research_status_progress
+          test_story_capture_readiness
+          test_story_prefetch_capture_only
+          test_tiktok_adaptive_visual_review
+          test_url_domain_validation
+          test_video_visual_evidence
