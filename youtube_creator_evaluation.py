@@ -17,7 +17,7 @@ from typing import Any, Callable
 from evaluation_progress import heartbeat, sample_outcome, terminalize
 from urllib.parse import urlparse
 
-YOUTUBE_EVAL_VERSION = "0.7.0"
+YOUTUBE_EVAL_VERSION = "0.7.1"
 
 
 def utc_now() -> str:
