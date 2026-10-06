@@ -37,7 +37,7 @@ from transcription_backend import (
 )
 
 
-APP_VERSION = "0.5.2"
+APP_VERSION = "0.5.3"
 STORY_URL_RE = re.compile(r"/stories/(?P<user>[^/]+)/(?P<id>\d+)/?")
 HIGHLIGHT_URL_RE = re.compile(r"/stories/highlights/(?P<id>\d+)/?")
 STRICT_STORY_ROOT_PATH_RE = re.compile(r"^/stories/[A-Za-z0-9._-]{1,64}/?$")
@@ -1970,6 +1970,76 @@ def mark_highlight_done(root: Path, creator: str, label: str, source_url: str, c
     atomic_write_json(path, state)
 
 
+def postprocess_story_run(
+    root: Path,
+    creator: str,
+    run: dict,
+    *,
+    gemini_circuit: dict | None = None,
+    ollama_budget_state: dict | None = None,
+) -> dict:
+    """Finish Story visual/transcription work after capture was checkpointed."""
+    result = dict(run or {})
+    capture = dict(result.get("capture") or {})
+    manifest_path = root / "state" / "ephemeral" / "manifest.json"
+    manifest = load_json(
+        manifest_path,
+        {"schema_version": 1, "app_version": APP_VERSION, "items": {}},
+    )
+    manifest.setdefault("items", {})
+
+    story_visual_keys = list(capture.get("visited_item_keys") or [])
+    for key, item in (manifest.get("items") or {}).items():
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("source_type") or "").upper() != "STORY":
+            continue
+        if str(item.get("creator") or "").casefold() != creator.casefold():
+            continue
+        if str(item.get("research_status") or "").upper() == "INVALID":
+            continue
+        if not _story_visual_needs_enrichment(item):
+            continue
+        if key not in story_visual_keys:
+            story_visual_keys.append(key)
+
+    visual_clock = time.perf_counter()
+    visual_enrichment = enrich_story_visual_evidence(
+        root,
+        manifest,
+        story_visual_keys,
+        max_attempts=MAX_STORY_VISUAL_ENRICHMENTS_PER_RUN,
+        circuit_state=gemini_circuit,
+        ollama_budget_state=ollama_budget_state,
+    )
+    visual_ms = (time.perf_counter() - visual_clock) * 1000
+    if visual_enrichment.get("changed"):
+        atomic_write_json(manifest_path, manifest)
+
+    transcription_clock = time.perf_counter()
+    transcription = transcribe_downloaded_videos(root, creator, "STORY")
+    transcription_ms = (time.perf_counter() - transcription_clock) * 1000
+
+    errors = list(result.get("errors") or [])
+    errors.extend(visual_enrichment.get("errors", []))
+    errors.extend(transcription.get("errors", []))
+    timings = dict(result.get("timings") or {})
+    timings["visual_enrichment_ms"] = round(visual_ms, 1)
+    timings["transcription_ms"] = round(transcription_ms, 1)
+    timings["postprocess_ms"] = round(visual_ms + transcription_ms, 1)
+
+    result.update({
+        "visual_enrichment": visual_enrichment,
+        "ollama_budget_state": dict(ollama_budget_state or {}),
+        "transcription": transcription,
+        "timings": timings,
+        "postprocess_deferred": False,
+        "state": "DONE" if not errors else "DONE_WITH_ERRORS",
+        "errors": errors,
+    })
+    return result
+
+
 def run_one(
     root: Path,
     mode: str,
@@ -1979,6 +2049,7 @@ def run_one(
     max_items: int,
     gemini_circuit: dict | None = None,
     ollama_budget_state: dict | None = None,
+    defer_postprocess: bool = False,
 ) -> dict:
     run_clock = time.perf_counter()
     manifest_path = root / "state" / "ephemeral" / "manifest.json"
@@ -2089,6 +2160,47 @@ def run_one(
         finally:
             context.close()
     browser_total_ms = (time.perf_counter() - browser_clock) * 1000
+
+    if source_type == "STORY" and defer_postprocess:
+        capture_errors = []
+        if not ytdlp.get("ok"):
+            capture_errors.append(f"yt-dlp: {ytdlp.get('error')}")
+        return {
+            "creator": creator,
+            "mode": mode,
+            "source_url": source_url,
+            "highlight_label": highlight_label,
+            "capture": capture,
+            "visual_enrichment": {
+                "attempted": 0,
+                "completed": 0,
+                "skipped": 0,
+                "deferred": 0,
+                "errors": [],
+                "changed": False,
+                "postprocess_deferred": True,
+            },
+            "ollama_budget_state": dict(ollama_budget_state or {}),
+            "video_download": ytdlp,
+            "transcription": {
+                "attempted": 0,
+                "completed": 0,
+                "errors": [],
+                "postprocess_deferred": True,
+            },
+            "timings": {
+                "total_ms": round((time.perf_counter() - run_clock) * 1000, 1),
+                "browser_total_ms": round(browser_total_ms, 1),
+                "capture_ms": round(capture_duration_ms, 1),
+                "ytdlp_ms": round(ytdlp_duration_ms, 1),
+                "visual_enrichment_ms": 0.0,
+                "transcription_ms": 0.0,
+            },
+            "postprocess_deferred": True,
+            "state": "DONE" if not capture_errors else "DONE_WITH_ERRORS",
+            "errors": capture_errors,
+            "discovered_highlights": None,
+        }
 
     story_visual_keys = list(capture.get("visited_item_keys") or [])
     if source_type == "STORY":
