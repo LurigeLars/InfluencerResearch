@@ -199,6 +199,47 @@ class CreatorEvaluationPipelineTests(unittest.TestCase):
         }
         self.assertIsNone(worker.evaluation_no_progress_failure(fresh, now=now, timeout_seconds=600))
 
+    def test_whisper_progress_callback_reports_segment_progress(self) -> None:
+        class Segment:
+            def __init__(self, index: int) -> None:
+                self.start = float(index)
+                self.end = float(index + 1)
+                self.text = f"segment {index}"
+
+        class Info:
+            language = "en"
+            language_probability = 1.0
+            duration = 12.0
+
+        class Model:
+            def transcribe(self, *args, **kwargs):
+                return ([Segment(index) for index in range(12)], Info())
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            media = root / "input.mp4"
+            media.write_bytes(b"fixture")
+            progress: list[int] = []
+            with (
+                patch.object(yce, "validate_audio", return_value=(True, "ok")),
+                patch.object(
+                    yce,
+                    "_extract_audio_for_whisper",
+                    return_value=(media, {"used": False}),
+                ),
+            ):
+                result = yce.transcribe_whisper(
+                    root,
+                    "fixture",
+                    "video123",
+                    media,
+                    model_holder={"model": Model()},
+                    progress_callback=progress.append,
+                )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(progress, [1, 10])
+
     def test_source_platform_filter_selects_requested_registered_source(self) -> None:
         profile = {
             "monitoring_enabled": True,
