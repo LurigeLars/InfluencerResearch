@@ -1,15 +1,21 @@
-# Security policy
+# Security Policy
 
-Do not report credentials, cookies, access tokens, browser profiles, or other secrets in a public issue.
+## Reporting a vulnerability
 
-For security-sensitive reports, use GitHub's private vulnerability reporting feature when it is enabled for this repository. If it is unavailable, contact the repository owner through GitHub without including secret material in a public post.
+Please report security vulnerabilities **privately** through GitHub Private Vulnerability Reporting:
 
-Before publishing changes, review staged files for:
+https://github.com/LurigeLars/InfluencerResearch/security/advisories/new
 
-- credentials, tokens and cookies;
-- absolute local filesystem paths or usernames;
-- browser/session state;
-- generated research output and logs;
-- unrelated private repository or infrastructure references.
+Do not open a public issue for a suspected vulnerability, proof of concept, exploit details, credentials, tokens, cookies, private endpoints, or other sensitive material.
 
-If a real credential is ever committed, revoke or rotate it first. Removing the visible line from the latest commit does not remove it from Git history.
+Please include enough information to reproduce and assess the issue, such as the affected component/version, impact, reproduction steps, and any relevant environment details. Redact secrets and personal data.
+
+If the issue is a normal software bug without a security impact, use the public bug-report form instead.
+
+## Bug reports
+
+Non-security bugs should be reported through GitHub Issues:
+
+https://github.com/LurigeLars/InfluencerResearch/issues/new?template=bug_report.yml
+
+Keep security-sensitive information out of public bug reports.
