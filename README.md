@@ -48,11 +48,13 @@ At a high level the system can:
 - preserve analysis evidence and research artifacts;
 - expose job status/cancellation to MCP clients.
 
-The current MCP surface is intentionally limited to nine tools:
+The current MCP surface is intentionally limited to eleven tools:
 
 - `creator_list`
 - `creator_get`
 - `creator_register`
+- `creator_update`
+- `creator_retire`
 - `creator_evaluate`
 - `creator_monitor`
 - `creator_recent_check`
@@ -137,7 +139,7 @@ Camofox itself remains internal and has no public MCP endpoint.
 The project is intentionally narrower than the browser/media components underneath it.
 
 - The MCP runtime, Camofox service and public gateway run non-root.
-- The public gateway exposes the same fixed nine-tool allowlist as the MCP server.
+- The public gateway exposes the same fixed eleven-tool allowlist as the MCP server.
 - Long-running research accepts fixed research operations rather than arbitrary commands.
 - Instagram session material, Gemini credentials and Camofox service keys are protected
   on the Windows host with DPAPI and injected into tmpfs-backed runtime secret volumes.
@@ -252,6 +254,8 @@ The MCP v1 tool surface is deliberately small:
 - `creator_list`
 - `creator_get`
 - `creator_register`
+- `creator_update`
+- `creator_retire`
 - `creator_evaluate`
 - `creator_monitor`
 - `creator_recent_check`
@@ -261,7 +265,11 @@ The MCP v1 tool surface is deliberately small:
 
 Long-running research operations are fixed allowlisted jobs. Only one research job may run at a time. There is no generic command-execution tool.
 
-`creator_register` also accepts optional `supersedes_creator_keys`. This is an explicit registry operation for retiring known duplicate/legacy creator keys after consolidation. Identity is not inferred from matching handles, display names, or platform URLs; aliases may differ across platforms. Superseded profiles are retained as `DISABLED` with `superseded_by` metadata so historical research remains addressable.
+`creator_register` also accepts optional `supersedes_creator_keys`. This is an explicit registry operation for disabling known duplicate/legacy creator keys after consolidation. Identity is not inferred from matching handles, display names, or platform URLs; aliases may differ across platforms. Superseded profiles are retained as `DISABLED` with `superseded_by` metadata so historical research remains addressable.
+
+`creator_update` performs a partial update of an existing ACTIVE creator. Each source patch names a `platform` and may change only `enabled`, `evaluation_enabled`, `monitoring_enabled`, and `priority`; omitted fields are preserved. Creator-level `monitoring_enabled` is derived as `any(enabled source with monitoring_enabled=true)` and is always false for non-ACTIVE creators. Updates do not start ingestion or evaluation jobs.
+
+`creator_retire` is a soft-delete operation. It changes an ACTIVE creator to `RETIRED`, disables all source-level `enabled`, `evaluation_enabled`, and `monitoring_enabled` flags, and records retirement metadata. Historical research/evidence is not deleted. `creator_get` can still retrieve retired records, while `creator_list()` hides them by default; pass `include_retired=true` to include ACTIVE and RETIRED creators. Repeating the same retirement is an idempotent no-op.
 
 The former Windows request-file/Scheduled-Task research bridge is retired and is not part of the canonical runtime.
 
@@ -300,9 +308,9 @@ the same `local-mcp` proxy pattern the other local MCP services in this fleet us
 No credential is needed on loopback: the authentication boundary is Cloudflare Access on the public
 path, not the local one. Keep the endpoint bound to `127.0.0.1` so that stays true.
 
-**Verify** by listing the tools. The local surface is nine: `creator_register`, `creator_list`,
+**Verify** by listing the tools. The local surface is eleven: `creator_register`, `creator_update`, `creator_retire`, `creator_list`,
 `creator_get`, `creator_evaluate`, `creator_monitor`, `creator_recent_check`, `analysis_evidence_get`,
-`research_status` and `research_stop`. The public allowlist is the same nine.
+`research_status` and `research_stop`. The public allowlist is the same eleven.
 
 ## Public Cloudflare access
 
@@ -335,7 +343,7 @@ pwsh -NoProfile -File scripts\public.ps1 -Action Status
 pwsh -NoProfile -File scripts\public.ps1 -Action Logs
 ```
 
-Cloudflare Access remains the authentication boundary. The gateway independently verifies the Access JWT audience/issuer, restricts requests to `/mcp`, caps request size/rate, strips client credentials before proxying, and applies the same nine-tool public allowlist as the MCP server.
+Cloudflare Access remains the authentication boundary. The gateway independently verifies the Access JWT audience/issuer, restricts requests to `/mcp`, caps request size/rate, strips client credentials before proxying, and applies the same eleven-tool public allowlist as the MCP server.
 
 ## Instagram authentication bootstrap
 

@@ -28,6 +28,8 @@ class MCPContractTests(unittest.TestCase):
                 "creator_list",
                 "creator_get",
                 "creator_register",
+                "creator_update",
+                "creator_retire",
                 "creator_evaluate",
                 "creator_monitor",
                 "creator_recent_check",
@@ -44,6 +46,15 @@ class MCPContractTests(unittest.TestCase):
         source = (BASE / "influencerresearch_mcp.py").read_text(encoding="utf-8")
         self.assertIn("supersedes_creator_keys: list[str] | None = None", source)
         self.assertIn('"supersedes_creator_keys": supersedes_creator_keys or []', source)
+
+    def test_creator_lifecycle_mutation_schema_is_explicit(self) -> None:
+        source = (BASE / "influencerresearch_mcp.py").read_text(encoding="utf-8")
+        self.assertIn("class CreatorSourceUpdate(BaseModel):", source)
+        self.assertIn("def creator_update(creator_key: str, sources: list[CreatorSourceUpdate])", source)
+        self.assertIn("def creator_retire(creator_key: str, reason: str)", source)
+        self.assertIn("include_retired: bool = False", source)
+        self.assertIn("include_inactive=True", source)
+        self.assertIn("annotations=RETIRE", source)
 
     def test_creator_source_exposes_runtime_metadata(self) -> None:
         source = (BASE / "influencerresearch_mcp.py").read_text(encoding="utf-8")

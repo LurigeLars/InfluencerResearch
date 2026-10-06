@@ -24,7 +24,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
-from creator_registry import get_creator, load_registry, register_creator
+from creator_registry import (
+    get_creator,
+    list_creator_summaries,
+    load_registry,
+    register_creator,
+    retire_creator,
+    update_creator,
+)
 from research_status_summary import compact_job_status, summarize_status
 
 
@@ -105,6 +112,16 @@ class CreatorSource(BaseModel):
     evaluation_video_ids: list[str] | None = Field(default=None, max_length=20)
     required_attribution_term: str | None = Field(default=None, max_length=120)
     shared_channel: bool | None = None
+
+
+class CreatorSourceUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    platform: Literal["YOUTUBE", "TIKTOK", "INSTAGRAM"]
+    enabled: bool | None = None
+    evaluation_enabled: bool | None = None
+    monitoring_enabled: bool | None = None
+    priority: int | None = Field(default=None, ge=1, le=1000)
 
 
 def resolve_job_state(kind: str, returncode: int, status: dict | None) -> str:
@@ -339,6 +356,18 @@ REGISTER = ToolAnnotations(
     idempotent_hint=True,
     open_world_hint=False,
 )
+UPDATE = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=False,
+    idempotent_hint=True,
+    open_world_hint=False,
+)
+RETIRE = ToolAnnotations(
+    read_only_hint=False,
+    destructive_hint=True,
+    idempotent_hint=True,
+    open_world_hint=False,
+)
 RUN = ToolAnnotations(
     read_only_hint=False,
     destructive_hint=False,
@@ -360,34 +389,17 @@ async def health_route(_: Request) -> JSONResponse:
 
 
 @mcp.tool(description="List registered creators.", annotations=READ, structured_output=False)
-def creator_list() -> str:
-    registry = load_registry(ROOT)
-    creators = []
-    for profile in sorted(
-        registry["creators"].values(),
-        key=lambda value: str(value.get("creator_key")),
-    ):
-        if profile.get("status") != "ACTIVE":
-            continue
-        creators.append(
-            {
-                "creator_key": profile.get("creator_key"),
-                "display_name": profile.get("display_name"),
-                "monitoring_enabled": bool(profile.get("monitoring_enabled")),
-                "platforms": [
-                    source.get("platform")
-                    for source in profile.get("sources", [])
-                    if source.get("enabled")
-                ],
-            }
-        )
-    return as_text({"creators": creators})
+def creator_list(include_retired: bool = False) -> str:
+    return as_text({
+        "creators": list_creator_summaries(ROOT, include_retired=include_retired),
+        "include_retired": include_retired,
+    })
 
 
-@mcp.tool(description="Get one registered creator.", annotations=READ, structured_output=False)
+@mcp.tool(description="Get one registered creator, including retired historical records.", annotations=READ, structured_output=False)
 def creator_get(creator_key: str) -> str:
     try:
-        return as_text({"creator": get_creator(ROOT, creator_key)})
+        return as_text({"creator": get_creator(ROOT, creator_key, include_inactive=True)})
     except Exception as exc:
         return as_text({"error": f"{type(exc).__name__}:{exc}"})
 
@@ -417,6 +429,35 @@ def creator_register(
         return as_text(
             {"result": "REJECTED", "error": f"{type(exc).__name__}:{exc}"}
         )
+
+
+@mcp.tool(
+    description="Partially update source-level creator controls. Unspecified fields are preserved and no research job is started.",
+    annotations=UPDATE,
+    structured_output=False,
+)
+def creator_update(creator_key: str, sources: list[CreatorSourceUpdate]) -> str:
+    request = {
+        "issued_by": "MCP",
+        "creator_key": creator_key,
+        "sources": [source.model_dump(exclude_none=True) for source in sources],
+    }
+    try:
+        return as_text(update_creator(ROOT, request))
+    except Exception as exc:
+        return as_text({"result": "REJECTED", "error": f"{type(exc).__name__}:{exc}"})
+
+
+@mcp.tool(
+    description="Soft-retire one creator while preserving historical registry/research data and disabling all sources.",
+    annotations=RETIRE,
+    structured_output=False,
+)
+def creator_retire(creator_key: str, reason: str) -> str:
+    try:
+        return as_text(retire_creator(ROOT, creator_key, reason, issued_by="MCP"))
+    except Exception as exc:
+        return as_text({"result": "REJECTED", "error": f"{type(exc).__name__}:{exc}"})
 
 
 @mcp.tool(description="Start a creator evaluation job.", annotations=RUN, structured_output=False)

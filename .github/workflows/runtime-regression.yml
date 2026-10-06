@@ -78,6 +78,7 @@ jobs:
           test_creator_recent_analysis_targets
           test_creator_recent_instagram
           test_creator_registry_runtime_metadata
+          test_creator_mutations
           test_creator_recent_monitored_instagram
           test_creator_recent_youtube
           test_recent_discovery_parallelism
