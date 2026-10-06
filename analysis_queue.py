@@ -37,6 +37,17 @@ DECISION_FIELDS = (
     "duplicate_basis",
 )
 
+EVALUATION_DISPOSITIONS = (
+    "PENDING_ANALYSIS",
+    "FINALIZED_DECISION",
+    "DUPLICATE",
+    "INSUFFICIENT_CONTENT",
+    "NOT_ANALYSIS_READY",
+    "PIPELINE_INCOMPLETE",
+    "QUEUE_MISSING",
+    "UNACCOUNTED",
+)
+
 
 def load_json(path: Path, default: Any) -> Any:
     import json
@@ -264,6 +275,230 @@ def list_analysis_decisions(
         "limit": limit,
         "offset": offset,
         "items": page,
+    }
+
+
+def _evaluation_item_completed(item: dict) -> bool:
+    return (
+        str(item.get("download_status") or "").upper() == "DONE"
+        and str(item.get("transcription_status") or "").upper() == "DONE"
+        and str(item.get("visual_evidence_status") or "").upper() == "DONE"
+    )
+
+
+def _evaluation_item_disposition(
+    queue_id: str,
+    item: dict,
+    *,
+    queue_item: dict | None,
+    decision: dict | None,
+) -> tuple[str, str]:
+    research_status = str(item.get("research_status") or "").upper()
+    content_status = str(item.get("analysis_content_status") or "").upper()
+
+    if isinstance(decision, dict):
+        return (
+            "FINALIZED_DECISION",
+            f"DECISION:{str(decision.get('decision') or 'UNKNOWN').upper()}",
+        )
+    if research_status == "DUPLICATE" or bool(item.get("duplicate_of")):
+        return (
+            "DUPLICATE",
+            str(item.get("duplicate_basis") or "DETERMINISTIC_DUPLICATE"),
+        )
+    if content_status == "INSUFFICIENT_CONTENT" or research_status == "INSUFFICIENT_CONTENT":
+        return (
+            "INSUFFICIENT_CONTENT",
+            str(
+                item.get("analysis_insufficient_reason")
+                or item.get("analysis_content_reason")
+                or "INSUFFICIENT_CONTENT"
+            ),
+        )
+    if (
+        isinstance(queue_item, dict)
+        and str(queue_item.get("analysis_status") or "").upper() == "PENDING_ANALYSIS"
+    ):
+        return "PENDING_ANALYSIS", "CURRENT_CANONICAL_QUEUE"
+    if not _evaluation_item_completed(item):
+        return (
+            "PIPELINE_INCOMPLETE",
+            "download={};transcription={};visual={}".format(
+                str(item.get("download_status") or "UNKNOWN"),
+                str(item.get("transcription_status") or "UNKNOWN"),
+                str(item.get("visual_evidence_status") or "UNKNOWN"),
+            ),
+        )
+    if content_status and content_status != "READY":
+        return (
+            "NOT_ANALYSIS_READY",
+            str(item.get("analysis_content_reason") or content_status),
+        )
+    if research_status == "PENDING_ANALYSIS":
+        return (
+            "QUEUE_MISSING",
+            "MANIFEST_PENDING_ANALYSIS_NOT_PRESENT_IN_CURRENT_QUEUE",
+        )
+    return (
+        "UNACCOUNTED",
+        research_status or "NO_CANONICAL_ANALYSIS_DISPOSITION",
+    )
+
+
+def list_creator_evaluation_items(
+    root: Path,
+    *,
+    creator_key: str | None = None,
+    source_platform: str | None = None,
+    evaluation_run_id: str | None = None,
+    disposition: str | None = None,
+    completed_only: bool = False,
+    limit: int = 20,
+    offset: int = 0,
+) -> dict:
+    root = root.resolve()
+    manifest = load_json(root / "state" / "manifest.json", {"items": {}})
+    queue = load_json(root / "state" / "research_queue.json", {"items": []})
+    decisions = load_json(root / "state" / "research_decisions.json", {"items": {}})
+
+    wanted_creator = str(creator_key or "").strip().lower()
+    wanted_platform = str(source_platform or "").strip().upper()
+    wanted_run = str(evaluation_run_id or "").strip()
+    wanted_disposition = str(disposition or "").strip().upper()
+    if wanted_disposition and wanted_disposition not in EVALUATION_DISPOSITIONS:
+        raise ValueError("BAD_DISPOSITION")
+
+    queue_items = {
+        _queue_id(item): item
+        for item in queue.get("items", [])
+        if isinstance(item, dict) and _queue_id(item)
+    }
+    decision_items = (
+        decisions.get("items", {})
+        if isinstance(decisions.get("items"), dict)
+        else {}
+    )
+    manifest_items = (
+        manifest.get("items", {})
+        if isinstance(manifest.get("items"), dict)
+        else {}
+    )
+
+    rows: list[dict] = []
+    for queue_id, item in manifest_items.items():
+        if not isinstance(item, dict):
+            continue
+        run_id = str(item.get("evaluation_run_id") or "")
+        if not run_id and str(item.get("evaluation_mode") or "").upper() != "CREATOR_EVALUATION":
+            continue
+        creator = str(item.get("creator") or "").lower()
+        platform = str(item.get("source_platform") or "").upper()
+        if wanted_creator and creator != wanted_creator:
+            continue
+        if wanted_platform and platform != wanted_platform:
+            continue
+        if wanted_run and run_id != wanted_run:
+            continue
+
+        completed = _evaluation_item_completed(item)
+        if completed_only and not completed:
+            continue
+
+        qid = str(queue_id)
+        decision = decision_items.get(qid)
+        if not isinstance(decision, dict):
+            decision = None
+        queue_item = queue_items.get(qid)
+        current_disposition, reason = _evaluation_item_disposition(
+            qid,
+            item,
+            queue_item=queue_item,
+            decision=decision,
+        )
+        if wanted_disposition and current_disposition != wanted_disposition:
+            continue
+
+        rows.append({
+            "queue_id": qid,
+            "creator": item.get("creator"),
+            "source_platform": item.get("source_platform"),
+            "source_type": item.get("source_type"),
+            "source_subtype": item.get("source_subtype"),
+            "source_id": item.get("source_id"),
+            "source_url": item.get("url") or (queue_item or {}).get("source_url"),
+            "published_at": item.get("published_at"),
+            "evaluation_mode": item.get("evaluation_mode"),
+            "evaluation_run_id": item.get("evaluation_run_id"),
+            "completed": completed,
+            "disposition": current_disposition,
+            "disposition_reason": reason,
+            "research_status": item.get("research_status"),
+            "analysis_content_status": item.get("analysis_content_status"),
+            "analysis_content_reason": item.get("analysis_content_reason"),
+            "download_status": item.get("download_status"),
+            "transcription_status": item.get("transcription_status"),
+            "visual_evidence_status": item.get("visual_evidence_status"),
+            "evidence_lineage_id": item.get("evidence_lineage_id"),
+            "duplicate_of": item.get("duplicate_of"),
+            "duplicate_basis": item.get("duplicate_basis"),
+            "decision": decision.get("decision") if decision else None,
+            "screened_at": decision.get("screened_at") if decision else None,
+        })
+
+    rows.sort(
+        key=lambda row: (
+            str(row.get("published_at") or ""),
+            str(row.get("queue_id") or ""),
+        ),
+        reverse=True,
+    )
+    total = len(rows)
+    page = rows[offset: offset + limit]
+    return {
+        "status": "CREATOR_EVALUATION_ITEMS",
+        "count": len(page),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "items": page,
+    }
+
+
+def summarize_creator_evaluation_run(root: Path, evaluation_run_id: str) -> dict:
+    run_id = str(evaluation_run_id or "").strip()
+    if not run_id:
+        raise ValueError("BAD_EVALUATION_RUN_ID")
+    listing = list_creator_evaluation_items(
+        root,
+        evaluation_run_id=run_id,
+        completed_only=True,
+        limit=1_000_000,
+        offset=0,
+    )
+    items = listing["items"]
+    counts = {name: 0 for name in EVALUATION_DISPOSITIONS}
+    for item in items:
+        counts[str(item.get("disposition") or "UNACCOUNTED")] += 1
+
+    unaccounted_items = [
+        str(item.get("queue_id") or "")
+        for item in items
+        if item.get("disposition") in {"QUEUE_MISSING", "UNACCOUNTED"}
+    ]
+    accounted_count = len(items) - len(unaccounted_items)
+    return {
+        "evaluation_run_id": run_id,
+        "analysis_completed_manifest_count": len(items),
+        "queued_for_analysis_count": counts["PENDING_ANALYSIS"],
+        "analysis_finalized_count": counts["FINALIZED_DECISION"],
+        "analysis_duplicate_count": counts["DUPLICATE"],
+        "analysis_insufficient_count": counts["INSUFFICIENT_CONTENT"],
+        "analysis_not_ready_count": counts["NOT_ANALYSIS_READY"],
+        "analysis_queue_missing_count": counts["QUEUE_MISSING"],
+        "analysis_unaccounted_count": len(unaccounted_items),
+        "analysis_accounted_count": accounted_count,
+        "analysis_disposition_counts": counts,
+        "analysis_unaccounted_items": unaccounted_items,
     }
 
 
