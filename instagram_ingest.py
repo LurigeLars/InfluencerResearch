@@ -21,7 +21,7 @@ from transcription_backend import transcribe_video
 from video_visual_evidence import VISUAL_REVIEW_POLICY_VERSION, capture_local_video_visual_evidence
 
 
-APP_VERSION = "0.3.5"
+APP_VERSION = "0.3.6"
 REEL_RE = re.compile(r"/reel/([A-Za-z0-9_-]+)/?")
 
 
@@ -290,7 +290,7 @@ def discover_reels_authenticated(
 ) -> dict[str, Any]:
     """Read-only Instagram Reel discovery using the imported authenticated session."""
     creator = safe_creator(creator)
-    max_scan = max(1, min(int(max_scan), 20))
+    max_scan = max(1, min(int(max_scan), 200))
     known_reel_times = {
         str(key): str(value)
         for key, value in (known_reel_times or {}).items()
