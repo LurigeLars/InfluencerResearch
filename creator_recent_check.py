@@ -791,7 +791,6 @@ def discover_instagram(
     known_times: list[datetime] = []
     missing_time: list[str] = []
     attempts: list[dict] = []
-    timestamp_cache_size = len(cached_times)
     natural_window_complete = False
     discovery_ok = False
     blocked = False
