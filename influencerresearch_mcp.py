@@ -166,7 +166,7 @@ class AnalysisDecisionInput(BaseModel):
 
 
 def resolve_job_state(kind: str, returncode: int, status: dict | None) -> str:
-    if kind == "creator_recent_check" and isinstance(status, dict):
+    if kind in {"creator_recent_check", "creator_evaluate"} and isinstance(status, dict):
         state = str(status.get("state") or "").upper()
         if state in {"COMPLETE", "PARTIAL", "FAILED", "STOPPED"}:
             return state
@@ -184,6 +184,45 @@ class JobManager:
         self._lock = threading.Lock()
         self._active: dict | None = None
         self._last: dict | None = None
+        self._recover_orphaned_job()
+
+    def _recover_orphaned_job(self) -> None:
+        persisted = load_json(JOB_STATE_PATH, {})
+        if str(persisted.get("state") or "").upper() != "RUNNING":
+            return
+        kind = str(persisted.get("kind") or "")
+        status_path = self.STATUS_FILES.get(kind)
+        finished_at = utc_now()
+        status = load_json(status_path, {}) if status_path is not None else {}
+        if not isinstance(status, dict):
+            status = {}
+        progress = status.get("progress")
+        if not isinstance(progress, dict):
+            progress = {}
+        last_phase = str(progress.get("phase") or "UNKNOWN")
+        progress.update({
+            "phase": "FAILED",
+            "heartbeat_at": finished_at,
+            "terminal_reason": "ORPHANED_JOB_ON_SERVER_START",
+            "last_phase": last_phase,
+        })
+        status.update({
+            "state": "FAILED",
+            "updated_at": finished_at,
+            "finished_at": finished_at,
+            "error": "ORPHANED_JOB_ON_SERVER_START",
+            "progress": progress,
+        })
+        if status_path is not None:
+            atomic_json(status_path, status)
+        recovered = {
+            **persisted,
+            "state": "FAILED",
+            "finished_at": finished_at,
+            "status": summarize_status(status_path),
+        }
+        self._last = recovered
+        atomic_json(JOB_STATE_PATH, recovered)
 
     def _public(self, job: dict) -> dict:
         out = {
