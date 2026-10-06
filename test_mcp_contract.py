@@ -35,6 +35,8 @@ class MCPContractTests(unittest.TestCase):
                 "creator_recent_check",
                 "analysis_queue_list",
                 "analysis_queue_get",
+                "analysis_queue_mark_insufficient",
+                "analysis_decision_list",
                 "analysis_decision_record",
                 "analysis_decision_record_batch",
                 "analysis_evidence_get",
@@ -65,6 +67,8 @@ class MCPContractTests(unittest.TestCase):
         self.assertIn("class AnalysisDecisionInput(BaseModel):", source)
         self.assertIn("def analysis_queue_list(", source)
         self.assertIn("def analysis_queue_get(queue_id: str)", source)
+        self.assertIn("def analysis_queue_mark_insufficient(", source)
+        self.assertIn("def analysis_decision_list(", source)
         self.assertIn("def analysis_decision_record(", source)
         self.assertIn("def analysis_decision_record_batch(items: list[AnalysisDecisionInput])", source)
         for decision in ("IGNORE", "RESEARCH", "TEST_CANDIDATE", "BACKLOG_CANDIDATE"):
