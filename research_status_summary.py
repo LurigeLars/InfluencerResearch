@@ -44,6 +44,7 @@ def summarize_status(path: Path | None) -> dict | None:
         "errors",
         "completed",
         "requested_sample_size",
+        "evaluation_run_id",
         "discovered_count",
         "eligible_count",
         "selected_count",
@@ -51,6 +52,16 @@ def summarize_status(path: Path | None) -> dict | None:
         "duplicate_count",
         "failed_count",
         "queued_for_analysis_count",
+        "analysis_completed_manifest_count",
+        "analysis_finalized_count",
+        "analysis_duplicate_count",
+        "analysis_insufficient_count",
+        "analysis_not_ready_count",
+        "analysis_queue_missing_count",
+        "analysis_unaccounted_count",
+        "analysis_accounted_count",
+        "analysis_disposition_counts",
+        "analysis_unaccounted_items",
         "sample_complete",
         "shortfall_reason",
         "creator",
@@ -108,6 +119,7 @@ _DETAIL_ARRAY_COUNT_KEYS = {
     "ingestion_groups": "ingestion_group_count",
     "analysis_missing_items": "analysis_missing_count",
     "analysis_candidate_states": "analysis_candidate_state_count",
+    "analysis_unaccounted_items": "analysis_unaccounted_count",
 }
 
 
