@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import tiktok_camofox_sync as sync
-from evaluation_progress import heartbeat, terminalize
+from evaluation_progress import heartbeat, sample_outcome, terminalize
 
 EVAL_VERSION = "0.4.1"
 
@@ -916,15 +916,12 @@ def main() -> int:
         eligible_count = int(ingest.get("candidate_new") or 0)
         selected_count = min(sample_size, eligible_count)
         completed_count = len(marked)
-        sample_complete = completed_count >= sample_size
-        shortfall_reason = None
-        if not sample_complete:
-            if selected_count < sample_size and not ingest.get("failures"):
-                shortfall_reason = f"ONLY_{completed_count}_ELIGIBLE_ITEMS_AVAILABLE"
-            elif ingest.get("failures"):
-                shortfall_reason = "DOWNSTREAM_PROCESSING_FAILURES"
-            else:
-                shortfall_reason = "SAMPLE_NOT_COMPLETE"
+        sample_complete, shortfall_reason = sample_outcome(
+            sample_size,
+            selected_count,
+            completed_count,
+            len(ingest.get("failures") or []),
+        )
 
         pipeline_ok = bool(queue.get("ok")) and not ingest.get("failures")
         state = "COMPLETE" if pipeline_ok else ("PARTIAL" if marked else "FAILED")
