@@ -234,6 +234,20 @@ class JobManager:
         self._active: dict | None = None
         self._last: dict | None = None
         self._recover_orphaned_job()
+        self._reconcile_terminal_evaluation_on_startup()
+
+    def _reconcile_terminal_evaluation_on_startup(self) -> None:
+        status_path = self.STATUS_FILES.get("creator_evaluate")
+        if not isinstance(status_path, Path):
+            return
+        status = load_json(status_path, {})
+        if str(status.get("state") or "").upper() not in {
+            "COMPLETE", "PARTIAL", "FAILED", "STOPPED",
+        }:
+            return
+        if not str(status.get("evaluation_run_id") or "").strip():
+            return
+        _reconcile_completed_creator_evaluation(status_path)
 
     def _recover_orphaned_job(self) -> None:
         persisted = load_json(JOB_STATE_PATH, {})
