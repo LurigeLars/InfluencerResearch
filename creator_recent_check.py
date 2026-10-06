@@ -43,7 +43,7 @@ def _bounded_env_int(
     return max(minimum, min(maximum, value))
 
 
-RECENT_CHECK_VERSION = "0.3.4"
+RECENT_CHECK_VERSION = "0.3.5"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
@@ -841,6 +841,8 @@ def discover_instagram(
         coverage_limited_reason = "MEDIA_AUTH_GATE"
     elif not discovery_ok:
         coverage_limited_reason = "DISCOVERY_ERROR"
+    elif not natural_window_complete:
+        coverage_limited_reason = "DISCOVERY_LIMIT_REACHED_BEFORE_CUTOFF"
     window_complete = natural_window_complete and coverage_limited_reason is None
 
     return {
@@ -851,7 +853,9 @@ def discover_instagram(
         "discovery_count": len(entries),
         "discovery_limit_used": target,
         "window_complete": window_complete,
-        "coverage_limit_reached": False,
+        "coverage_limit_reached": (
+            coverage_limited_reason == "DISCOVERY_LIMIT_REACHED_BEFORE_CUTOFF"
+        ),
         "coverage_limited_reason": coverage_limited_reason,
         "missing_publish_time_ids": missing_time,
         "discovery": {

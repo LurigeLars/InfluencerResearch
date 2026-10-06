@@ -82,6 +82,45 @@ class RecentInstagramTests(unittest.TestCase):
             known_reel_times={},
         )
 
+    def test_instagram_discovery_cap_has_explicit_coverage_reason(self) -> None:
+        end = datetime(2026, 9, 29, 18, 0, tzinfo=timezone.utc)
+        cutoff = end - timedelta(days=5)
+        probe = {
+            "ok": True,
+            "authenticated": True,
+            "reel_count": 15,
+            "blocked": False,
+            "media_auth_gated": False,
+            "reel_items": [
+                {
+                    "url": f"https://www.instagram.com/reel/RECENT{i:02d}/",
+                    "published_at": (end - timedelta(hours=i + 1)).isoformat(),
+                    "error": None,
+                }
+                for i in range(15)
+            ],
+            "timings": {},
+        }
+        with unittest.mock.patch.object(
+            crc.instagram,
+            "discover_reels_authenticated",
+            return_value=probe,
+        ):
+            result = crc.discover_instagram(
+                {"creator_key": "creator"},
+                {"profile_url": "https://www.instagram.com/example/"},
+                cutoff,
+                end,
+                15,
+            )
+
+        self.assertFalse(result["window_complete"])
+        self.assertTrue(result["coverage_limit_reached"])
+        self.assertEqual(
+            result["coverage_limited_reason"],
+            "DISCOVERY_LIMIT_REACHED_BEFORE_CUTOFF",
+        )
+
     def test_media_auth_gate_with_short_result_is_not_complete_coverage(self) -> None:
         end = datetime(2026, 9, 29, 18, 0, tzinfo=timezone.utc)
         cutoff = end - timedelta(days=1)
