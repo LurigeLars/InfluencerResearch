@@ -43,7 +43,7 @@ def _bounded_env_int(
     return max(minimum, min(maximum, value))
 
 
-RECENT_CHECK_VERSION = "0.3.2"
+RECENT_CHECK_VERSION = "0.3.3"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
@@ -67,6 +67,12 @@ STORY_PREFETCH_TIMEOUT_SECONDS = _bounded_env_int(
     "INFLUENCER_RESEARCH_STORY_PREFETCH_TIMEOUT_SECONDS",
     120,
     15,
+    600,
+)
+STORY_POSTPROCESS_TIMEOUT_SECONDS = _bounded_env_int(
+    "INFLUENCER_RESEARCH_STORY_POSTPROCESS_TIMEOUT_SECONDS",
+    180,
+    30,
     600,
 )
 WORKER_HEARTBEAT_SECONDS = 5.0
@@ -1349,8 +1355,9 @@ def _capture_instagram_story_run(
     *,
     gemini_circuit: dict | None = None,
     ollama_budget_state: dict | None = None,
+    defer_postprocess: bool = False,
 ) -> dict:
-    """Capture/process one creator's Stories without promoting canonical items."""
+    """Capture one creator's Stories, optionally deferring heavy postprocessing."""
     handle = _instagram_handle(source)
     return ephemeral.run_one(
         root=root,
@@ -1361,6 +1368,7 @@ def _capture_instagram_story_run(
         max_items=min(6, max(1, max_new + 2)),
         gemini_circuit=gemini_circuit,
         ollama_budget_state=ollama_budget_state,
+        defer_postprocess=defer_postprocess,
     )
 
 
@@ -1379,6 +1387,7 @@ def _ingest_instagram_stories(
         return {"promoted": [], "capture": None, "queue": None, "warnings": []}
 
     run = precomputed_run
+    postprocess_error = None
     if run is None:
         run = _capture_instagram_story_run(
             root,
@@ -1387,12 +1396,43 @@ def _ingest_instagram_stories(
             gemini_circuit=gemini_circuit,
             ollama_budget_state=ollama_budget_state,
         )
+    elif run.get("postprocess_deferred"):
+        worker = _launch_recent_worker(
+            root,
+            {
+                "operation": "STORY_POSTPROCESS",
+                "creator": handle,
+                "run": run,
+                "gemini_circuit": dict(gemini_circuit or {}),
+                "ollama_budget_state": dict(ollama_budget_state or {}),
+            },
+            label=f"story-postprocess-{profile['creator_key']}",
+            timeout_seconds=STORY_POSTPROCESS_TIMEOUT_SECONDS,
+        )
+        worker_result = _wait_recent_worker(worker)
+        if worker_result.get("ok"):
+            run = worker_result.get("story_run") or run
+            returned_circuit = worker_result.get("gemini_circuit")
+            if isinstance(gemini_circuit, dict) and isinstance(returned_circuit, dict):
+                gemini_circuit.clear()
+                gemini_circuit.update(returned_circuit)
+            returned_budget = worker_result.get("ollama_budget_state")
+            if isinstance(ollama_budget_state, dict) and isinstance(returned_budget, dict):
+                ollama_budget_state.clear()
+                ollama_budget_state.update(returned_budget)
+        else:
+            postprocess_error = str(
+                worker_result.get("error") or "STORY_POSTPROCESS_WORKER_FAILED"
+            )
+
     bridge = _promote_story_items(root, profile, handle, cutoff, max_new)
     promoted = list(bridge.get("promoted") or [])
     available = list(bridge.get("available") or [])
     queue = tts.run_research_queue(root) if bridge.get("manifest_changed") else None
 
     warnings: list[str] = []
+    if postprocess_error:
+        warnings.append(f"STORY_POSTPROCESS:{postprocess_error}")
     capture = run.get("capture") or {}
     reason = str(capture.get("reason") or "")
     benign_reasons = {
@@ -1641,6 +1681,7 @@ def _run_story_capture_batch(
                 max_items,
                 gemini_circuit=gemini_circuit,
                 ollama_budget_state=ollama_budget_state,
+                defer_postprocess=True,
             )
             results.append({
                 "creator_key": creator_key,
@@ -2246,6 +2287,23 @@ def _internal_worker_main(request_path: Path) -> int:
                 "gemini_circuit": gemini_circuit,
                 "ollama_budget_state": ollama_budget_state,
             }
+        elif operation == "STORY_POSTPROCESS":
+            gemini_circuit = dict(request.get("gemini_circuit") or {})
+            ollama_budget_state = dict(request.get("ollama_budget_state") or {})
+            story_run = ephemeral.postprocess_story_run(
+                root,
+                str(request.get("creator") or ""),
+                dict(request.get("run") or {}),
+                gemini_circuit=gemini_circuit,
+                ollama_budget_state=ollama_budget_state,
+            )
+            result = {
+                "ok": True,
+                "operation": operation,
+                "story_run": story_run,
+                "gemini_circuit": gemini_circuit,
+                "ollama_budget_state": ollama_budget_state,
+            }
         elif operation == "INGESTION_GROUP":
             creator_key = str(request["creator_key"])
             platform = str(request["platform"]).upper()
@@ -2702,15 +2760,58 @@ def _main_impl() -> int:
                         "stage": "STORY_PREFETCH",
                         "error": story_error,
                     })
+                    bridge = _promote_story_items(
+                        root,
+                        profile,
+                        _instagram_handle(instagram_sources[0]),
+                        cutoff,
+                        remaining_story_slots,
+                    )
+                    promoted = list(bridge.get("promoted") or [])
+                    available = list(bridge.get("available") or [])
+                    story_selected.extend(promoted)
+                    story_available.extend(available)
+                    story_reused_existing_count += int(
+                        bridge.get("reused_existing_count") or 0
+                    )
+                    story_reattributed_count += int(
+                        bridge.get("reattributed_count") or 0
+                    )
+                    story_identity_aliases_retired_count += int(
+                        bridge.get("identity_aliases_retired_count") or 0
+                    )
+                    remaining_story_slots -= len(promoted)
                     story_results.append({
                         "creator_key": creator_key,
-                        "promoted": [],
-                        "available": [],
+                        "promoted": promoted,
+                        "available": available,
                         "warnings": [story_error],
                         "state": "FAILED",
+                        "salvaged_after_prefetch_failure": bool(available),
                     })
+                    emit_transition(
+                        "STORY_CAPTURE_FAILED",
+                        stage="STORIES",
+                        creator=creator_key,
+                        platform="INSTAGRAM",
+                        error=story_error,
+                        salvaged_count=len(available),
+                    )
                     continue
                 precomputed_run = prefetch_row.get("run")
+                if precomputed_run is not None:
+                    emit_transition(
+                        "STORY_CAPTURE_DONE",
+                        stage="STORIES",
+                        creator=creator_key,
+                        platform="INSTAGRAM",
+                        captured_count=int(
+                            (precomputed_run.get("capture") or {}).get("visited_frames") or 0
+                        ),
+                        postprocess_deferred=bool(
+                            precomputed_run.get("postprocess_deferred")
+                        ),
+                    )
                 try:
                     story_result = _ingest_instagram_stories(
                         root,
@@ -2721,6 +2822,30 @@ def _main_impl() -> int:
                         gemini_circuit=story_gemini_circuit,
                         ollama_budget_state=story_ollama_budget,
                         precomputed_run=precomputed_run,
+                    )
+                    emit_transition(
+                        "STORY_VISUAL_DONE",
+                        stage="STORIES",
+                        creator=creator_key,
+                        platform="INSTAGRAM",
+                        attempted=int(
+                            (story_result.get("visual_enrichment") or {}).get("attempted") or 0
+                        ),
+                        completed=int(
+                            (story_result.get("visual_enrichment") or {}).get("completed") or 0
+                        ),
+                    )
+                    emit_transition(
+                        "STORY_TRANSCRIPTION_DONE",
+                        stage="STORIES",
+                        creator=creator_key,
+                        platform="INSTAGRAM",
+                        attempted=int(
+                            (story_result.get("transcription") or {}).get("attempted") or 0
+                        ),
+                        completed=int(
+                            (story_result.get("transcription") or {}).get("completed") or 0
+                        ),
                     )
                     promoted = list(story_result.get("promoted") or [])
                     available = list(story_result.get("available") or [])
@@ -2737,6 +2862,14 @@ def _main_impl() -> int:
                     )
                     remaining_story_slots -= len(promoted)
                     story_results.append({"creator_key": creator_key, **story_result})
+                    emit_transition(
+                        "STORY_PROMOTE_DONE",
+                        stage="STORIES",
+                        creator=creator_key,
+                        platform="INSTAGRAM",
+                        promoted_count=len(promoted),
+                        available_count=len(available),
+                    )
                     if story_result.get("warnings"):
                         errors.append({
                             "creator_key": creator_key,
