@@ -76,6 +76,27 @@ def parse_exact_video_ids(value: str, *, cap: int = EXACT_VIDEO_ID_CAP) -> list[
     return out
 
 
+def select_seeded_sample(
+    seed_entries: list[dict],
+    discovered_entries: list[dict],
+    sample_size: int,
+) -> tuple[list[dict], int]:
+    """Return must-include seeds first, then discovery fill, deduped before the sample cap."""
+    selected_pool: list[dict] = []
+    seen: set[str] = set()
+    duplicate_count = 0
+    for entry in [*seed_entries, *discovered_entries]:
+        video_id = str(entry.get("id") or "")
+        if not video_id:
+            continue
+        if video_id in seen:
+            duplicate_count += 1
+            continue
+        seen.add(video_id)
+        selected_pool.append(entry)
+    return selected_pool[:max(1, int(sample_size))], duplicate_count
+
+
 def _youtube_profile_identity(channel_url: str) -> tuple[str, str]:
     parsed = urlparse(str(channel_url or "").strip())
     host = (parsed.hostname or "").casefold()
@@ -1326,17 +1347,11 @@ def main() -> int:
                 required_attribution_term=required_attribution_term,
             )
 
-        entries = []
-        seen_entry_ids: set[str] = set()
-        for entry in [*seed_entries, *channel_entries]:
-            video_id = str(entry.get("id") or "")
-            if not video_id:
-                continue
-            if video_id in seen_entry_ids:
-                duplicate_count += 1
-                continue
-            seen_entry_ids.add(video_id)
-            entries.append(entry)
+        entries, duplicate_count = select_seeded_sample(
+            seed_entries,
+            channel_entries,
+            max(sample_size * 4, 50),
+        )
 
         discovery_diag = {
             "mode": "SEEDED_CHANNEL_ENUMERATION" if seed_ids else "CHANNEL_ENUMERATION",
