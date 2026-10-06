@@ -8,32 +8,34 @@ from pathlib import Path
 from types import ModuleType
 
 # This unit only exercises the queue-target projection. Stub browser-only modules
-# so CI does not need Playwright just to import creator_recent_check. Keep the stub
-# contract complete enough that later tests in the same unittest process are not
-# poisoned by a half-empty module in sys.modules.
-instagram_stub = sys.modules.setdefault(
-    "instagram_camofox_public_smoke",
-    ModuleType("instagram_camofox_public_smoke"),
-)
-if not hasattr(instagram_stub, "extract_reel_urls"):
-    instagram_stub.extract_reel_urls = (
-        lambda url: [url] if "/reel/" in str(url) else []
-    )
-if not hasattr(instagram_stub, "probe_public_session"):
-    instagram_stub.probe_public_session = lambda *args, **kwargs: {}
+# while importing creator_recent_check, then restore sys.modules immediately so
+# unrelated tests in the same unittest process always import the real modules.
+_module_names = ("instagram_camofox_public_smoke", "ephemeral_ingest")
+_original_modules = {name: sys.modules.get(name) for name in _module_names}
 
-ephemeral_stub = sys.modules.setdefault(
-    "ephemeral_ingest",
-    ModuleType("ephemeral_ingest"),
+instagram_stub = ModuleType("instagram_camofox_public_smoke")
+instagram_stub.extract_reel_urls = (
+    lambda url: [url] if "/reel/" in str(url) else []
 )
-if not hasattr(ephemeral_stub, "run_one"):
-    ephemeral_stub.run_one = lambda *args, **kwargs: {
-        "state": "DONE",
-        "capture": {"reason": "NO_ACTIVE_STORY_OR_STORY_VIEW_REDIRECTED"},
-        "errors": [],
-    }
+instagram_stub.probe_public_session = lambda *args, **kwargs: {}
 
-import creator_recent_check as crc
+ephemeral_stub = ModuleType("ephemeral_ingest")
+ephemeral_stub.run_one = lambda *args, **kwargs: {
+    "state": "DONE",
+    "capture": {"reason": "NO_ACTIVE_STORY_OR_STORY_VIEW_REDIRECTED"},
+    "errors": [],
+}
+
+sys.modules["instagram_camofox_public_smoke"] = instagram_stub
+sys.modules["ephemeral_ingest"] = ephemeral_stub
+try:
+    import creator_recent_check as crc
+finally:
+    for _name, _original in _original_modules.items():
+        if _original is None:
+            sys.modules.pop(_name, None)
+        else:
+            sys.modules[_name] = _original
 
 
 class RecentAnalysisTargetTests(unittest.TestCase):
