@@ -293,6 +293,107 @@ class MCPJobSemanticsTests(unittest.TestCase):
             self.assertIn("yt_three03", cmd)
             self.assertNotIn("yt_incomplete", cmd)
 
+
+    def test_terminal_reconciliation_persists_analysis_disposition_accounting(self) -> None:
+        import json
+        from types import SimpleNamespace
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            state_dir = root / "state"
+            app_dir = root / "app"
+            state_dir.mkdir(parents=True)
+            app_dir.mkdir(parents=True)
+
+            run_id = "eval-accounting-1"
+            status_path = state_dir / "creator_evaluation_status.json"
+            status_path.write_text(
+                json.dumps({
+                    "evaluation_run_id": run_id,
+                    "state": "STOPPED",
+                    "progress": {"completed_count": 5},
+                }),
+                encoding="utf-8",
+            )
+            common = {
+                "evaluation_mode": "CREATOR_EVALUATION",
+                "evaluation_run_id": run_id,
+                "creator": "kathylien",
+                "source_platform": "YOUTUBE",
+                "download_status": "DONE",
+                "transcription_status": "DONE",
+                "visual_evidence_status": "DONE",
+                "analysis_content_status": "READY",
+            }
+            manifest = {
+                "schema_version": 1,
+                "items": {
+                    "yt_pending": {**common, "research_status": "PENDING_ANALYSIS"},
+                    "yt_duplicate": {
+                        **common,
+                        "research_status": "DUPLICATE",
+                        "duplicate_of": "yt_pending",
+                        "duplicate_basis": "TRANSCRIPT_MATCH",
+                    },
+                    "yt_insufficient": {
+                        **common,
+                        "research_status": "INSUFFICIENT_CONTENT",
+                        "analysis_content_status": "INSUFFICIENT_CONTENT",
+                        "analysis_content_reason": "NO_USABLE_CONTENT",
+                    },
+                    "yt_final": {**common, "research_status": "ANALYZED"},
+                    "yt_missing": {**common, "research_status": "PENDING_ANALYSIS"},
+                },
+            }
+            (state_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+            (state_dir / "research_queue.json").write_text(
+                json.dumps({
+                    "items": [{
+                        "queue_id": "yt_pending",
+                        "analysis_status": "PENDING_ANALYSIS",
+                    }]
+                }),
+                encoding="utf-8",
+            )
+            (state_dir / "research_decisions.json").write_text(
+                json.dumps({
+                    "items": {
+                        "yt_final": {
+                            "decision": "RESEARCH",
+                            "screened_at": "2026-10-07T00:00:00+00:00",
+                        }
+                    }
+                }),
+                encoding="utf-8",
+            )
+
+            with (
+                patch.object(irm, "ROOT", root),
+                patch.object(irm, "STATE_DIR", state_dir),
+                patch.object(irm, "APP_DIR", app_dir),
+                patch.object(
+                    irm.subprocess,
+                    "run",
+                    return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+                ),
+            ):
+                result = irm._reconcile_completed_creator_evaluation(status_path)
+
+            persisted = json.loads(status_path.read_text(encoding="utf-8"))
+            self.assertTrue(result["ok"])
+            self.assertEqual(persisted["queued_for_analysis_count"], 1)
+            self.assertEqual(persisted["analysis_finalized_count"], 1)
+            self.assertEqual(persisted["analysis_duplicate_count"], 1)
+            self.assertEqual(persisted["analysis_insufficient_count"], 1)
+            self.assertEqual(persisted["analysis_queue_missing_count"], 1)
+            self.assertEqual(persisted["analysis_accounted_count"], 4)
+            self.assertEqual(persisted["analysis_unaccounted_count"], 1)
+            self.assertEqual(persisted["analysis_unaccounted_items"], ["yt_missing"])
+            self.assertEqual(
+                persisted["progress"]["analysis_disposition_counts"]["DUPLICATE"],
+                1,
+            )
+
     def test_creator_evaluation_terminal_state_overrides_nonzero_exit(self) -> None:
         self.assertEqual(
             irm.resolve_job_state("creator_evaluate", 1, {"state": "PARTIAL"}),
