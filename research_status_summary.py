@@ -48,6 +48,9 @@ def summarize_status(path: Path | None) -> dict | None:
         "discovered_count",
         "eligible_count",
         "selected_count",
+        "selected_queue_ids",
+        "candidate_queue_ids",
+        "existing_delivery_target_ids",
         "completed_count",
         "duplicate_count",
         "failed_count",
@@ -120,6 +123,9 @@ _DETAIL_ARRAY_COUNT_KEYS = {
     "analysis_missing_items": "analysis_missing_count",
     "analysis_candidate_states": "analysis_candidate_state_count",
     "analysis_unaccounted_items": "analysis_unaccounted_count",
+    "selected_queue_ids": "selected_queue_id_count",
+    "candidate_queue_ids": "candidate_queue_id_count",
+    "existing_delivery_target_ids": "existing_delivery_target_count",
 }
 
 
