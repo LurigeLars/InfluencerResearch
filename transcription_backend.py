@@ -14,7 +14,7 @@ import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
@@ -710,7 +710,12 @@ def extract_visible_text_gemini(
                 client.files.delete(name=uploaded.name)
 
 
-def transcribe_faster_whisper(video_path: Path, settings: dict[str, Any]) -> dict[str, Any]:
+def transcribe_faster_whisper(
+    video_path: Path,
+    settings: dict[str, Any],
+    *,
+    progress_callback: Callable[[int], None] | None = None,
+) -> dict[str, Any]:
     os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
     from faster_whisper import WhisperModel
 
@@ -734,7 +739,7 @@ def transcribe_faster_whisper(video_path: Path, settings: dict[str, Any]) -> dic
 
     rows = []
     parts = []
-    for seg in segments:
+    for segment_index, seg in enumerate(segments, start=1):
         text = (seg.text or "").strip()
         if text:
             parts.append(text)
@@ -745,6 +750,8 @@ def transcribe_faster_whisper(video_path: Path, settings: dict[str, Any]) -> dic
                 "text": text,
             }
         )
+        if progress_callback is not None and (segment_index == 1 or segment_index % 10 == 0):
+            progress_callback(segment_index)
 
     return {
         "provider": "faster-whisper",
@@ -757,7 +764,12 @@ def transcribe_faster_whisper(video_path: Path, settings: dict[str, Any]) -> dic
     }
 
 
-def transcribe_video(video_path: Path, settings: dict[str, Any] | None = None) -> dict[str, Any]:
+def transcribe_video(
+    video_path: Path,
+    settings: dict[str, Any] | None = None,
+    *,
+    progress_callback: Callable[[int], None] | None = None,
+) -> dict[str, Any]:
     settings = settings or {}
     provider = str(settings.get("provider", "auto")).strip().lower()
     if provider not in ALLOWED_PROVIDERS:
@@ -807,19 +819,19 @@ def transcribe_video(video_path: Path, settings: dict[str, Any] | None = None) -
         return transcribe_gemini_bounded(video_path, **gemini_kwargs)
 
     if provider == "faster-whisper":
-        return transcribe_faster_whisper(video_path, settings)
+        return transcribe_faster_whisper(video_path, settings, progress_callback=progress_callback)
 
     # auto: prefer Gemini only when the runtime-only secret is present, then fall back locally.
     if read_gemini_api_key() is not None:
         try:
             return transcribe_gemini_bounded(video_path, **gemini_kwargs)
         except Exception as exc:
-            fallback = transcribe_faster_whisper(video_path, settings)
+            fallback = transcribe_faster_whisper(video_path, settings, progress_callback=progress_callback)
             fallback["fallback_from"] = "gemini"
             fallback["fallback_error"] = _safe_error(exc)
             return fallback
 
-    return transcribe_faster_whisper(video_path, settings)
+    return transcribe_faster_whisper(video_path, settings, progress_callback=progress_callback)
 
 
 if __name__ == "__main__":
