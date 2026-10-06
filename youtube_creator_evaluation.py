@@ -14,9 +14,10 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from evaluation_progress import heartbeat, sample_outcome, terminalize
 from urllib.parse import urlparse
 
-YOUTUBE_EVAL_VERSION = "0.6.3"
+YOUTUBE_EVAL_VERSION = "0.7.0"
 
 
 def utc_now() -> str:
@@ -73,6 +74,27 @@ def parse_exact_video_ids(value: str, *, cap: int = EXACT_VIDEO_ID_CAP) -> list[
     if len(out) > cap:
         raise ValueError(f"TOO_MANY_VIDEO_IDS:{len(out)}>{cap}")
     return out
+
+
+def select_seeded_sample(
+    seed_entries: list[dict],
+    discovered_entries: list[dict],
+    sample_size: int,
+) -> tuple[list[dict], int]:
+    """Return must-include seeds first, then discovery fill, deduped before the sample cap."""
+    selected_pool: list[dict] = []
+    seen: set[str] = set()
+    duplicate_count = 0
+    for entry in [*seed_entries, *discovered_entries]:
+        video_id = str(entry.get("id") or "")
+        if not video_id:
+            continue
+        if video_id in seen:
+            duplicate_count += 1
+            continue
+        seen.add(video_id)
+        selected_pool.append(entry)
+    return selected_pool[:max(1, int(sample_size))], duplicate_count
 
 
 def _youtube_profile_identity(channel_url: str) -> tuple[str, str]:
@@ -1231,6 +1253,7 @@ def main() -> int:
     ap.add_argument("--sample-size", type=int, default=20)
     ap.add_argument("--verification-basis", default="WEB_VERIFIED_CHANNEL")
     ap.add_argument("--only-video-ids", default="", help=argparse.SUPPRESS)
+    ap.add_argument("--seed-video-ids", default="", help=argparse.SUPPRESS)
     ap.add_argument("--required-attribution-term", default="", help=argparse.SUPPRESS)
     args = ap.parse_args()
 
@@ -1267,7 +1290,10 @@ def main() -> int:
             "visual_capture": "1FPS_PLUS_SCENE_CHANGE_WITH_LOCAL_DEDUPE",
             "full_video_persisted": False,
         },
+        "requested_sample_size": sample_size,
     }
+    atomic_json(status_path, {**base_status, "state": "RUNNING", "updated_at": started})
+    heartbeat(status_path, "DISCOVERY", requested_sample_size=sample_size)
 
     manifest_path = root / "state" / "manifest.json"
     manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
@@ -1275,6 +1301,7 @@ def main() -> int:
 
     try:
         exact_ids = parse_exact_video_ids(args.only_video_ids)
+        seed_ids = parse_exact_video_ids(args.seed_video_ids)
     except ValueError as exc:
         status = {**base_status, "state": "BAD_VIDEO_ID_FILTER", "finished_at": utc_now(), "error": str(exc)}
         atomic_json(status_path, status)
@@ -1290,6 +1317,7 @@ def main() -> int:
         print(json.dumps(status, ensure_ascii=False, indent=2))
         return 6
 
+    duplicate_count = 0
     if exact_ids:
         entries, discovery_diag = exact_video_entries(
             args.channel_url, exact_ids, required_attribution_term=required_attribution_term)
@@ -1306,13 +1334,54 @@ def main() -> int:
             print(json.dumps(status, ensure_ascii=False, indent=2))
             return 6
     else:
-        entries, discovery_diag = enumerate_channel(args.channel_url, limit=max(sample_size * 4, 50))
+        channel_entries, channel_diag = enumerate_channel(
+            args.channel_url,
+            limit=max(sample_size * 4, 50),
+        )
+        seed_entries: list[dict] = []
+        seed_diag: dict = {"mode": "NO_SEEDS", "requested": 0, "accepted": 0}
+        if seed_ids:
+            seed_entries, seed_diag = exact_video_entries(
+                args.channel_url,
+                seed_ids,
+                required_attribution_term=required_attribution_term,
+            )
+
+        entries, duplicate_count = select_seeded_sample(
+            seed_entries,
+            channel_entries,
+            max(sample_size * 4, 50),
+        )
+
+        discovery_diag = {
+            "mode": "SEEDED_CHANNEL_ENUMERATION" if seed_ids else "CHANNEL_ENUMERATION",
+            "seed": seed_diag,
+            "channel": channel_diag,
+            "seed_requested": len(seed_ids),
+            "seed_resolved": len(seed_entries),
+            "unique_entries": len(entries),
+            "duplicate_count": duplicate_count,
+        }
         if not entries:
-            status = {**base_status, "state": "NO_YOUTUBE_ENTRIES", "finished_at": utc_now(), "discovery": discovery_diag}
+            status = {
+                **base_status,
+                "state": "NO_YOUTUBE_ENTRIES",
+                "finished_at": utc_now(),
+                "discovery": discovery_diag,
+            }
             atomic_json(status_path, status)
             atomic_json(immutable_status_path, status)
             print(json.dumps(status, ensure_ascii=False, indent=2))
             return 4
+
+    heartbeat(
+        status_path,
+        "SELECTION",
+        requested_sample_size=sample_size,
+        discovered_count=len(entries),
+        eligible_count=len(entries),
+        duplicate_count=duplicate_count,
+    )
 
     known = manifest["items"]
     def is_complete_entry(entry: dict) -> bool:
@@ -1324,12 +1393,22 @@ def main() -> int:
             and known[key].get("visual_evidence_status") == "DONE"
         )
 
-    candidates = [e for e in entries if not is_complete_entry(e)][:sample_size]
+    selected_entries = entries[:sample_size]
+    candidates = [entry for entry in selected_entries if not is_complete_entry(entry)]
     existing_delivery_targets = [
         f"yt_{entry['id']}"
-        for entry in entries[:sample_size]
+        for entry in selected_entries
         if is_complete_entry(entry)
     ]
+    heartbeat(
+        status_path,
+        "SELECTION",
+        requested_sample_size=sample_size,
+        discovered_count=len(entries),
+        eligible_count=len(entries),
+        selected_count=len(selected_entries),
+        duplicate_count=duplicate_count,
+    )
 
     model_holder = {"model": None}
     completed: list[str] = []
@@ -1338,17 +1417,35 @@ def main() -> int:
     whisper_count = 0
     visual_frame_count = 0
 
-    for entry in candidates:
+    for index, entry in enumerate(candidates, start=1):
         vid = entry["id"]
         url = entry["url"]
         key = f"yt_{vid}"
         old = manifest["items"].get(key, {})
 
+        heartbeat(
+            status_path,
+            "EVIDENCE",
+            current_index=index,
+            current_source_id=vid,
+            selected_count=len(selected_entries),
+            completed_count=len(completed) + len(existing_delivery_targets),
+            failed_count=len(failures),
+        )
         visual = capture_visual_evidence(root, creator_key, url, vid)
         if not visual.get("ok"):
             failures.append({"video_id": vid, "url": url, "stage": "visual_capture", "detail": visual.get("diagnostic_tail") or visual.get("error")})
             continue
 
+        heartbeat(
+            status_path,
+            "TRANSCRIPTION",
+            current_index=index,
+            current_source_id=vid,
+            selected_count=len(selected_entries),
+            completed_count=len(completed) + len(existing_delivery_targets),
+            failed_count=len(failures),
+        )
         tr = fetch_captions(root, creator_key, url, vid)
         if tr.get("ok"):
             transcript_source = str(tr.get("source") or "YOUTUBE_CAPTIONS")
@@ -1425,6 +1522,17 @@ def main() -> int:
         atomic_json(manifest_path, manifest)
 
     if not candidates:
+        heartbeat(
+            status_path,
+            "QUEUE_WRITE",
+            requested_sample_size=sample_size,
+            discovered_count=len(entries),
+            eligible_count=len(entries),
+            selected_count=len(selected_entries),
+            completed_count=len(existing_delivery_targets),
+            duplicate_count=duplicate_count,
+            failed_count=0,
+        )
         queue_result, queue, delivery = reconcile_delivery(root, existing_delivery_targets)
         delivery_ok = queue_result.get("ok") and not delivery["undelivered"]
         state = "NO_NEW_CONTENT" if delivery_ok else "DELIVERY_INCOMPLETE"
@@ -1438,9 +1546,27 @@ def main() -> int:
             "finished_at": utc_now(),
             "discovery": discovery_diag,
             "entries_discovered": len(entries),
+            "discovered_count": len(entries),
+            "eligible_count": len(entries),
+            "selected_count": len(selected_entries),
             "candidate_count": 0,
-            "completed_count": 0,
-            "completed": [],
+            "completed_count": len(existing_delivery_targets),
+            "completed": existing_delivery_targets,
+            "duplicate_count": duplicate_count,
+            "failed_count": 0,
+            "requested_sample_size": sample_size,
+            "sample_complete": sample_outcome(
+                sample_size,
+                len(selected_entries),
+                len(existing_delivery_targets),
+                0,
+            )[0],
+            "shortfall_reason": sample_outcome(
+                sample_size,
+                len(selected_entries),
+                len(existing_delivery_targets),
+                0,
+            )[1],
             "transcript_sources": {"youtube_captions": 0, "faster_whisper_fallback": 0},
             "retained_visual_frames": 0,
             "failure_count": 0,
@@ -1458,17 +1584,43 @@ def main() -> int:
             "delivery_undelivered": delivery["undelivered"],
             "delivery_dispositions": delivery["dispositions"],
         }
-        atomic_json(status_path, status)
+        terminal_state = "COMPLETE" if delivery_ok else "FAILED"
+        status = terminalize(
+            status_path,
+            terminal_state,
+            terminal_reason=status.get("shortfall_reason"),
+            **{key: value for key, value in status.items() if key not in {"state", "progress"}},
+        )
         atomic_json(immutable_status_path, status)
         print(json.dumps(status, ensure_ascii=False, indent=2))
         return 0 if delivery_ok else 1
 
-    queue_result, queue, delivery = reconcile_delivery(root, completed)
+    heartbeat(
+        status_path,
+        "QUEUE_WRITE",
+        requested_sample_size=sample_size,
+        discovered_count=len(entries),
+        eligible_count=len(entries),
+        selected_count=len(selected_entries),
+        completed_count=len(completed) + len(existing_delivery_targets),
+        duplicate_count=duplicate_count,
+        failed_count=len(failures),
+    )
+    delivery_targets = list(dict.fromkeys([*existing_delivery_targets, *completed]))
+    queue_result, queue, delivery = reconcile_delivery(root, delivery_targets)
     queue_items = queue.get("items", []) if isinstance(queue, dict) else []
     queued_for_run = [
         item.get("shortcode") for item in queue_items
         if isinstance(item, dict) and item.get("evaluation_run_id") == run_id
     ]
+
+    completed_count = len(completed) + len(existing_delivery_targets)
+    sample_complete, shortfall_reason = sample_outcome(
+        sample_size,
+        len(selected_entries),
+        completed_count,
+        len(failures),
+    )
 
     complete = (
         len(completed) == len(candidates)
@@ -1476,16 +1628,38 @@ def main() -> int:
         and queue_result.get("ok")
         and not delivery["undelivered"]
     )
-    state = "COMPLETE" if complete else ("PARTIAL" if completed else "FAILED")
+    state = "COMPLETE" if complete else ("PARTIAL" if completed_count else "FAILED")
+    heartbeat(
+        status_path,
+        "FINALIZING",
+        requested_sample_size=sample_size,
+        discovered_count=len(entries),
+        eligible_count=len(entries),
+        selected_count=len(selected_entries),
+        completed_count=completed_count,
+        duplicate_count=duplicate_count,
+        failed_count=len(failures),
+        queued_count=sum(1 for x in delivery["dispositions"].values() if x == "QUEUED"),
+        sample_complete=sample_complete,
+        shortfall_reason=shortfall_reason,
+    )
     status = {
         **base_status,
         "state": state,
         "finished_at": utc_now(),
         "discovery": discovery_diag,
         "entries_discovered": len(entries),
+        "discovered_count": len(entries),
+        "eligible_count": len(entries),
+        "selected_count": len(selected_entries),
         "candidate_count": len(candidates),
-        "completed_count": len(completed),
-        "completed": completed,
+        "completed_count": completed_count,
+        "completed": delivery_targets,
+        "duplicate_count": duplicate_count,
+        "failed_count": len(failures),
+        "requested_sample_size": sample_size,
+        "sample_complete": sample_complete,
+        "shortfall_reason": shortfall_reason,
         "transcript_sources": {"youtube_captions": caption_count, "faster_whisper_fallback": whisper_count},
         "retained_visual_frames": visual_frame_count,
         "failure_count": len(failures),
@@ -1503,7 +1677,12 @@ def main() -> int:
         "delivery_undelivered": delivery["undelivered"],
         "delivery_dispositions": delivery["dispositions"],
     }
-    atomic_json(status_path, status)
+    status = terminalize(
+        status_path,
+        state,
+        terminal_reason=shortfall_reason if state == "COMPLETE" and not sample_complete else None,
+        **{key: value for key, value in status.items() if key not in {"state", "progress"}},
+    )
     atomic_json(immutable_status_path, status)
     print(json.dumps(status, ensure_ascii=False, indent=2))
 

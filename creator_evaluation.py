@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import tiktok_camofox_sync as sync
+from evaluation_progress import heartbeat, sample_outcome, terminalize
 
 EVAL_VERSION = "0.4.1"
 
@@ -810,13 +811,16 @@ def main() -> int:
         "evaluation_version": EVAL_VERSION,
         "state": "RUNNING",
         "evaluation_run_id": evaluation_run_id,
+        "creator_key": registered_creator_key or creator_key,
         "source_profile": args.profile_url,
         "creator_name": args.creator_name,
         "instagram_accessed": False,
         "network_scope": ["TIKTOK"],
         "sample_size": sample_size,
+        "requested_sample_size": sample_size,
         "started_at": started_at,
     })
+    heartbeat(status_path, "DISCOVERY", requested_sample_size=sample_size)
 
     try:
         server = sync.start_server()
@@ -869,7 +873,15 @@ def main() -> int:
             "max_new_downloads": sample_size,
         }
 
-        ingest = sync.process_source(root, source, max_new_override=sample_size)
+        def progress_callback(phase: str, metrics: dict) -> None:
+            heartbeat(status_path, phase, requested_sample_size=sample_size, **metrics)
+
+        ingest = sync.process_source(
+            root,
+            source,
+            max_new_override=sample_size,
+            progress_callback=progress_callback,
+        )
         marked = mark_evaluation_items(
             root,
             result=ingest,
@@ -878,13 +890,55 @@ def main() -> int:
             sample_size=sample_size,
             verification=discovery,
         )
+        heartbeat(
+            status_path,
+            "QUEUE_WRITE",
+            requested_sample_size=sample_size,
+            discovered_count=int((ingest.get("discovery") or {}).get("found") or ingest.get("catalog_after") or 0),
+            selected_count=int(ingest.get("candidate_new") or 0),
+            ingested_count=int(ingest.get("completed_new") or 0),
+            failed_count=len(ingest.get("failures") or []),
+        )
         queue = sync.run_research_queue(root)
 
-        state = "DONE"
-        if not queue.get("ok") or ingest.get("failures"):
-            state = "DONE_WITH_ERRORS"
-        if not marked:
-            state = "NO_EVALUATION_ITEMS"
+        queue_state = load_json(root / "state" / "research_queue.json", {"items": []})
+        queued_for_run = [
+            item for item in queue_state.get("items", [])
+            if isinstance(item, dict) and item.get("evaluation_run_id") == evaluation_run_id
+        ]
+        duplicate_count = sum(
+            1
+            for key in marked
+            if isinstance(load_json(root / "state" / "manifest.json", {"items": {}}).get("items", {}).get(key), dict)
+            and load_json(root / "state" / "manifest.json", {"items": {}}).get("items", {}).get(key, {}).get("duplicate_of")
+        )
+        discovered_count = int((ingest.get("discovery") or {}).get("found") or ingest.get("catalog_after") or 0)
+        eligible_count = int(ingest.get("candidate_new") or 0)
+        selected_count = min(sample_size, eligible_count)
+        completed_count = len(marked)
+        sample_complete, shortfall_reason = sample_outcome(
+            sample_size,
+            selected_count,
+            completed_count,
+            len(ingest.get("failures") or []),
+        )
+
+        pipeline_ok = bool(queue.get("ok")) and not ingest.get("failures")
+        state = "COMPLETE" if pipeline_ok else ("PARTIAL" if marked else "FAILED")
+        heartbeat(
+            status_path,
+            "FINALIZING",
+            requested_sample_size=sample_size,
+            discovered_count=discovered_count,
+            eligible_count=eligible_count,
+            selected_count=selected_count,
+            completed_count=completed_count,
+            duplicate_count=duplicate_count,
+            failed_count=len(ingest.get("failures") or []),
+            queued_count=len(queued_for_run),
+            sample_complete=sample_complete,
+            shortfall_reason=shortfall_reason,
+        )
 
         final = {
             "schema_version": 1,
@@ -896,6 +950,16 @@ def main() -> int:
             "instagram_accessed": False,
             "network_scope": ["TIKTOK"],
             "sample_size_requested": sample_size,
+            "requested_sample_size": sample_size,
+            "discovered_count": discovered_count,
+            "eligible_count": eligible_count,
+            "selected_count": selected_count,
+            "completed_count": completed_count,
+            "duplicate_count": duplicate_count,
+            "failed_count": len(ingest.get("failures") or []),
+            "queued_for_analysis_count": len(queued_for_run),
+            "sample_complete": sample_complete,
+            "shortfall_reason": shortfall_reason,
             "permanent_source": False,
             "started_at": started_at,
             "finished_at": utc_now(),
@@ -907,10 +971,15 @@ def main() -> int:
             "evaluation_items_count": len(marked),
             "research_queue": queue,
         }
-        atomic_json(status_path, final)
+        final = terminalize(
+            status_path,
+            state,
+            terminal_reason=shortfall_reason if not sample_complete else None,
+            **{key: value for key, value in final.items() if key not in {"state", "progress"}},
+        )
         atomic_json(root / "state" / "evaluations" / f"{evaluation_run_id}.json", final)
         print(json.dumps(final, ensure_ascii=False, indent=2))
-        return 0 if state == "DONE" else 1
+        return 0 if state == "COMPLETE" else 1
     except Exception as exc:
         final = {
             "schema_version": 1,
@@ -927,7 +996,12 @@ def main() -> int:
             "finished_at": utc_now(),
             "error": f"{type(exc).__name__}: {exc}",
         }
-        atomic_json(status_path, final)
+        final = terminalize(
+            status_path,
+            "FAILED",
+            terminal_reason=f"{type(exc).__name__}:{exc}",
+            **{key: value for key, value in final.items() if key not in {"state", "progress"}},
+        )
         atomic_json(root / "state" / "evaluations" / f"{evaluation_run_id}.json", final)
         print(json.dumps(final, ensure_ascii=False, indent=2))
         return 2

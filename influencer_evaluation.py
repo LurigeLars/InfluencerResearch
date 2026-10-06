@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 from creator_registry import get_creator, select_evaluation_source
 
-ORCHESTRATOR_VERSION = "0.2.2"
+ORCHESTRATOR_VERSION = "0.3.0"
 
 
 
@@ -148,10 +148,11 @@ def main() -> int:
             "--verification-basis", verification_basis,
         ]
         exact_video_ids = args.only_video_ids.strip()
-        if not exact_video_ids and source_video_ids:
-            exact_video_ids = ",".join(source_video_ids)
         if exact_video_ids:
             cmd.extend(["--only-video-ids", exact_video_ids])
+        elif source_video_ids:
+            # Registered evaluation_video_ids are must-include seeds, not a hard sample cap.
+            cmd.extend(["--seed-video-ids", ",".join(source_video_ids)])
         if source_attribution_term:
             cmd.extend(["--required-attribution-term", source_attribution_term])
         print(f"InfluencerResearch {ORCHESTRATOR_VERSION}: YOUTUBE adapter -> {profile}")

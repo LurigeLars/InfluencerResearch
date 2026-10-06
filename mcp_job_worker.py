@@ -16,6 +16,7 @@ APP_DIR = Path(__file__).resolve().parent
 ROOT = Path("/research")
 REQUEST_PATH = Path("/research/state/mcp_job_request.json")
 RECENT_CHECK_STATUS_PATH = Path("/research/state/creator_recent_check_status.json")
+EVALUATION_STATUS_PATH = Path("/research/state/creator_evaluation_status.json")
 
 
 def _now_iso() -> str:
@@ -46,6 +47,127 @@ def _load_status(path: Path) -> dict:
         return value if isinstance(value, dict) else {}
     except (OSError, json.JSONDecodeError):
         return {}
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _kill_worker_group() -> None:
+    try:
+        os.killpg(os.getpgrp(), signal.SIGKILL)
+    except Exception:
+        os._exit(124)
+
+
+def evaluation_no_progress_failure(
+    status: dict,
+    *,
+    now: datetime,
+    timeout_seconds: int,
+) -> dict | None:
+    state = str(status.get("state") or "").upper()
+    if state in {"COMPLETE", "PARTIAL", "FAILED", "STOPPED"}:
+        return None
+    progress = status.get("progress")
+    if not isinstance(progress, dict):
+        progress = {}
+    heartbeat_at = (
+        progress.get("heartbeat_at")
+        or status.get("updated_at")
+        or status.get("started_at")
+    )
+    heartbeat_dt = _parse_iso(heartbeat_at)
+    if heartbeat_dt is None:
+        return None
+    age_seconds = (now.astimezone(timezone.utc) - heartbeat_dt).total_seconds()
+    if age_seconds < timeout_seconds:
+        return None
+
+    finished_at = now.astimezone(timezone.utc).isoformat()
+    last_phase = str(progress.get("phase") or "UNKNOWN")
+    progress = dict(progress)
+    progress.update({
+        "phase": "FAILED",
+        "heartbeat_at": finished_at,
+        "terminal_reason": "NO_PROGRESS_TIMEOUT",
+        "last_phase": last_phase,
+        "no_progress_timeout_seconds": timeout_seconds,
+    })
+    failed = dict(status)
+    failed.update({
+        "schema_version": int(status.get("schema_version") or 1),
+        "state": "FAILED",
+        "updated_at": finished_at,
+        "finished_at": finished_at,
+        "error": "NO_PROGRESS_TIMEOUT",
+        "progress": progress,
+    })
+    transitions = failed.get("transitions")
+    if not isinstance(transitions, list):
+        transitions = []
+    transitions = list(transitions)
+    transitions.append({
+        "event": "JOB_FINALIZED",
+        "stage": "WATCHDOG",
+        "at": finished_at,
+        "final_state": "FAILED",
+        "terminal_reason": "NO_PROGRESS_TIMEOUT",
+        "last_phase": last_phase,
+    })
+    failed["transitions"] = transitions[-200:]
+    return failed
+
+
+def _arm_evaluation_watchdog(request: dict[str, Any]) -> threading.Event | None:
+    if request.get("kind") != "creator_evaluate":
+        return None
+
+    timeout_seconds = _bounded_env_int(
+        "INFLUENCER_RESEARCH_EVALUATION_NO_PROGRESS_TIMEOUT_SECONDS",
+        600,
+        180,
+        3600,
+    )
+    poll_seconds = _bounded_env_int(
+        "INFLUENCER_RESEARCH_EVALUATION_WATCHDOG_POLL_SECONDS",
+        10,
+        5,
+        60,
+    )
+    stop = threading.Event()
+
+    def watchdog() -> None:
+        while not stop.wait(poll_seconds):
+            status = _load_status(EVALUATION_STATUS_PATH)
+            failed = evaluation_no_progress_failure(
+                status,
+                now=datetime.now(timezone.utc),
+                timeout_seconds=timeout_seconds,
+            )
+            if failed is None:
+                if str(status.get("state") or "").upper() in {"COMPLETE", "PARTIAL", "FAILED", "STOPPED"}:
+                    return
+                continue
+            try:
+                _atomic_json(EVALUATION_STATUS_PATH, failed)
+            finally:
+                _kill_worker_group()
+
+    threading.Thread(
+        target=watchdog,
+        name="creator-evaluation-no-progress-watchdog",
+        daemon=True,
+    ).start()
+    return stop
 
 
 def _arm_recent_check_watchdog(request: dict[str, Any]) -> threading.Event | None:
@@ -92,10 +214,7 @@ def _arm_recent_check_watchdog(request: dict[str, Any]) -> threading.Event | Non
         try:
             _atomic_json(RECENT_CHECK_STATUS_PATH, status)
         finally:
-            try:
-                os.killpg(os.getpgrp(), signal.SIGKILL)
-            except Exception:
-                os._exit(124)
+            _kill_worker_group()
 
     threading.Thread(
         target=watchdog,
@@ -188,18 +307,21 @@ def run_script(script: Path, args: list[str]) -> int:
 
 
 def main() -> int:
-    watchdog_stop: threading.Event | None = None
+    watchdog_stops: list[threading.Event] = []
     try:
         request = load_request()
-        watchdog_stop = _arm_recent_check_watchdog(request)
+        for arm in (_arm_recent_check_watchdog, _arm_evaluation_watchdog):
+            stop = arm(request)
+            if stop is not None:
+                watchdog_stops.append(stop)
         script, args = build_invocation(request)
         return run_script(script, args)
     except Exception:
         traceback.print_exc()
         return 1
     finally:
-        if watchdog_stop is not None:
-            watchdog_stop.set()
+        for stop in watchdog_stops:
+            stop.set()
 
 
 if __name__ == "__main__":

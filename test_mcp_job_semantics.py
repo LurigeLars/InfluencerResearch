@@ -152,6 +152,66 @@ class MCPJobSemanticsTests(unittest.TestCase):
             self.assertEqual(persisted["transitions"][-1]["final_state"], "STOPPED")
 
 
+    def test_server_start_recovers_persisted_running_job_as_failed(self) -> None:
+        import json
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            state_path = root / "mcp_job_status.json"
+            status_path = root / "creator_evaluation_status.json"
+            state_path.write_text(
+                json.dumps({
+                    "job_id": "orphan",
+                    "kind": "creator_evaluate",
+                    "state": "RUNNING",
+                    "started_at": "2026-10-06T20:00:00+00:00",
+                }),
+                encoding="utf-8",
+            )
+            status_path.write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "state": "RUNNING",
+                    "started_at": "2026-10-06T20:00:00+00:00",
+                    "progress": {
+                        "phase": "TRANSCRIPTION",
+                        "heartbeat_at": "2026-10-06T20:01:00+00:00",
+                    },
+                }),
+                encoding="utf-8",
+            )
+
+            with (
+                patch.object(irm, "JOB_STATE_PATH", state_path),
+                patch.object(
+                    irm.JobManager,
+                    "STATUS_FILES",
+                    {"creator_evaluate": status_path},
+                ),
+            ):
+                manager = irm.JobManager()
+
+            persisted = json.loads(state_path.read_text(encoding="utf-8"))
+            nested = json.loads(status_path.read_text(encoding="utf-8"))
+            self.assertEqual(persisted["state"], "FAILED")
+            self.assertEqual(nested["state"], "FAILED")
+            self.assertEqual(
+                nested["progress"]["terminal_reason"],
+                "ORPHANED_JOB_ON_SERVER_START",
+            )
+            self.assertEqual(nested["progress"]["last_phase"], "TRANSCRIPTION")
+            self.assertEqual(manager.status()["last"]["state"], "FAILED")
+
+    def test_creator_evaluation_terminal_state_overrides_nonzero_exit(self) -> None:
+        self.assertEqual(
+            irm.resolve_job_state("creator_evaluate", 1, {"state": "PARTIAL"}),
+            "PARTIAL",
+        )
+        self.assertEqual(
+            irm.resolve_job_state("creator_evaluate", 124, {"state": "FAILED"}),
+            "FAILED",
+        )
+
     def test_recent_partial_remains_partial_even_with_nonzero_exit(self) -> None:
         self.assertEqual(
             irm.resolve_job_state("creator_recent_check", 1, {"state": "PARTIAL"}),

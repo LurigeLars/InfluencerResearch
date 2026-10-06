@@ -33,6 +33,10 @@ class MCPContractTests(unittest.TestCase):
                 "creator_evaluate",
                 "creator_monitor",
                 "creator_recent_check",
+                "analysis_queue_list",
+                "analysis_queue_get",
+                "analysis_decision_record",
+                "analysis_decision_record_batch",
                 "analysis_evidence_get",
                 "research_status",
                 "research_stop",
@@ -55,6 +59,31 @@ class MCPContractTests(unittest.TestCase):
         self.assertIn("include_retired: bool = False", source)
         self.assertIn("include_inactive=True", source)
         self.assertIn("annotations=RETIRE", source)
+
+    def test_analysis_queue_surface_uses_canonical_decision_schema(self) -> None:
+        source = (BASE / "influencerresearch_mcp.py").read_text(encoding="utf-8")
+        self.assertIn("class AnalysisDecisionInput(BaseModel):", source)
+        self.assertIn("def analysis_queue_list(", source)
+        self.assertIn("def analysis_queue_get(queue_id: str)", source)
+        self.assertIn("def analysis_decision_record(", source)
+        self.assertIn("def analysis_decision_record_batch(items: list[AnalysisDecisionInput])", source)
+        for decision in ("IGNORE", "RESEARCH", "TEST_CANDIDATE", "BACKLOG_CANDIDATE"):
+            self.assertIn(f'"{decision}"', source)
+        for field in (
+            "idea_type",
+            "claim_summary",
+            "claims",
+            "existing_system_overlap",
+            "verification_plan",
+            "falsifiable_test",
+            "main_risk",
+            "confidence",
+            "rationale",
+            "evidence_lineage_id",
+            "duplicate_of",
+            "duplicate_basis",
+        ):
+            self.assertIn(f"{field}:", source)
 
     def test_creator_source_exposes_runtime_metadata(self) -> None:
         source = (BASE / "influencerresearch_mcp.py").read_text(encoding="utf-8")

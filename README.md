@@ -48,7 +48,7 @@ At a high level the system can:
 - preserve analysis evidence and research artifacts;
 - expose job status/cancellation to MCP clients.
 
-The current MCP surface is intentionally limited to eleven tools:
+The current MCP surface is intentionally limited to fifteen tools:
 
 - `creator_list`
 - `creator_get`
@@ -58,6 +58,10 @@ The current MCP surface is intentionally limited to eleven tools:
 - `creator_evaluate`
 - `creator_monitor`
 - `creator_recent_check`
+- `analysis_queue_list`
+- `analysis_queue_get`
+- `analysis_decision_record`
+- `analysis_decision_record_batch`
 - `analysis_evidence_get`
 - `research_status`
 - `research_stop`
@@ -259,6 +263,10 @@ The MCP v1 tool surface is deliberately small:
 - `creator_evaluate`
 - `creator_monitor`
 - `creator_recent_check`
+- `analysis_queue_list`
+- `analysis_queue_get`
+- `analysis_decision_record`
+- `analysis_decision_record_batch`
 - `analysis_evidence_get`
 - `research_status`
 - `research_stop`
@@ -270,6 +278,10 @@ Long-running research operations are fixed allowlisted jobs. Only one research j
 `creator_update` performs a partial update of an existing ACTIVE creator. Each source patch names a `platform` and may change only `enabled`, `evaluation_enabled`, `monitoring_enabled`, and `priority`; omitted fields are preserved. Creator-level `monitoring_enabled` is derived as `any(enabled source with monitoring_enabled=true)` and is always false for non-ACTIVE creators. Updates do not start ingestion or evaluation jobs.
 
 `creator_retire` is a soft-delete operation. It changes an ACTIVE creator to `RETIRED`, disables all source-level `enabled`, `evaluation_enabled`, and `monitoring_enabled` flags, and records retirement metadata. Historical research/evidence is not deleted. `creator_get` can still retrieve retired records, while `creator_list()` hides them by default; pass `include_retired=true` to include ACTIVE and RETIRED creators. Repeating the same retirement is an idempotent no-op.
+
+`creator_evaluate` treats registered YouTube `evaluation_video_ids` as must-include seeds. They are evaluated first, then channel discovery fills the remaining requested sample with unique eligible items. `research_status` exposes evaluation phase/heartbeat and sample coverage. A creator evaluation that stops making progress is terminalized as `FAILED / NO_PROGRESS_TIMEOUT` rather than remaining `RUNNING` indefinitely.
+
+`analysis_queue_list` and `analysis_queue_get` provide the current canonical analysis worklist without direct state-file access. Retired creators are excluded from the pending list, while specific historical queue/decision records remain readable. `analysis_decision_record` and `analysis_decision_record_batch` validate the existing canonical decision schema, persist to `research_decisions.json`, apply the existing manifest/follow-up governance, and remove finalized work from the active pending queue. Identical replay is idempotent; a conflicting second decision is rejected instead of silently overwriting the ledger.
 
 The former Windows request-file/Scheduled-Task research bridge is retired and is not part of the canonical runtime.
 
@@ -308,9 +320,10 @@ the same `local-mcp` proxy pattern the other local MCP services in this fleet us
 No credential is needed on loopback: the authentication boundary is Cloudflare Access on the public
 path, not the local one. Keep the endpoint bound to `127.0.0.1` so that stays true.
 
-**Verify** by listing the tools. The local surface is eleven: `creator_register`, `creator_update`, `creator_retire`, `creator_list`,
-`creator_get`, `creator_evaluate`, `creator_monitor`, `creator_recent_check`, `analysis_evidence_get`,
-`research_status` and `research_stop`. The public allowlist is the same eleven.
+**Verify** by listing the tools. The local surface is fifteen: `creator_register`, `creator_update`, `creator_retire`, `creator_list`,
+`creator_get`, `creator_evaluate`, `creator_monitor`, `creator_recent_check`, `analysis_queue_list`,
+`analysis_queue_get`, `analysis_decision_record`, `analysis_decision_record_batch`, `analysis_evidence_get`,
+`research_status` and `research_stop`. The public allowlist is the same fifteen.
 
 ## Public Cloudflare access
 
@@ -343,7 +356,7 @@ pwsh -NoProfile -File scripts\public.ps1 -Action Status
 pwsh -NoProfile -File scripts\public.ps1 -Action Logs
 ```
 
-Cloudflare Access remains the authentication boundary. The gateway independently verifies the Access JWT audience/issuer, restricts requests to `/mcp`, caps request size/rate, strips client credentials before proxying, and applies the same eleven-tool public allowlist as the MCP server.
+Cloudflare Access remains the authentication boundary. The gateway independently verifies the Access JWT audience/issuer, restricts requests to `/mcp`, caps request size/rate, strips client credentials before proxying, and applies the same fifteen-tool public allowlist as the MCP server.
 
 ## Instagram authentication bootstrap
 

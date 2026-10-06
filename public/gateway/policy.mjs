@@ -9,7 +9,11 @@ export const ALLOWED_TOOLS = new Set([
   'creator_evaluate',
   'creator_monitor',
   'creator_recent_check',
+  'analysis_queue_list',
+  'analysis_queue_get',
   'analysis_evidence_get',
+  'analysis_decision_record',
+  'analysis_decision_record_batch',
   'research_status',
   'research_stop',
 ]);
