@@ -33,6 +33,7 @@ class MCPContractTests(unittest.TestCase):
                 "creator_evaluate",
                 "creator_monitor",
                 "creator_recent_check",
+                "creator_evaluation_item_list",
                 "analysis_queue_list",
                 "analysis_queue_get",
                 "analysis_queue_mark_insufficient",
@@ -65,6 +66,7 @@ class MCPContractTests(unittest.TestCase):
     def test_analysis_queue_surface_uses_canonical_decision_schema(self) -> None:
         source = (BASE / "influencerresearch_mcp.py").read_text(encoding="utf-8")
         self.assertIn("class AnalysisDecisionInput(BaseModel):", source)
+        self.assertIn("def creator_evaluation_item_list(", source)
         self.assertIn("def analysis_queue_list(", source)
         self.assertIn("def analysis_queue_get(queue_id: str)", source)
         self.assertIn("def analysis_queue_mark_insufficient(", source)
@@ -127,6 +129,9 @@ class MCPContractTests(unittest.TestCase):
         self.assertIn('"analysis_readiness_complete"', source)
         self.assertIn('"story_visual_enrichment"', source)
         self.assertIn('"error"', source)
+        self.assertIn('"evaluation_run_id"', source)
+        self.assertIn('"analysis_disposition_counts"', source)
+        self.assertIn('"analysis_unaccounted_count"', source)
 
     def test_job_launcher_uses_fixed_worker_command(self) -> None:
         source = (BASE / "influencerresearch_mcp.py").read_text(encoding="utf-8")
