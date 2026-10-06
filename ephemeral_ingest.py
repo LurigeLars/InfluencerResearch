@@ -37,7 +37,7 @@ from transcription_backend import (
 )
 
 
-APP_VERSION = "0.5.2"
+APP_VERSION = "0.5.3"
 STORY_URL_RE = re.compile(r"/stories/(?P<user>[^/]+)/(?P<id>\d+)/?")
 HIGHLIGHT_URL_RE = re.compile(r"/stories/highlights/(?P<id>\d+)/?")
 STRICT_STORY_ROOT_PATH_RE = re.compile(r"^/stories/[A-Za-z0-9._-]{1,64}/?$")
