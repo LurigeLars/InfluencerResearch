@@ -263,6 +263,10 @@ The MCP v1 tool surface is deliberately small:
 - `creator_evaluate`
 - `creator_monitor`
 - `creator_recent_check`
+- `analysis_queue_list`
+- `analysis_queue_get`
+- `analysis_decision_record`
+- `analysis_decision_record_batch`
 - `analysis_evidence_get`
 - `research_status`
 - `research_stop`
