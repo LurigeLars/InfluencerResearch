@@ -26,6 +26,7 @@ from starlette.responses import JSONResponse
 
 from creator_registry import (
     get_creator,
+    list_creator_summaries,
     load_registry,
     register_creator,
     retire_creator,
@@ -389,30 +390,10 @@ async def health_route(_: Request) -> JSONResponse:
 
 @mcp.tool(description="List registered creators.", annotations=READ, structured_output=False)
 def creator_list(include_retired: bool = False) -> str:
-    registry = load_registry(ROOT)
-    creators = []
-    visible_statuses = {"ACTIVE", "RETIRED"} if include_retired else {"ACTIVE"}
-    for profile in sorted(
-        registry["creators"].values(),
-        key=lambda value: str(value.get("creator_key")),
-    ):
-        status = str(profile.get("status") or "ACTIVE").upper()
-        if status not in visible_statuses:
-            continue
-        creators.append(
-            {
-                "creator_key": profile.get("creator_key"),
-                "display_name": profile.get("display_name"),
-                "status": status,
-                "monitoring_enabled": bool(profile.get("monitoring_enabled")),
-                "platforms": [
-                    source.get("platform")
-                    for source in profile.get("sources", [])
-                    if source.get("enabled")
-                ],
-            }
-        )
-    return as_text({"creators": creators, "include_retired": include_retired})
+    return as_text({
+        "creators": list_creator_summaries(ROOT, include_retired=include_retired),
+        "include_retired": include_retired,
+    })
 
 
 @mcp.tool(description="Get one registered creator, including retired historical records.", annotations=READ, structured_output=False)
