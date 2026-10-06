@@ -202,6 +202,39 @@ class MCPJobSemanticsTests(unittest.TestCase):
             self.assertEqual(nested["progress"]["last_phase"], "TRANSCRIPTION")
             self.assertEqual(manager.status()["last"]["state"], "FAILED")
 
+    def test_startup_reconciles_last_terminal_evaluation(self) -> None:
+        import json
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            status_path = root / "creator_evaluation_status.json"
+            state_path = root / "mcp_job_status.json"
+            status_path.write_text(
+                json.dumps({
+                    "schema_version": 1,
+                    "state": "STOPPED",
+                    "evaluation_run_id": "eval-fixture-youtube-1",
+                }),
+                encoding="utf-8",
+            )
+
+            with (
+                patch.object(irm, "JOB_STATE_PATH", state_path),
+                patch.object(
+                    irm.JobManager,
+                    "STATUS_FILES",
+                    {"creator_evaluate": status_path},
+                ),
+                patch.object(
+                    irm,
+                    "_reconcile_completed_creator_evaluation",
+                    return_value={"ok": True, "target_count": 2},
+                ) as reconcile_mock,
+            ):
+                irm.JobManager()
+
+            reconcile_mock.assert_called_once_with(status_path)
+
     def test_terminal_reconciliation_targets_completed_evaluation_items(self) -> None:
         import json
         from types import SimpleNamespace
