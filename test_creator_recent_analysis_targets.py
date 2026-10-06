@@ -3,33 +3,9 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest.mock
-import sys
 from pathlib import Path
-from types import ModuleType
 
-# This unit only exercises the queue-target projection. Stub browser-only modules
-# while importing creator_recent_check, then restore sys.modules immediately so
-# unrelated tests in the same unittest process always import the real modules.
-_module_names = ("instagram_camofox_public_smoke", "ephemeral_ingest")
-_original_modules = {name: sys.modules.get(name) for name in _module_names}
-
-instagram_stub = ModuleType("instagram_camofox_public_smoke")
-instagram_stub.extract_reel_urls = (
-    lambda url: [url] if "/reel/" in str(url) else []
-)
-instagram_stub.probe_public_session = lambda *args, **kwargs: {}
-
-ephemeral_stub = ModuleType("ephemeral_ingest")
-ephemeral_stub.run_one = lambda *args, **kwargs: {
-    "state": "DONE",
-    "capture": {"reason": "NO_ACTIVE_STORY_OR_STORY_VIEW_REDIRECTED"},
-    "errors": [],
-}
-
-sys.modules["instagram_camofox_public_smoke"] = instagram_stub
-sys.modules["ephemeral_ingest"] = ephemeral_stub
-try:
-    import creator_recent_check as crc
+import creator_recent_check as crc
 finally:
     for _name, _original in _original_modules.items():
         if _original is None:
