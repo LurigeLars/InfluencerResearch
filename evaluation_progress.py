@@ -77,3 +77,22 @@ def terminalize(path: Path, state: str, *, terminal_reason: str | None = None, *
     status["progress"] = progress
     _atomic(path, status)
     return status
+
+
+def sample_outcome(
+    requested_sample_size: int,
+    selected_count: int,
+    completed_count: int,
+    failed_count: int,
+) -> tuple[bool, str | None]:
+    requested = max(1, int(requested_sample_size))
+    selected = max(0, int(selected_count))
+    completed = max(0, int(completed_count))
+    failed = max(0, int(failed_count))
+    if completed >= requested:
+        return True, None
+    if failed:
+        return False, "DOWNSTREAM_PROCESSING_FAILURES"
+    if selected < requested:
+        return False, f"ONLY_{completed}_ELIGIBLE_ITEMS_AVAILABLE"
+    return False, "SAMPLE_NOT_COMPLETE"
