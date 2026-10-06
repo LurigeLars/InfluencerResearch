@@ -1,21 +1,19 @@
 from __future__ import annotations
 
-import json
 import sys
 import tempfile
 import unittest
 from copy import deepcopy
 from pathlib import Path
 from types import ModuleType
-from unittest.mock import patch
 
 sys.modules.setdefault("instagram_camofox_public_smoke", ModuleType("instagram_camofox_public_smoke"))
 sys.modules.setdefault("ephemeral_ingest", ModuleType("ephemeral_ingest"))
 
 import creator_recent_check as crc
-import influencerresearch_mcp as mcp_surface
 from creator_registry import (
     get_creator,
+    list_creator_summaries,
     load_registry,
     register_creator,
     retire_creator,
@@ -191,17 +189,16 @@ class CreatorMutationTests(unittest.TestCase):
 
             self.assertEqual(crc.select_profiles_and_sources(root, "MONITORED", []), [])
 
-    def test_retired_creator_remains_readable_via_creator_get(self) -> None:
+    def test_retired_creator_remains_readable_via_historical_get_path(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self.register(root)
             retire_creator(root, "creator", "Historical only", issued_by="unit-test")
 
-            with patch.object(mcp_surface, "ROOT", root):
-                payload = json.loads(mcp_surface.creator_get("creator"))
+            profile = get_creator(root, "creator", include_inactive=True)
 
-            self.assertEqual(payload["creator"]["creator_key"], "creator")
-            self.assertEqual(payload["creator"]["status"], "RETIRED")
+            self.assertEqual(profile["creator_key"], "creator")
+            self.assertEqual(profile["status"], "RETIRED")
 
     def test_retire_is_idempotent_without_duplicate_audit_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -276,23 +273,22 @@ class CreatorMutationTests(unittest.TestCase):
             self.register(root, "alpha")
             retire_creator(root, "zeta", "Historical only", issued_by="unit-test")
 
-            with patch.object(mcp_surface, "ROOT", root):
-                active = json.loads(mcp_surface.creator_list())
-                all_visible = json.loads(mcp_surface.creator_list(include_retired=True))
+            active = list_creator_summaries(root)
+            all_visible = list_creator_summaries(root, include_retired=True)
 
             self.assertEqual(
-                [item["creator_key"] for item in active["creators"]],
+                [item["creator_key"] for item in active],
                 ["alpha"],
             )
             self.assertEqual(
-                [item["creator_key"] for item in all_visible["creators"]],
+                [item["creator_key"] for item in all_visible],
                 ["alpha", "zeta"],
             )
             self.assertEqual(
-                [item["status"] for item in all_visible["creators"]],
+                [item["status"] for item in all_visible],
                 ["ACTIVE", "RETIRED"],
             )
-            retired = all_visible["creators"][1]
+            retired = all_visible[1]
             self.assertFalse(retired["monitoring_enabled"])
             self.assertEqual(retired["platforms"], [])
 
