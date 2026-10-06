@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import json
 import tempfile
-import unittest
+import unittest.mock
 from pathlib import Path
-from unittest import mock
 
 import ephemeral_ingest as ei
 
@@ -22,8 +21,8 @@ class StoryPrefetchCaptureOnlyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             (root / "state" / "ephemeral").mkdir(parents=True)
-            page = mock.Mock()
-            context = mock.Mock()
+            page = unittest.mock.Mock()
+            context = unittest.mock.Mock()
             context.pages = [page]
 
             item_key = "STORY:creator:123"
@@ -43,13 +42,13 @@ class StoryPrefetchCaptureOnlyTests(unittest.TestCase):
                 }
 
             with (
-                mock.patch.object(ei, "sync_playwright", return_value=_PlaywrightContext()),
-                mock.patch.object(ei, "launch_instagram_context", return_value=context),
-                mock.patch.object(ei, "verify_logged_in"),
-                mock.patch.object(ei, "capture_story_frames", side_effect=fake_capture),
-                mock.patch.object(ei, "run_ytdlp") as ytdlp,
-                mock.patch.object(ei, "enrich_story_visual_evidence") as enrich,
-                mock.patch.object(ei, "transcribe_downloaded_videos") as transcribe,
+                unittest.mock.patch.object(ei, "sync_playwright", return_value=_PlaywrightContext()),
+                unittest.mock.patch.object(ei, "launch_instagram_context", return_value=context),
+                unittest.mock.patch.object(ei, "verify_logged_in"),
+                unittest.mock.patch.object(ei, "capture_story_frames", side_effect=fake_capture),
+                unittest.mock.patch.object(ei, "run_ytdlp") as ytdlp,
+                unittest.mock.patch.object(ei, "enrich_story_visual_evidence") as enrich,
+                unittest.mock.patch.object(ei, "transcribe_downloaded_videos") as transcribe,
             ):
                 result = ei.run_one(
                     root=root,
