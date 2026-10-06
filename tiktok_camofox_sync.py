@@ -29,7 +29,7 @@ from transcription_backend import extract_visible_text_gemini, transcribe_video
 from video_visual_evidence import VISUAL_REVIEW_POLICY_VERSION, capture_local_video_visual_evidence
 
 
-APP_VERSION = "0.8.11"
+APP_VERSION = "0.8.12"
 CONTENT_EXTRACTION_VERSION = 1
 MIN_ANALYSIS_TRANSCRIPT_WORDS = 8
 MIN_ANALYSIS_TRANSCRIPT_CHARS = 48
@@ -1663,6 +1663,7 @@ def transcribe(
     media_path: Path,
     *,
     model_holder: dict,
+    progress_callback: Callable[[int], None] | None = None,
 ) -> dict:
     transcript_dir = root / "output" / creator_key / "tiktok" / "transcripts"
     transcript_dir.mkdir(parents=True, exist_ok=True)
@@ -1692,7 +1693,11 @@ def transcribe(
     _ = model_holder  # retained for backward-compatible call sites
     settings = load_json(root / "control" / "settings.json", {})
     tcfg = settings.get("transcription", {}) if isinstance(settings, dict) else {}
-    result = transcribe_video(media_path, tcfg)
+    result = transcribe_video(
+        media_path,
+        tcfg,
+        progress_callback=progress_callback,
+    )
     full_text = str(result.get("text") or "").strip()
     when = utc_now()
     txt_path.write_text(full_text + ("\n" if full_text else ""), encoding="utf-8")
@@ -2265,11 +2270,25 @@ def process_source(
         )
         stage_started = time.perf_counter()
         try:
+            def transcription_progress(segment_count: int) -> None:
+                report(
+                    "TRANSCRIPTION",
+                    current_index=index,
+                    current_source_id=vid,
+                    selected_count=len(candidates),
+                    ingested_count=ingested_count,
+                    transcribed_count=transcribed_count,
+                    evidence_count=evidence_count,
+                    failed_count=len(failures),
+                    transcription_segment_count=segment_count,
+                )
+
             transcription = transcribe(
                 root,
                 creator_key,
                 Path(download["media_file"]),
                 model_holder=model_holder,
+                progress_callback=transcription_progress,
             )
         except Exception as exc:
             item_timings["transcription"] = round((time.perf_counter() - stage_started) * 1000, 1)
