@@ -6,12 +6,6 @@ import unittest.mock
 from pathlib import Path
 
 import creator_recent_check as crc
-finally:
-    for _name, _original in _original_modules.items():
-        if _original is None:
-            sys.modules.pop(_name, None)
-        else:
-            sys.modules[_name] = _original
 
 
 class RecentAnalysisTargetTests(unittest.TestCase):
