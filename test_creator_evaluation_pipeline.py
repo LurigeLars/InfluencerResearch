@@ -35,6 +35,203 @@ class CreatorEvaluationPipelineTests(unittest.TestCase):
         self.assertEqual(len({x["id"] for x in selected}), 20)
         self.assertEqual(duplicates, 3)
 
+    def test_unpinned_longform_is_deferred_and_later_items_backfill_sample(self) -> None:
+        entries = [
+            {"id": "long001", "url": "https://www.youtube.com/watch?v=long001"},
+            {"id": "short02", "url": "https://www.youtube.com/watch?v=short02"},
+            {"id": "short03", "url": "https://www.youtube.com/watch?v=short03"},
+        ]
+
+        def fake_preflight(root, creator_key, entry, **kwargs):
+            if entry["id"] == "long001":
+                return None, {
+                    "video_id": "long001",
+                    "reason": "UNPINNED_LONGFORM_NO_CAPTIONS",
+                }
+            return dict(entry), None
+
+        with patch.object(yce, "preflight_evidence_cost", side_effect=fake_preflight):
+            selected, deferred, cursor = yce.select_bounded_evidence_sample(
+                Path("."),
+                "fixture",
+                entries,
+                2,
+                must_include_ids=set(),
+                channel_url="https://www.youtube.com/@fixture",
+                required_attribution_term="",
+                is_complete_entry=lambda entry: False,
+            )
+
+        self.assertEqual([entry["id"] for entry in selected], ["short02", "short03"])
+        self.assertEqual(deferred[0]["reason"], "UNPINNED_LONGFORM_NO_CAPTIONS")
+        self.assertEqual(cursor, 3)
+
+    def test_pinned_longform_bypasses_evidence_cost_defer(self) -> None:
+        entry = {
+            "id": "long001",
+            "url": "https://www.youtube.com/watch?v=long001",
+            "duration_seconds": 7200,
+            "caption_track_available": False,
+        }
+        with patch.object(yce, "probe_exact_video", side_effect=AssertionError("must not probe pinned seed")):
+            accepted, deferred = yce.preflight_evidence_cost(
+                Path("."),
+                "fixture",
+                entry,
+                channel_url="https://www.youtube.com/@fixture",
+                required_attribution_term="",
+                must_include=True,
+            )
+        self.assertIsNone(deferred)
+        self.assertEqual(accepted["id"], "long001")
+        self.assertTrue(accepted["must_include_seed"])
+
+    def test_unpinned_longform_without_captions_is_deferred_before_whisper(self) -> None:
+        entry = {
+            "id": "long001",
+            "url": "https://www.youtube.com/watch?v=long001",
+            "duration_seconds": 7200,
+            "caption_track_available": False,
+        }
+        verified = {
+            **entry,
+            "title": "Fixture long form",
+            "live_status": "was_live",
+        }
+        with (
+            patch.object(yce, "probe_exact_video", return_value=(verified, {"ok": True})),
+            patch.object(yce, "fetch_captions", side_effect=AssertionError("no caption fetch when metadata proves absent")),
+        ):
+            accepted, deferred = yce.preflight_evidence_cost(
+                Path("."),
+                "fixture",
+                entry,
+                channel_url="https://www.youtube.com/@fixture",
+                required_attribution_term="",
+                must_include=False,
+            )
+        self.assertIsNone(accepted)
+        self.assertEqual(deferred["reason"], "UNPINNED_LONGFORM_NO_CAPTIONS")
+        self.assertEqual(deferred["duration_seconds"], 7200.0)
+
+    def test_completed_youtube_items_are_queued_before_later_cancellation(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            entries = [
+                {"id": "vid001", "url": "https://www.youtube.com/watch?v=vid001", "title": "One"},
+                {"id": "vid002", "url": "https://www.youtube.com/watch?v=vid002", "title": "Two"},
+                {"id": "vid003", "url": "https://www.youtube.com/watch?v=vid003", "title": "Three"},
+            ]
+            argv = [
+                "youtube_creator_evaluation.py",
+                "--root", str(root),
+                "--channel-url", "https://www.youtube.com/@fixture",
+                "--creator-key", "fixture",
+                "--creator-name", "Fixture",
+                "--sample-size", "3",
+                "--only-video-ids", "vid001,vid002,vid003",
+            ]
+
+            visual_calls = {"count": 0}
+
+            def fake_visual(root_arg, creator_key, url, video_id):
+                visual_calls["count"] += 1
+                if video_id == "vid003":
+                    raise KeyboardInterrupt("simulated cancellation")
+                index = root_arg / "output" / creator_key / "youtube" / "frames" / video_id / "visual_index.json"
+                index.parent.mkdir(parents=True, exist_ok=True)
+                index.write_text("{}\n", encoding="utf-8")
+                return {
+                    "ok": True,
+                    "index": index,
+                    "retained_frames": 1,
+                    "capture_strategy": "FIXTURE",
+                    "agent_visual_bundle": {},
+                }
+
+            def fake_captions(root_arg, creator_key, url, video_id):
+                transcript_dir = root_arg / "output" / creator_key / "youtube" / "transcripts"
+                transcript_dir.mkdir(parents=True, exist_ok=True)
+                txt = transcript_dir / f"{video_id}.txt"
+                js = transcript_dir / f"{video_id}.json"
+                txt.write_text(f"fixture transcript for {video_id}\n", encoding="utf-8")
+                js.write_text("{}\n", encoding="utf-8")
+                return {
+                    "ok": True,
+                    "source": "YOUTUBE_CAPTIONS",
+                    "txt": txt,
+                    "json": js,
+                    "transcribed_at": "2026-10-07T00:00:00+00:00",
+                    "caption_file": None,
+                }
+
+            def fake_reconcile(root_arg, targets):
+                queue_path = root_arg / "state" / "research_queue.json"
+                if queue_path.exists():
+                    queue = json.loads(queue_path.read_text(encoding="utf-8"))
+                else:
+                    queue = {"items": []}
+                existing = {
+                    str(item.get("shortcode") or item.get("queue_id") or "")
+                    for item in queue["items"]
+                }
+                dispositions = {}
+                for target in targets:
+                    if target not in existing:
+                        queue["items"].append({
+                            "queue_id": target,
+                            "shortcode": target,
+                            "creator": "fixture",
+                            "source_platform": "YOUTUBE",
+                            "analysis_status": "PENDING_ANALYSIS",
+                        })
+                        existing.add(target)
+                    dispositions[target] = "QUEUED"
+                queue["count"] = len(queue["items"])
+                queue_path.parent.mkdir(parents=True, exist_ok=True)
+                queue_path.write_text(json.dumps(queue), encoding="utf-8")
+                return (
+                    {"ok": True, "returncode": 0},
+                    queue,
+                    {
+                        "dispositions": dispositions,
+                        "expected_queue": list(targets),
+                        "undelivered": [],
+                    },
+                )
+
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(
+                    yce,
+                    "exact_video_entries",
+                    return_value=(entries, {"mode": "DIRECT_EXACT_ID_ALLOWLIST", "ok": True}),
+                ),
+                patch.object(yce, "capture_visual_evidence", side_effect=fake_visual),
+                patch.object(yce, "fetch_captions", side_effect=fake_captions),
+                patch.object(
+                    yce,
+                    "read_info_json",
+                    side_effect=lambda root_arg, creator_key, video_id: {
+                        "title": video_id,
+                        "timestamp": 1791331200,
+                    },
+                ),
+                patch.object(yce, "reconcile_delivery", side_effect=fake_reconcile),
+            ):
+                with self.assertRaises(KeyboardInterrupt):
+                    yce.main()
+
+            manifest = json.loads((root / "state" / "manifest.json").read_text(encoding="utf-8"))
+            queue = json.loads((root / "state" / "research_queue.json").read_text(encoding="utf-8"))
+            self.assertIn("yt_vid001", manifest["items"])
+            self.assertIn("yt_vid002", manifest["items"])
+            queued = {item["shortcode"] for item in queue["items"]}
+            self.assertIn("yt_vid001", queued)
+            self.assertIn("yt_vid002", queued)
+            self.assertNotIn("yt_vid003", queued)
+            self.assertEqual(visual_calls["count"], 3)
+
     def test_sample_shortfall_is_explicit(self) -> None:
         complete, reason = sample_outcome(20, 2, 2, 0)
         self.assertFalse(complete)
