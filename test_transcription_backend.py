@@ -18,6 +18,41 @@ class TranscriptionBackendTests(unittest.TestCase):
         self.assertIn("faster-whisper==1.2.1", requirements)
         self.assertIn("av==18.1.0", requirements)
 
+    def test_faster_whisper_reports_segment_progress(self) -> None:
+        class Segment:
+            def __init__(self, index: int) -> None:
+                self.start = float(index)
+                self.end = float(index + 1)
+                self.text = f"segment {index}"
+
+        class Info:
+            language = "en"
+            language_probability = 1.0
+            duration = 12.0
+
+        class Model:
+            def transcribe(self, *args, **kwargs):
+                return ([Segment(index) for index in range(12)], Info())
+
+        cache_key = ("small", "cpu", "int8")
+        previous = tb._WHISPER_MODEL_CACHE.get(cache_key)
+        tb._WHISPER_MODEL_CACHE[cache_key] = Model()
+        progress: list[int] = []
+        try:
+            result = tb.transcribe_faster_whisper(
+                Path("fixture.mp4"),
+                {},
+                progress_callback=progress.append,
+            )
+        finally:
+            if previous is None:
+                tb._WHISPER_MODEL_CACHE.pop(cache_key, None)
+            else:
+                tb._WHISPER_MODEL_CACHE[cache_key] = previous
+
+        self.assertEqual(result["provider"], "faster-whisper")
+        self.assertEqual(progress, [1, 10])
+
     def test_gemini_http_options_are_bounded(self) -> None:
         self.assertEqual(
             tb.gemini_http_options(),
