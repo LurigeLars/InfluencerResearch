@@ -13,7 +13,7 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from evaluation_progress import heartbeat, sample_outcome, terminalize
 from urllib.parse import urlparse
 
@@ -699,7 +699,15 @@ def _extract_audio_for_whisper(media_path: Path) -> tuple[Path, dict]:
     return wav_path, diag
 
 
-def transcribe_whisper(root: Path, creator_key: str, video_id: str, media_path: Path, *, model_holder: dict) -> dict:
+def transcribe_whisper(
+    root: Path,
+    creator_key: str,
+    video_id: str,
+    media_path: Path,
+    *,
+    model_holder: dict,
+    progress_callback: Callable[[int], None] | None = None,
+) -> dict:
     transcript_dir = root / "output" / creator_key / "youtube" / "transcripts"
     transcript_dir.mkdir(parents=True, exist_ok=True)
     txt_path = transcript_dir / f"{video_id}.txt"
@@ -729,11 +737,13 @@ def transcribe_whisper(root: Path, creator_key: str, video_id: str, media_path: 
         segments, info = model.transcribe(str(whisper_input), beam_size=5, vad_filter=True)
         rows = []
         text_parts = []
-        for seg in segments:
+        for segment_index, seg in enumerate(segments, start=1):
             text = (seg.text or "").strip()
             if text:
                 text_parts.append(text)
             rows.append({"start": round(float(seg.start), 3), "end": round(float(seg.end), 3), "text": text})
+            if progress_callback is not None and (segment_index == 1 or segment_index % 10 == 0):
+                progress_callback(segment_index)
     finally:
         if audio_diag.get("used") and whisper_input.exists():
             with contextlib.suppress(OSError):
@@ -1458,7 +1468,26 @@ def main() -> int:
                     failures.append({"video_id": vid, "url": url, "stage": "audio_fallback_download", "detail": dl.get("diagnostic_tail") or dl.get("validation")})
                     continue
                 try:
-                    tr = transcribe_whisper(root, creator_key, vid, Path(dl["media_file"]), model_holder=model_holder)
+                    def whisper_progress(segment_count: int) -> None:
+                        heartbeat(
+                            status_path,
+                            "TRANSCRIPTION",
+                            current_index=index,
+                            current_source_id=vid,
+                            selected_count=len(selected_entries),
+                            completed_count=len(completed) + len(existing_delivery_targets),
+                            failed_count=len(failures),
+                            transcription_segment_count=segment_count,
+                        )
+
+                    tr = transcribe_whisper(
+                        root,
+                        creator_key,
+                        vid,
+                        Path(dl["media_file"]),
+                        model_holder=model_holder,
+                        progress_callback=whisper_progress,
+                    )
                 except Exception as exc:
                     failures.append({"video_id": vid, "url": url, "stage": "transcription", "detail": f"{type(exc).__name__}:{exc}"})
                     continue
