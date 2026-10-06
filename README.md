@@ -48,7 +48,7 @@ At a high level the system can:
 - preserve analysis evidence and research artifacts;
 - expose job status/cancellation to MCP clients.
 
-The current MCP surface is intentionally limited to fifteen tools:
+The current MCP surface is intentionally limited to seventeen tools:
 
 - `creator_list`
 - `creator_get`
@@ -60,6 +60,8 @@ The current MCP surface is intentionally limited to fifteen tools:
 - `creator_recent_check`
 - `analysis_queue_list`
 - `analysis_queue_get`
+- `analysis_queue_mark_insufficient`
+- `analysis_decision_list`
 - `analysis_decision_record`
 - `analysis_decision_record_batch`
 - `analysis_evidence_get`
@@ -143,7 +145,7 @@ Camofox itself remains internal and has no public MCP endpoint.
 The project is intentionally narrower than the browser/media components underneath it.
 
 - The MCP runtime, Camofox service and public gateway run non-root.
-- The public gateway exposes the same fixed eleven-tool allowlist as the MCP server.
+- The public gateway exposes the same fixed seventeen-tool allowlist as the MCP server.
 - Long-running research accepts fixed research operations rather than arbitrary commands.
 - Instagram session material, Gemini credentials and Camofox service keys are protected
   on the Windows host with DPAPI and injected into tmpfs-backed runtime secret volumes.
@@ -279,9 +281,9 @@ Long-running research operations are fixed allowlisted jobs. Only one research j
 
 `creator_retire` is a soft-delete operation. It changes an ACTIVE creator to `RETIRED`, disables all source-level `enabled`, `evaluation_enabled`, and `monitoring_enabled` flags, and records retirement metadata. Historical research/evidence is not deleted. `creator_get` can still retrieve retired records, while `creator_list()` hides them by default; pass `include_retired=true` to include ACTIVE and RETIRED creators. Repeating the same retirement is an idempotent no-op.
 
-`creator_evaluate` treats registered YouTube `evaluation_video_ids` as must-include seeds. They are evaluated first, then channel discovery fills the remaining requested sample with unique eligible items. `research_status` exposes evaluation phase/heartbeat and sample coverage. A creator evaluation that stops making progress is terminalized as `FAILED / NO_PROGRESS_TIMEOUT` rather than remaining `RUNNING` indefinitely.
+`creator_evaluate` treats registered YouTube `evaluation_video_ids` as must-include seeds. They are evaluated first, then channel discovery fills the remaining requested sample with unique eligible items. Unpinned YouTube candidates are evidence-cost preflighted before local Whisper: by default, a candidate longer than 20 minutes must have a usable English/Swedish caption transcript or it is deferred and a later discovered item backfills the sample. Streams remain eligible, and pinned/exact IDs deliberately bypass this cost defer. The duration ceiling can be changed with `INFLUENCER_RESEARCH_YOUTUBE_MAX_UNPINNED_WHISPER_DURATION_SECONDS` (bounded to 5–60 minutes). Deferred items and reasons are exposed in evaluation status. Each completed YouTube item is reconciled into the canonical analysis queue immediately, with a terminal JobManager reconciliation safety net for STOPPED, PARTIAL, FAILED, watchdog and orphan-recovery paths. `research_status` exposes evaluation phase/heartbeat and sample coverage. A creator evaluation that stops making progress is terminalized as `FAILED / NO_PROGRESS_TIMEOUT` rather than remaining `RUNNING` indefinitely.
 
-`analysis_queue_list` and `analysis_queue_get` provide the current canonical analysis worklist without direct state-file access. Retired creators are excluded from the pending list, while specific historical queue/decision records remain readable. `analysis_decision_record` and `analysis_decision_record_batch` validate the existing canonical decision schema, persist to `research_decisions.json`, apply the existing manifest/follow-up governance, and remove finalized work from the active pending queue. Identical replay is idempotent; a conflicting second decision is rejected instead of silently overwriting the ledger.
+`analysis_queue_list` and `analysis_queue_get` provide the current canonical analysis worklist without direct state-file access. Retired creators are excluded from the pending list, while specific historical queue/decision records remain readable. `analysis_queue_mark_insufficient` is the non-decision path for retained evidence that proves unusable after direct inspection: it validates the evidence lineage, removes the item from pending analysis, records `INSUFFICIENT_CONTENT` in the manifest, preserves provenance/evidence and is idempotent. It does not create an `IGNORE` decision and therefore does not distort investment-decision or creator-yield statistics. `analysis_decision_list` is a read-only view over canonical `research_decisions.json` joined to manifest metadata, with creator/platform/decision/evaluation-run/date filters and pagination. `analysis_decision_record` and `analysis_decision_record_batch` validate the existing canonical decision schema, persist to `research_decisions.json`, apply the existing manifest/follow-up governance, and remove finalized work from the active pending queue. Identical replay is idempotent; a conflicting second decision is rejected instead of silently overwriting the ledger.
 
 The former Windows request-file/Scheduled-Task research bridge is retired and is not part of the canonical runtime.
 
@@ -320,10 +322,11 @@ the same `local-mcp` proxy pattern the other local MCP services in this fleet us
 No credential is needed on loopback: the authentication boundary is Cloudflare Access on the public
 path, not the local one. Keep the endpoint bound to `127.0.0.1` so that stays true.
 
-**Verify** by listing the tools. The local surface is fifteen: `creator_register`, `creator_update`, `creator_retire`, `creator_list`,
+**Verify** by listing the tools. The local surface is seventeen: `creator_register`, `creator_update`, `creator_retire`, `creator_list`,
 `creator_get`, `creator_evaluate`, `creator_monitor`, `creator_recent_check`, `analysis_queue_list`,
-`analysis_queue_get`, `analysis_decision_record`, `analysis_decision_record_batch`, `analysis_evidence_get`,
-`research_status` and `research_stop`. The public allowlist is the same fifteen.
+`analysis_queue_get`, `analysis_queue_mark_insufficient`, `analysis_decision_list`, `analysis_decision_record`,
+`analysis_decision_record_batch`, `analysis_evidence_get`, `research_status` and `research_stop`.
+The public allowlist is the same seventeen.
 
 ## Public Cloudflare access
 
@@ -356,7 +359,7 @@ pwsh -NoProfile -File scripts\public.ps1 -Action Status
 pwsh -NoProfile -File scripts\public.ps1 -Action Logs
 ```
 
-Cloudflare Access remains the authentication boundary. The gateway independently verifies the Access JWT audience/issuer, restricts requests to `/mcp`, caps request size/rate, strips client credentials before proxying, and applies the same fifteen-tool public allowlist as the MCP server.
+Cloudflare Access remains the authentication boundary. The gateway independently verifies the Access JWT audience/issuer, restricts requests to `/mcp`, caps request size/rate, strips client credentials before proxying, and applies the same seventeen-tool public allowlist as the MCP server.
 
 ## Instagram authentication bootstrap
 
