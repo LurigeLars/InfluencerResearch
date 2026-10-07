@@ -713,10 +713,19 @@ def _enumerate_channel_surface(
             break
 
     diag = (p.stderr or "").strip()
+    raw_returncode = int(p.returncode)
+    absent_signature = f"this channel does not have a {surface} tab"
+    surface_absent = (
+        raw_returncode != 0
+        and not entries
+        and absent_signature in diag.casefold()
+    )
     return entries, {
         "surface": surface,
-        "ok": p.returncode == 0,
-        "returncode": int(p.returncode),
+        "ok": raw_returncode == 0 or surface_absent,
+        "returncode": 0 if surface_absent else raw_returncode,
+        "raw_returncode": raw_returncode,
+        "surface_absent": surface_absent,
         "requested_limit": requested,
         "entries_found": len(entries),
         "diagnostic_tail": diag[-2500:],

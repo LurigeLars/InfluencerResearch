@@ -216,6 +216,55 @@ class YouTubeMetadataProbeTests(unittest.TestCase):
             {"VIDEOS", "SHORTS", "STREAMS"},
         )
 
+    def test_missing_streams_tab_is_normalized_to_absent_surface(self) -> None:
+        proc = SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr=(
+                "ERROR: [youtube:tab] UCfixture: "
+                "This channel does not have a streams tab"
+            ),
+        )
+        with patch.object(
+            recent.yte,
+            "_run_youtube_subprocess_with_spawn_retry",
+            return_value=proc,
+        ):
+            entries, diag = recent.yte._enumerate_channel_surface(
+                "https://www.youtube.com/@example",
+                surface="streams",
+                limit=8,
+            )
+
+        self.assertEqual(entries, [])
+        self.assertTrue(diag["ok"])
+        self.assertTrue(diag["surface_absent"])
+        self.assertEqual(diag["returncode"], 0)
+        self.assertEqual(diag["raw_returncode"], 1)
+
+    def test_unrelated_surface_error_is_not_normalized(self) -> None:
+        proc = SimpleNamespace(
+            returncode=1,
+            stdout="",
+            stderr="ERROR: network fixture failure",
+        )
+        with patch.object(
+            recent.yte,
+            "_run_youtube_subprocess_with_spawn_retry",
+            return_value=proc,
+        ):
+            entries, diag = recent.yte._enumerate_channel_surface(
+                "https://www.youtube.com/@example",
+                surface="streams",
+                limit=8,
+            )
+
+        self.assertEqual(entries, [])
+        self.assertFalse(diag["ok"])
+        self.assertFalse(diag["surface_absent"])
+        self.assertEqual(diag["returncode"], 1)
+        self.assertEqual(diag["raw_returncode"], 1)
+
     def test_channel_surface_enumeration_honors_independent_limits(self) -> None:
         calls: list[tuple[str, int]] = []
 
@@ -293,6 +342,38 @@ class YouTubeMetadataProbeTests(unittest.TestCase):
         self.assertTrue(
             recent._youtube_surface_coverage_complete(entries, diag, {}, cutoff)
         )
+
+    def test_absent_surface_is_complete_coverage(self) -> None:
+        cutoff = recent.parse_iso_utc("2026-09-28T00:00:00+00:00")
+        status = recent._youtube_surface_coverage_status(
+            {"videos": [], "shorts": [], "streams": []},
+            {
+                "surfaces": {
+                    "videos": {
+                        "returncode": 0,
+                        "requested_limit": 0,
+                        "entries_found": 0,
+                    },
+                    "shorts": {
+                        "returncode": 0,
+                        "requested_limit": 0,
+                        "entries_found": 0,
+                    },
+                    "streams": {
+                        "returncode": 0,
+                        "raw_returncode": 1,
+                        "surface_absent": True,
+                        "requested_limit": 8,
+                        "entries_found": 0,
+                    },
+                }
+            },
+            {},
+            cutoff,
+        )
+        self.assertTrue(status["streams"]["complete"])
+        self.assertEqual(status["streams"]["reason"], "SURFACE_ABSENT")
+        self.assertEqual(status["streams"]["raw_returncode"], 1)
 
     def test_surface_cutoff_proof_survives_nonzero_enumeration_exit(self) -> None:
         cutoff = recent.parse_iso_utc("2026-09-28T00:00:00+00:00")

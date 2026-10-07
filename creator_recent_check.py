@@ -44,7 +44,7 @@ def _bounded_env_int(
     return max(minimum, min(maximum, value))
 
 
-RECENT_CHECK_VERSION = "0.3.10"
+RECENT_CHECK_VERSION = "0.3.11"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 # Backward-compatible total-budget knob from PR #227. Recent-window discovery
@@ -589,6 +589,8 @@ def _youtube_surface_coverage_status(
         requested = int(surface_diag.get("requested_limit") or 0)
         found = int(surface_diag.get("entries_found") or len(entries))
         returncode = int(surface_diag.get("returncode") or 0)
+        raw_returncode = int(surface_diag.get("raw_returncode") or returncode)
+        surface_absent = bool(surface_diag.get("surface_absent"))
         known_times: list[datetime] = []
         missing_publish_time_count = 0
         for entry in entries:
@@ -605,6 +607,9 @@ def _youtube_surface_coverage_status(
         if requested <= 0:
             complete = True
             reason = "NOT_REQUESTED"
+        elif surface_absent:
+            complete = True
+            reason = "SURFACE_ABSENT"
         elif oldest is not None and oldest < cutoff:
             # Coverage is a proof about the observed ordered window, not about
             # yt-dlp's process exit status. If the scan already crossed the
@@ -635,6 +640,8 @@ def _youtube_surface_coverage_status(
             "requested_limit": requested,
             "entries_found": found,
             "returncode": returncode,
+            "raw_returncode": raw_returncode,
+            "surface_absent": surface_absent,
             "oldest_known_published_at": oldest.isoformat() if oldest else None,
             "missing_publish_time_count": missing_publish_time_count,
         }
@@ -3695,6 +3702,12 @@ def _compact_discovery_coverage(discovery: dict) -> dict:
                 "requested_limit": int(diag.get("requested_limit") or 0),
                 "entries_found": int(diag.get("entries_found") or 0),
                 "returncode": int(diag.get("returncode") or 0),
+                "raw_returncode": int(
+                    diag.get("raw_returncode")
+                    if diag.get("raw_returncode") is not None
+                    else diag.get("returncode") or 0
+                ),
+                "surface_absent": bool(diag.get("surface_absent")),
                 "diagnostic_tail": str(diag.get("diagnostic_tail") or "")[-1000:],
             }
         if surface_diagnostics:
