@@ -18,7 +18,7 @@ from typing import Any, Callable
 from evaluation_progress import heartbeat, sample_outcome, terminalize
 from urllib.parse import urlparse
 
-YOUTUBE_EVAL_VERSION = "0.8.3"
+YOUTUBE_EVAL_VERSION = "0.8.4"
 DEFAULT_MAX_UNPINNED_WHISPER_DURATION_SECONDS = 20 * 60
 DEFAULT_VISUAL_CAPTURE_MAX_CHILD_RSS_MB = 768
 VISUAL_CAPTURE_MAX_FRAMES_PER_BRANCH = 120
@@ -27,13 +27,20 @@ VISUAL_CAPTURE_SEEK_MAX_FRAMES = 24
 VISUAL_CAPTURE_SEEK_MIN_FRAMES = 6
 VISUAL_CAPTURE_SEEK_TIMEOUT_SECONDS = 25
 VISUAL_CAPTURE_SEEK_TOTAL_TIMEOUT_SECONDS = 120
+VISUAL_STAGE_DOWNLOAD_TIMEOUT_SECONDS = 120
+VISUAL_STAGE_MAX_BYTES = 192 * 1024 * 1024
+YOUTUBE_VISUAL_STAGE_FORMAT_SELECTOR = (
+    "bv*[height<=480][ext=mp4][protocol=https]/"
+    "bv*[height<=480][protocol=https]/"
+    "b[height<=360][ext=mp4][protocol=https]/"
+    "b[height<=360][protocol=https]"
+)
 YOUTUBE_VISUAL_FORMAT_SELECTOR = (
     "bv*[height<=720][protocol!=m3u8_native][protocol!=m3u8]/"
     "b[height<=720][protocol!=m3u8_native][protocol!=m3u8]/"
     "bv*[height<=720][protocol=m3u8_native]/"
     "bv*[height<=720][protocol=m3u8]"
 )
-YOUTUBE_VISUAL_SEEK_FORMAT_SELECTOR = YOUTUBE_VISUAL_FORMAT_SELECTOR
 VISUAL_CAPTURE_POLL_SECONDS = 0.25
 VISUAL_CAPTURE_HEARTBEAT_SECONDS = 5.0
 VISUAL_CAPTURE_TIMEOUT_SECONDS = 600
@@ -138,6 +145,14 @@ def _tail_text_file(path: Path, max_bytes: int = 8192) -> str:
             return handle.read(max_bytes).decode("utf-8", errors="replace")
     except OSError:
         return ""
+
+
+def _redact_urls(text: str) -> str:
+    return re.sub(
+        r"https?://[^\s\"'<>]+",
+        "<url>",
+        str(text or ""),
+    )
 
 
 def _showinfo_times_file(path: Path, instance: str) -> list[float]:
@@ -1411,117 +1426,164 @@ def visual_capture_seek_timestamps(
     ]
 
 
-SENSITIVE_VISUAL_HEADER_NAMES = {
-    "authorization",
-    "cookie",
-    "proxy-authorization",
-}
+def _visual_stage_artifacts(evidence_dir: Path) -> list[Path]:
+    return [
+        path
+        for path in evidence_dir.glob("visual_source.*")
+        if path.is_file()
+    ]
 
 
-def _sanitize_visual_http_headers(value: Any) -> dict[str, str]:
-    if not isinstance(value, dict):
-        return {}
-    sanitized: dict[str, str] = {}
-    for raw_key, raw_value in value.items():
-        key = str(raw_key or "").strip()
-        if not re.fullmatch(r"[A-Za-z0-9-]{1,64}", key):
-            continue
-        if key.lower() in SENSITIVE_VISUAL_HEADER_NAMES:
-            continue
-        header_value = re.sub(r"[\r\n]+", " ", str(raw_value or "")).strip()
-        if not header_value:
-            continue
-        sanitized[key] = header_value[:2048]
-    return sanitized
+def _visual_stage_bytes(evidence_dir: Path) -> int:
+    total = 0
+    for path in _visual_stage_artifacts(evidence_dir):
+        with contextlib.suppress(OSError):
+            total += int(path.stat().st_size)
+    return total
 
 
-def _visual_headers_arg(headers: dict[str, str]) -> str:
-    if not headers:
-        return ""
-    return "".join(f"{key}: {value}\r\n" for key, value in headers.items())
+def _cleanup_visual_stage(evidence_dir: Path) -> None:
+    for path in _visual_stage_artifacts(evidence_dir):
+        with contextlib.suppress(OSError):
+            path.unlink()
 
 
-def _resolve_visual_stream_url(url: str) -> dict:
+def _download_visual_stage_source(
+    url: str,
+    evidence_dir: Path,
+    *,
+    progress_callback: Callable[[dict], None] | None = None,
+) -> dict:
     base, js_diag = _yt_base_args()
+    output_template = str(evidence_dir / "visual_source.%(ext)s")
     cmd = [
         *base,
         "--no-playlist",
-        "--skip-download",
-        "--format", YOUTUBE_VISUAL_SEEK_FORMAT_SELECTOR,
-        "--dump-single-json",
+        "--format", YOUTUBE_VISUAL_STAGE_FORMAT_SELECTOR,
+        "--max-filesize", "192M",
+        "--output", output_template,
         "--",
         url,
     ]
+
+    with tempfile.NamedTemporaryFile(mode="w+b", delete=False) as err_file:
+        err_path = Path(err_file.name)
+
+    proc = None
+    started = time.monotonic()
+    last_heartbeat: float | None = None
     try:
-        # URL is canonical YouTube input and shell=False prevents option text
-        # from becoming executable syntax.
-        p = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=60,
-            shell=False,
-        )
+        with err_path.open("wb") as stderr_file:
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=stderr_file,
+                )
+                while proc.poll() is None:
+                    now = time.monotonic()
+                    elapsed = max(0.0, now - started)
+                    staged_bytes = _visual_stage_bytes(evidence_dir)
+
+                    if progress_callback is not None and (
+                        last_heartbeat is None
+                        or now - last_heartbeat >= VISUAL_CAPTURE_HEARTBEAT_SECONDS
+                    ):
+                        progress_callback({
+                            "visual_capture_mode": "LOCAL_STAGE_DOWNLOAD",
+                            "visual_capture_elapsed_seconds": round(elapsed, 1),
+                            "visual_stage_bytes": staged_bytes,
+                            "visual_stage_max_bytes": VISUAL_STAGE_MAX_BYTES,
+                            "visual_capture_frame_files": 0,
+                        })
+                        last_heartbeat = now
+
+                    if staged_bytes > VISUAL_STAGE_MAX_BYTES:
+                        _terminate_process(proc)
+                        return {
+                            "ok": False,
+                            "error": "VISUAL_STAGE_SIZE_LIMIT",
+                            "staged_bytes": staged_bytes,
+                            "max_bytes": VISUAL_STAGE_MAX_BYTES,
+                            "elapsed_seconds": round(elapsed, 1),
+                            "js_runtime": js_diag,
+                        }
+                    if elapsed > VISUAL_STAGE_DOWNLOAD_TIMEOUT_SECONDS:
+                        _terminate_process(proc)
+                        return {
+                            "ok": False,
+                            "error": "VISUAL_STAGE_DOWNLOAD_TIMEOUT",
+                            "staged_bytes": staged_bytes,
+                            "max_bytes": VISUAL_STAGE_MAX_BYTES,
+                            "elapsed_seconds": round(elapsed, 1),
+                            "js_runtime": js_diag,
+                        }
+                    time.sleep(VISUAL_CAPTURE_POLL_SECONDS)
+            finally:
+                _terminate_process(proc)
+
+        returncode = int(proc.poll() if proc is not None and proc.poll() is not None else -1)
+        diagnostic_tail = _redact_urls(_tail_text_file(err_path, 2000))
+        candidates = [
+            path
+            for path in _visual_stage_artifacts(evidence_dir)
+            if not path.name.endswith((".part", ".ytdl", ".tmp"))
+        ]
+        source = max(candidates, key=lambda path: path.stat().st_size) if candidates else None
+        if source is None or not source.exists():
+            return {
+                "ok": False,
+                "error": "VISUAL_STAGE_DOWNLOAD_FAILED",
+                "returncode": returncode,
+                "diagnostic_tail": diagnostic_tail,
+                "js_runtime": js_diag,
+            }
+        source_bytes = int(source.stat().st_size)
+        if source_bytes > VISUAL_STAGE_MAX_BYTES:
+            return {
+                "ok": False,
+                "error": "VISUAL_STAGE_SIZE_LIMIT",
+                "returncode": returncode,
+                "staged_bytes": source_bytes,
+                "max_bytes": VISUAL_STAGE_MAX_BYTES,
+                "diagnostic_tail": diagnostic_tail,
+                "js_runtime": js_diag,
+            }
+        if returncode != 0:
+            return {
+                "ok": False,
+                "error": "VISUAL_STAGE_DOWNLOAD_FAILED",
+                "returncode": returncode,
+                "staged_bytes": source_bytes,
+                "diagnostic_tail": diagnostic_tail,
+                "js_runtime": js_diag,
+            }
+        return {
+            "ok": True,
+            "returncode": returncode,
+            "source_path": source,
+            "staged_bytes": source_bytes,
+            "elapsed_seconds": round(time.monotonic() - started, 1),
+            "diagnostic_tail": diagnostic_tail,
+            "js_runtime": js_diag,
+        }
     except (OSError, subprocess.SubprocessError) as exc:
         return {
             "ok": False,
-            "error": f"{type(exc).__name__}:VISUAL_STREAM_RESOLVE_FAILED",
+            "error": f"{type(exc).__name__}:VISUAL_STAGE_DOWNLOAD_FAILED",
+            "diagnostic_tail": _redact_urls(_tail_text_file(err_path, 2000)),
             "js_runtime": js_diag,
         }
-
-    try:
-        info = json.loads(p.stdout or "{}")
-    except json.JSONDecodeError:
-        info = {}
-
-    selected = info if isinstance(info, dict) else {}
-    if not selected.get("url"):
-        for field in ("requested_formats", "requested_downloads"):
-            values = selected.get(field)
-            if not isinstance(values, list):
-                continue
-            candidate = next(
-                (
-                    value
-                    for value in values
-                    if isinstance(value, dict)
-                    and str(value.get("url") or "").startswith(("https://", "http://"))
-                ),
-                None,
-            )
-            if candidate is not None:
-                selected = candidate
-                break
-
-    stream_url = str(selected.get("url") or "").strip()
-    if not stream_url.startswith(("https://", "http://")):
-        stream_url = ""
-
-    headers = _sanitize_visual_http_headers(
-        selected.get("http_headers")
-        or (info.get("http_headers") if isinstance(info, dict) else {})
-    )
-    diagnostic_tail = (p.stderr or "")[-2000:]
-    if stream_url:
-        diagnostic_tail = diagnostic_tail.replace(stream_url, "<stream-url>")
-
-    return {
-        "ok": p.returncode == 0 and bool(stream_url),
-        "returncode": int(p.returncode),
-        "stream_url": stream_url or None,
-        "http_headers": headers,
-        "diagnostic_tail": diagnostic_tail,
-        "js_runtime": js_diag,
-    }
+    finally:
+        with contextlib.suppress(OSError):
+            err_path.unlink()
 
 
-def _capture_visual_snapshot(
+def _capture_local_visual_snapshot(
     ffmpeg: str,
-    stream_url: str,
+    source_path: Path,
     timestamp_s: float,
     output_path: Path,
-    *,
-    http_headers: dict[str, str] | None = None,
 ) -> dict:
     cmd = [
         ffmpeg,
@@ -1529,17 +1591,12 @@ def _capture_visual_snapshot(
         "-loglevel", "error",
         "-y",
         "-ss", f"{max(0.0, float(timestamp_s)):.3f}",
-    ]
-    headers_arg = _visual_headers_arg(http_headers or {})
-    if headers_arg:
-        cmd.extend(["-headers", headers_arg])
-    cmd.extend([
-        "-i", stream_url,
+        "-i", str(source_path),
         "-an",
         "-frames:v", "1",
         "-q:v", "5",
         str(output_path),
-    ])
+    ]
     try:
         p = subprocess.run(
             cmd,
@@ -1553,13 +1610,10 @@ def _capture_visual_snapshot(
             "error": f"{type(exc).__name__}:VISUAL_SNAPSHOT_FAILED",
         }
     ok = p.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0
-    diagnostic_tail = (p.stderr or b"")[-1200:].decode("utf-8", errors="replace")
-    if stream_url:
-        diagnostic_tail = diagnostic_tail.replace(stream_url, "<stream-url>")
     return {
         "ok": ok,
         "returncode": int(p.returncode),
-        "diagnostic_tail": diagnostic_tail,
+        "diagnostic_tail": (p.stderr or b"")[-1200:].decode("utf-8", errors="replace"),
     }
 
 
@@ -1579,144 +1633,160 @@ def _capture_seeked_visual_evidence(
     if not timestamps:
         return {"ok": False, "error": "SEEKED_VISUAL_DURATION_UNAVAILABLE"}
 
-    resolved = _resolve_visual_stream_url(url)
-    stream_url = resolved.get("stream_url")
-    if not resolved.get("ok") or not isinstance(stream_url, str):
+    started = time.monotonic()
+    staged = _download_visual_stage_source(
+        url,
+        evidence_dir,
+        progress_callback=progress_callback,
+    )
+    source_path = staged.get("source_path")
+    if not staged.get("ok") or not isinstance(source_path, Path):
+        _cleanup_visual_stage(evidence_dir)
         return {
             "ok": False,
-            "error": "SEEKED_VISUAL_STREAM_UNAVAILABLE",
-            "diagnostic_tail": resolved.get("diagnostic_tail"),
+            "error": staged.get("error") or "VISUAL_STAGE_DOWNLOAD_FAILED",
+            "diagnostic_tail": staged.get("diagnostic_tail"),
         }
 
-    started = time.monotonic()
     records: list[dict] = []
     failures: list[dict] = []
     minimum = min(
         len(timestamps),
         max(3, (len(timestamps) + 1) // 2),
     )
-    for index, timestamp_s in enumerate(timestamps, start=1):
-        elapsed_before = time.monotonic() - started
-        if elapsed_before > VISUAL_CAPTURE_SEEK_TOTAL_TIMEOUT_SECONDS:
-            failures.append({
-                "timestamp_s": round(float(timestamp_s), 3),
-                "error": "SEEKED_VISUAL_TOTAL_TIMEOUT",
-            })
-            break
 
-        remaining_after_this = len(timestamps) - index
-        if len(records) + remaining_after_this + 1 < minimum:
-            failures.append({
-                "timestamp_s": round(float(timestamp_s), 3),
-                "error": "SEEKED_VISUAL_MINIMUM_NO_LONGER_REACHABLE",
-            })
-            break
+    try:
+        for index, timestamp_s in enumerate(timestamps, start=1):
+            elapsed_before = time.monotonic() - started
+            if elapsed_before > VISUAL_CAPTURE_SEEK_TOTAL_TIMEOUT_SECONDS:
+                failures.append({
+                    "timestamp_s": round(float(timestamp_s), 3),
+                    "error": "SEEKED_VISUAL_TOTAL_TIMEOUT",
+                })
+                break
 
-        frame_path = evidence_dir / f"timeline_{index:03d}.jpg"
-        result = _capture_visual_snapshot(
+            remaining_after_this = len(timestamps) - index
+            if len(records) + remaining_after_this + 1 < minimum:
+                failures.append({
+                    "timestamp_s": round(float(timestamp_s), 3),
+                    "error": "SEEKED_VISUAL_MINIMUM_NO_LONGER_REACHABLE",
+                })
+                break
+
+            frame_path = evidence_dir / f"timeline_{index:03d}.jpg"
+            result = _capture_local_visual_snapshot(
+                ffmpeg,
+                source_path,
+                timestamp_s,
+                frame_path,
+            )
+            if result.get("ok"):
+                records.append({
+                    "timestamp_s": round(float(timestamp_s), 3),
+                    "reason": "TIMELINE_SAMPLE",
+                    "file": frame_path,
+                    "size_bytes": frame_path.stat().st_size,
+                })
+            else:
+                failures.append({
+                    "timestamp_s": round(float(timestamp_s), 3),
+                    "error": result.get("error") or "VISUAL_SNAPSHOT_FAILED",
+                    "returncode": result.get("returncode"),
+                    "diagnostic_tail": result.get("diagnostic_tail"),
+                })
+
+            if progress_callback is not None:
+                progress_callback({
+                    "visual_capture_mode": "LOCAL_STAGED_TIMELINE_SNAPSHOTS",
+                    "visual_capture_elapsed_seconds": round(time.monotonic() - started, 1),
+                    "visual_capture_seek_total": len(timestamps),
+                    "visual_capture_seek_completed": index,
+                    "visual_capture_frame_files": len(records),
+                    "visual_stage_bytes": staged.get("staged_bytes"),
+                    "visual_stage_max_bytes": VISUAL_STAGE_MAX_BYTES,
+                })
+
+        if len(records) < minimum:
+            return {
+                "ok": False,
+                "error": "SEEKED_VISUAL_INSUFFICIENT_FRAMES",
+                "captured_frames": len(records),
+                "required_frames": minimum,
+                "diagnostic_tail": str(failures[-3:])[-2000:],
+            }
+
+        # The temporary source is no longer needed once the snapshots exist.
+        _cleanup_visual_stage(evidence_dir)
+
+        agent_visual_bundle = build_agent_visual_bundle(
+            root,
+            creator_key,
+            records,
             ffmpeg,
-            stream_url,
-            timestamp_s,
-            frame_path,
-            http_headers=resolved.get("http_headers") or {},
+            evidence_dir,
+            progress_callback=progress_callback,
         )
-        if result.get("ok"):
-            records.append({
-                "timestamp_s": round(float(timestamp_s), 3),
-                "reason": "TIMELINE_SAMPLE",
-                "file": frame_path,
-                "size_bytes": frame_path.stat().st_size,
-            })
-        else:
-            failures.append({
-                "timestamp_s": round(float(timestamp_s), 3),
-                "error": result.get("error") or "VISUAL_SNAPSHOT_FAILED",
-                "returncode": result.get("returncode"),
-                "diagnostic_tail": result.get("diagnostic_tail"),
-            })
 
-        if progress_callback is not None:
-            progress_callback({
-                "visual_capture_mode": "SEEKED_TIMELINE_SNAPSHOTS",
-                "visual_capture_elapsed_seconds": round(time.monotonic() - started, 1),
-                "visual_capture_seek_total": len(timestamps),
-                "visual_capture_seek_completed": index,
-                "visual_capture_frame_files": len(records),
-            })
-
-    if len(records) < minimum:
+        frames = [
+            {
+                "timestamp_s": row["timestamp_s"],
+                "reason": row["reason"],
+                "file": str(Path(row["file"]).relative_to(root)),
+                "size_bytes": row["size_bytes"],
+            }
+            for row in records
+        ]
+        elapsed = round(time.monotonic() - started, 1)
+        summary = {
+            "capture_strategy": "LOCAL_STAGED_TIMELINE_SNAPSHOTS",
+            "visual_capture_duration_seconds": duration_seconds,
+            "visual_capture_seek_samples_requested": len(timestamps),
+            "visual_capture_seek_samples_completed": len(records),
+            "visual_capture_seek_timeout_seconds": VISUAL_CAPTURE_SEEK_TIMEOUT_SECONDS,
+            "visual_capture_seek_total_timeout_seconds": VISUAL_CAPTURE_SEEK_TOTAL_TIMEOUT_SECONDS,
+            "visual_stage_download_timeout_seconds": VISUAL_STAGE_DOWNLOAD_TIMEOUT_SECONDS,
+            "visual_stage_max_bytes": VISUAL_STAGE_MAX_BYTES,
+            "visual_stage_bytes": staged.get("staged_bytes"),
+            "visual_stage_format_selector": YOUTUBE_VISUAL_STAGE_FORMAT_SELECTOR,
+            "visual_capture_elapsed_seconds": elapsed,
+            "visual_capture_child_rss_peak_mib": None,
+            "visual_capture_memory_limit_mib": round(
+                visual_capture_max_child_rss_bytes() / (1024 * 1024),
+                1,
+            ),
+            "candidate_frames": len(records),
+            "retained_frames": len(frames),
+            "scene_change_frames": 0,
+            "one_fps_frames": 0,
+            "timeline_sample_frames": len(frames),
+            "video_persisted": False,
+            "agent_visual_bundle": agent_visual_bundle,
+        }
+        index = {
+            "schema_version": 1,
+            "app_version": YOUTUBE_EVAL_VERSION,
+            "source_platform": "YOUTUBE",
+            "source_url": url,
+            "video_id": video_id,
+            "generated_at": utc_now(),
+            "summary": summary,
+            "frames": frames,
+            "agent_visual_bundle": agent_visual_bundle,
+            "diagnostics": {
+                "stage_download_returncode": staged.get("returncode"),
+                "stage_download_tail": staged.get("diagnostic_tail"),
+                "stage_download_js_runtime": staged.get("js_runtime"),
+                "snapshot_failures": failures,
+            },
+        }
+        atomic_json(index_path, index)
         return {
-            "ok": False,
-            "error": "SEEKED_VISUAL_INSUFFICIENT_FRAMES",
-            "captured_frames": len(records),
-            "required_frames": minimum,
-            "diagnostic_tail": str(failures[-3:])[-2000:],
+            "ok": True,
+            "index": index_path,
+            **summary,
         }
-
-    agent_visual_bundle = build_agent_visual_bundle(
-        root,
-        creator_key,
-        records,
-        ffmpeg,
-        evidence_dir,
-        progress_callback=progress_callback,
-    )
-
-    frames = [
-        {
-            "timestamp_s": row["timestamp_s"],
-            "reason": row["reason"],
-            "file": str(Path(row["file"]).relative_to(root)),
-            "size_bytes": row["size_bytes"],
-        }
-        for row in records
-    ]
-    elapsed = round(time.monotonic() - started, 1)
-    summary = {
-        "capture_strategy": "SEEKED_TIMELINE_SNAPSHOTS",
-        "visual_capture_duration_seconds": duration_seconds,
-        "visual_capture_seek_samples_requested": len(timestamps),
-        "visual_capture_seek_samples_completed": len(records),
-        "visual_capture_seek_timeout_seconds": VISUAL_CAPTURE_SEEK_TIMEOUT_SECONDS,
-        "visual_capture_seek_total_timeout_seconds": VISUAL_CAPTURE_SEEK_TOTAL_TIMEOUT_SECONDS,
-        "visual_capture_stream_selector": YOUTUBE_VISUAL_SEEK_FORMAT_SELECTOR,
-        "visual_capture_elapsed_seconds": elapsed,
-        "visual_capture_child_rss_peak_mib": None,
-        "visual_capture_memory_limit_mib": round(
-            visual_capture_max_child_rss_bytes() / (1024 * 1024),
-            1,
-        ),
-        "candidate_frames": len(records),
-        "retained_frames": len(frames),
-        "scene_change_frames": 0,
-        "one_fps_frames": 0,
-        "timeline_sample_frames": len(frames),
-        "video_persisted": False,
-        "agent_visual_bundle": agent_visual_bundle,
-    }
-    index = {
-        "schema_version": 1,
-        "app_version": YOUTUBE_EVAL_VERSION,
-        "source_platform": "YOUTUBE",
-        "source_url": url,
-        "video_id": video_id,
-        "generated_at": utc_now(),
-        "summary": summary,
-        "frames": frames,
-        "agent_visual_bundle": agent_visual_bundle,
-        "diagnostics": {
-            "stream_resolver_returncode": resolved.get("returncode"),
-            "stream_resolver_tail": resolved.get("diagnostic_tail"),
-            "stream_resolver_js_runtime": resolved.get("js_runtime"),
-            "snapshot_failures": failures,
-        },
-    }
-    atomic_json(index_path, index)
-    return {
-        "ok": True,
-        "index": index_path,
-        **summary,
-    }
+    finally:
+        _cleanup_visual_stage(evidence_dir)
 
 
 def _seeked_fallback_progress(seeked: dict) -> dict:
