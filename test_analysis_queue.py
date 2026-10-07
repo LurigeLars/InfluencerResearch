@@ -455,6 +455,19 @@ class AnalysisQueueTests(unittest.TestCase):
             self.assertEqual(full["queue_item"]["transcript_text"], fixture["queue_item"]["transcript_text"])
             self.assertEqual(full["queue_item"]["discovery_tags"], ["market", "fixture"])
 
+    def test_queue_listing_tolerates_missing_optional_source_platform(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            build_fixture(root)
+            queue_path = root / "state" / "research_queue.json"
+            queue = json.loads(queue_path.read_text(encoding="utf-8"))
+            queue["items"][0].pop("source_platform", None)
+            write_json(queue_path, queue)
+
+            listing = list_analysis_queue(root)
+            self.assertEqual(listing["total"], 1)
+            self.assertNotIn("source_platform", listing["items"][0])
+
     def test_creator_evaluation_item_list_explains_completed_dispositions(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
