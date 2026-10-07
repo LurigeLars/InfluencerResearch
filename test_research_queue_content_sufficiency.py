@@ -70,6 +70,58 @@ class ResearchQueueContentSufficiencyTests(unittest.TestCase):
                 "NO_ANALYZABLE_TEXT_OR_VISUAL_EVIDENCE",
             )
 
+    def test_explicit_marked_insufficient_is_terminal_across_rebuilds(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            screenshot = root / "output" / "creator" / "stories" / "screenshots" / "123.png"
+            screenshot.parent.mkdir(parents=True)
+            screenshot.write_bytes(b"retained-frame")
+            manifest = {
+                "schema_version": 1,
+                "items": {
+                    "ig_story_123": {
+                        "creator": "creator",
+                        "source_platform": "INSTAGRAM",
+                        "source_subtype": "STORY",
+                        "source_id": "story:123",
+                        "url": "https://www.instagram.com/stories/creator/123/",
+                        "published_at": "2026-10-06T18:00:00+00:00",
+                        "download_status": "DONE",
+                        "transcription_status": "NOT_APPLICABLE",
+                        "screenshot_file": str(screenshot.relative_to(root)),
+                        "visual_description_status": "DEFERRED",
+                        "research_status": "INSUFFICIENT_CONTENT",
+                        "analysis_content_status": "INSUFFICIENT_CONTENT",
+                        "analysis_content_reason": "RETAINED_FRAME_IS_BLANK_LOADING_SCREEN",
+                        "analysis_insufficient_reason": "RETAINED_FRAME_IS_BLANK_LOADING_SCREEN",
+                        "analysis_insufficient_marked_at": "2026-10-07T00:00:00+00:00",
+                    }
+                },
+            }
+            self._write_common(root, manifest)
+
+            with unittest.mock.patch.object(
+                sys,
+                "argv",
+                ["research_queue.py", "--root", str(root)],
+            ):
+                self.assertEqual(research_queue.main(), 0)
+
+            queue = json.loads(
+                (root / "state" / "research_queue.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(queue["count"], 0)
+            self.assertEqual(queue["insufficient_content_count"], 1)
+            updated = json.loads(
+                (root / "state" / "manifest.json").read_text(encoding="utf-8")
+            )["items"]["ig_story_123"]
+            self.assertEqual(updated["research_status"], "INSUFFICIENT_CONTENT")
+            self.assertEqual(updated["analysis_content_status"], "INSUFFICIENT_CONTENT")
+            self.assertEqual(
+                updated["analysis_insufficient_reason"],
+                "RETAINED_FRAME_IS_BLANK_LOADING_SCREEN",
+            )
+
     def test_real_transcript_remains_analysis_ready(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
