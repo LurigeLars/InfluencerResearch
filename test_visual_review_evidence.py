@@ -44,7 +44,6 @@ class VisualReviewClassifierTests(unittest.TestCase):
         self.assertIn(direct, selector)
         self.assertIn(hls, selector)
         self.assertLess(selector.index(direct), selector.index(hls))
-        self.assertEqual(yte.YOUTUBE_VISUAL_SEEK_FORMAT_SELECTOR, selector)
 
     def test_youtube_seek_timestamps_are_bounded_and_spread(self) -> None:
         short = yte.visual_capture_seek_timestamps(60)
@@ -56,42 +55,44 @@ class VisualReviewClassifierTests(unittest.TestCase):
         self.assertLess(short[-1], 60)
         self.assertLess(long[-1], 900)
 
-    def test_youtube_seeked_capture_does_not_persist_signed_stream_url(self) -> None:
+    def test_youtube_visual_stage_selector_is_bounded_direct_http(self) -> None:
+        selector = yte.YOUTUBE_VISUAL_STAGE_FORMAT_SELECTOR
+        self.assertIn("height<=480", selector)
+        self.assertIn("protocol=https", selector)
+        self.assertNotIn("m3u8", selector)
+        self.assertEqual(yte.VISUAL_STAGE_MAX_BYTES, 192 * 1024 * 1024)
+        self.assertEqual(yte.VISUAL_STAGE_DOWNLOAD_TIMEOUT_SECONDS, 120)
+
+    def test_youtube_staged_capture_cleans_temp_video_and_persists_only_frames(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             evidence_dir = root / "output" / "creator" / "youtube" / "frames" / "vid001"
             evidence_dir.mkdir(parents=True)
             index_path = evidence_dir / "visual_index.json"
+            source = evidence_dir / "visual_source.mp4"
+            source.write_bytes(b"staged-video")
             progress: list[dict] = []
-            signed_url = "https://media.example/video.m3u8?signature=secret"
 
-            def fake_snapshot(
-                _ffmpeg,
-                stream_url,
-                timestamp_s,
-                output_path,
-                *,
-                http_headers=None,
-            ):
-                self.assertEqual(stream_url, signed_url)
-                self.assertEqual(http_headers, {"User-Agent": "fixture-agent"})
+            def fake_snapshot(_ffmpeg, source_path, timestamp_s, output_path):
+                self.assertEqual(source_path, source)
                 output_path.write_bytes(b"jpeg")
                 return {"ok": True, "returncode": 0, "diagnostic_tail": ""}
 
             with unittest.mock.patch.object(
                 yte,
-                "_resolve_visual_stream_url",
+                "_download_visual_stage_source",
                 return_value={
                     "ok": True,
                     "returncode": 0,
-                    "stream_url": signed_url,
-                    "http_headers": {"User-Agent": "fixture-agent"},
+                    "source_path": source,
+                    "staged_bytes": source.stat().st_size,
+                    "elapsed_seconds": 0.5,
                     "diagnostic_tail": "",
                     "js_runtime": {"enabled": True},
                 },
             ), unittest.mock.patch.object(
                 yte,
-                "_capture_visual_snapshot",
+                "_capture_local_visual_snapshot",
                 side_effect=fake_snapshot,
             ), unittest.mock.patch.object(
                 yte,
@@ -120,37 +121,52 @@ class VisualReviewClassifierTests(unittest.TestCase):
             persisted = index_path.read_text(encoding="utf-8")
 
         self.assertTrue(result["ok"])
-        self.assertEqual(result["capture_strategy"], "SEEKED_TIMELINE_SNAPSHOTS")
-        self.assertEqual(result["retained_frames"], yte.VISUAL_CAPTURE_SEEK_MIN_FRAMES)
-        self.assertNotIn(signed_url, persisted)
+        self.assertEqual(
+            result["capture_strategy"],
+            "LOCAL_STAGED_TIMELINE_SNAPSHOTS",
+        )
+        self.assertEqual(
+            result["retained_frames"],
+            yte.VISUAL_CAPTURE_SEEK_MIN_FRAMES,
+        )
+        self.assertFalse(source.exists())
+        self.assertNotIn("visual_source", persisted)
         self.assertEqual(
             progress[-1]["visual_capture_seek_completed"],
             yte.VISUAL_CAPTURE_SEEK_MIN_FRAMES,
         )
 
-    def test_youtube_seeked_capture_has_total_time_budget(self) -> None:
+    def test_youtube_staged_capture_has_total_time_budget_and_cleans_source(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             evidence_dir = root / "frames"
             evidence_dir.mkdir()
             index_path = evidence_dir / "visual_index.json"
+            source = evidence_dir / "visual_source.mp4"
+            source.write_bytes(b"staged-video")
+
             with unittest.mock.patch.object(
                 yte,
-                "_resolve_visual_stream_url",
+                "_download_visual_stage_source",
                 return_value={
                     "ok": True,
                     "returncode": 0,
-                    "stream_url": "https://media.example/video.mp4?signature=secret",
+                    "source_path": source,
+                    "staged_bytes": source.stat().st_size,
+                    "elapsed_seconds": 0.5,
                     "diagnostic_tail": "",
                     "js_runtime": {"enabled": True},
                 },
             ), unittest.mock.patch.object(
                 yte.time,
                 "monotonic",
-                side_effect=[0.0, yte.VISUAL_CAPTURE_SEEK_TOTAL_TIMEOUT_SECONDS + 1.0],
+                side_effect=[
+                    0.0,
+                    yte.VISUAL_CAPTURE_SEEK_TOTAL_TIMEOUT_SECONDS + 1.0,
+                ],
             ), unittest.mock.patch.object(
                 yte,
-                "_capture_visual_snapshot",
+                "_capture_local_visual_snapshot",
             ) as snapshot:
                 result = yte._capture_seeked_visual_evidence(
                     root,
@@ -168,72 +184,38 @@ class VisualReviewClassifierTests(unittest.TestCase):
         self.assertEqual(result["error"], "SEEKED_VISUAL_INSUFFICIENT_FRAMES")
         self.assertIn("SEEKED_VISUAL_TOTAL_TIMEOUT", result["diagnostic_tail"])
         snapshot.assert_not_called()
+        self.assertFalse(source.exists())
 
-    def test_youtube_stream_resolver_keeps_safe_headers_in_memory(self) -> None:
-        signed_url = "https://media.example/video.mp4?signature=secret"
-        proc = unittest.mock.Mock(
-            returncode=0,
-            stdout=json.dumps({
-                "url": signed_url,
-                "http_headers": {
-                    "User-Agent": "fixture-agent",
-                    "Referer": "https://www.youtube.com/",
-                    "Cookie": "secret-cookie",
-                    "Authorization": "Bearer secret",
-                    "Bad\\r\\nHeader": "ignored",
-                },
-            }),
-            stderr="selected " + signed_url,
-        )
-        with unittest.mock.patch.object(
-            yte,
-            "_yt_base_args",
-            return_value=(["yt-dlp"], {"enabled": True}),
-        ), unittest.mock.patch(
-            "youtube_creator_evaluation.subprocess.run",
-            return_value=proc,
-        ):
-            result = yte._resolve_visual_stream_url(
-                "https://www.youtube.com/watch?v=vid001"
-            )
+    def test_youtube_local_snapshot_uses_only_local_media(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            source = Path(td) / "source.mp4"
+            output = Path(td) / "frame.jpg"
+            source.write_bytes(b"video")
+            output.write_bytes(b"jpeg")
+            proc = unittest.mock.Mock(returncode=0, stderr=b"")
+            with unittest.mock.patch(
+                "youtube_creator_evaluation.subprocess.run",
+                return_value=proc,
+            ) as run:
+                result = yte._capture_local_visual_snapshot(
+                    "ffmpeg",
+                    source,
+                    12.5,
+                    output,
+                )
 
         self.assertTrue(result["ok"])
-        self.assertEqual(result["stream_url"], signed_url)
-        self.assertEqual(
-            result["http_headers"],
-            {
-                "User-Agent": "fixture-agent",
-                "Referer": "https://www.youtube.com/",
-            },
-        )
-        self.assertNotIn(signed_url, result["diagnostic_tail"])
-        self.assertIn("<stream-url>", result["diagnostic_tail"])
-
-    def test_youtube_snapshot_redacts_signed_stream_url_from_diagnostics(self) -> None:
-        signed_url = "https://media.example/video.mp4?signature=secret"
-        proc = unittest.mock.Mock(returncode=1, stderr=f"failed {signed_url}".encode())
-        with unittest.mock.patch(
-            "youtube_creator_evaluation.subprocess.run",
-            return_value=proc,
-        ) as run:
-            result = yte._capture_visual_snapshot(
-                "ffmpeg",
-                signed_url,
-                12.5,
-                Path("/tmp/nonexistent-frame.jpg"),
-                http_headers={
-                    "User-Agent": "fixture-agent",
-                    "Referer": "https://www.youtube.com/",
-                },
-            )
-        self.assertFalse(result["ok"])
-        self.assertNotIn(signed_url, result["diagnostic_tail"])
-        self.assertIn("<stream-url>", result["diagnostic_tail"])
         cmd = run.call_args.args[0]
-        self.assertIn("-headers", cmd)
-        headers_arg = cmd[cmd.index("-headers") + 1]
-        self.assertIn("User-Agent: fixture-agent\r\n", headers_arg)
-        self.assertIn("Referer: https://www.youtube.com/\r\n", headers_arg)
+        self.assertIn(str(source), cmd)
+        self.assertNotIn("-headers", cmd)
+        self.assertFalse(any(str(value).startswith("http") for value in cmd))
+
+    def test_youtube_staging_diagnostics_redact_urls(self) -> None:
+        redacted = yte._redact_urls(
+            "failed https://media.example/video.mp4?signature=secret next"
+        )
+        self.assertNotIn("signature=secret", redacted)
+        self.assertIn("<url>", redacted)
 
     def test_visual_ocr_timeout_is_nonfatal(self) -> None:
         with unittest.mock.patch("youtube_creator_evaluation.subprocess.run", side_effect=TimeoutError("timeout")):
