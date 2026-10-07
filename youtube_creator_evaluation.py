@@ -1446,11 +1446,14 @@ def _resolve_visual_stream_url(url: str) -> dict:
         for line in (p.stdout or "").splitlines()
         if line.strip().startswith(("https://", "http://"))
     ]
+    diagnostic_tail = (p.stderr or "")[-2000:]
+    for resolved_url in urls:
+        diagnostic_tail = diagnostic_tail.replace(resolved_url, "<stream-url>")
     return {
         "ok": p.returncode == 0 and bool(urls),
         "returncode": int(p.returncode),
         "stream_url": urls[0] if urls else None,
-        "diagnostic_tail": (p.stderr or "")[-2000:],
+        "diagnostic_tail": diagnostic_tail,
         "js_runtime": js_diag,
     }
 
