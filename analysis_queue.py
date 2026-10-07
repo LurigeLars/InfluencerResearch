@@ -155,7 +155,7 @@ def list_analysis_queue(
     total = len(filtered)
     page = filtered[offset: offset + limit]
     return {
-        "status": "PENDING_ANALYSIS",
+        "status": "PENDING_ANALYSIS" if total else "EMPTY",
         "count": len(page),
         "total": total,
         "limit": limit,
