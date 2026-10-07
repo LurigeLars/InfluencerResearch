@@ -44,14 +44,30 @@ def _bounded_env_int(
     return max(minimum, min(maximum, value))
 
 
-RECENT_CHECK_VERSION = "0.3.8"
+RECENT_CHECK_VERSION = "0.3.9"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
+# Backward-compatible total-budget knob from PR #227. Recent-window discovery
+# now derives an independent per-surface ceiling from it, so the original
+# 600-total intent maps to 200 each for Videos/Shorts/Streams.
 YOUTUBE_MAX_DISCOVERY_PER_SOURCE = _bounded_env_int(
     "INFLUENCER_RESEARCH_YOUTUBE_MAX_DISCOVERY_PER_SOURCE",
-    200,
+    600,
     200,
     1200,
+)
+# New adaptive scanner caps each surface independently. If an operator still
+# carries the legacy total-cap setting, map it conservatively without allowing
+# a legacy 200-total value to recreate the old ~67-per-surface coverage hole.
+_legacy_surface_cap = max(
+    200,
+    min(400, (YOUTUBE_MAX_DISCOVERY_PER_SOURCE + 2) // 3),
+)
+YOUTUBE_MAX_DISCOVERY_PER_SURFACE = _bounded_env_int(
+    "INFLUENCER_RESEARCH_YOUTUBE_MAX_DISCOVERY_PER_SURFACE",
+    _legacy_surface_cap,
+    15,
+    400,
 )
 MIN_DISCOVERY_PER_SOURCE = 15
 INSTAGRAM_INITIAL_DISCOVERY_LIMIT = 60
@@ -527,75 +543,181 @@ def _youtube_probe_missing(
         "cached": len(known_published_at),
     }
 
+def _youtube_initial_surface_limits(discovery_limit: int) -> dict[str, int]:
+    total = max(len(yte.YOUTUBE_CHANNEL_SURFACES), int(discovery_limit))
+    base, remainder = divmod(total, len(yte.YOUTUBE_CHANNEL_SURFACES))
+    return {
+        surface: base + (1 if index < remainder else 0)
+        for index, surface in enumerate(yte.YOUTUBE_CHANNEL_SURFACES)
+    }
+
+
+def _youtube_unique_entries(entries_by_surface: dict[str, list[dict]]) -> list[dict]:
+    merged: list[dict] = []
+    seen: set[str] = set()
+    max_depth = max(
+        (len(entries_by_surface.get(surface, [])) for surface in yte.YOUTUBE_CHANNEL_SURFACES),
+        default=0,
+    )
+    for index in range(max_depth):
+        for surface in yte.YOUTUBE_CHANNEL_SURFACES:
+            entries = entries_by_surface.get(surface, [])
+            if index >= len(entries):
+                continue
+            entry = entries[index]
+            vid = str(entry.get("id") or "")
+            if not vid or vid in seen:
+                continue
+            seen.add(vid)
+            merged.append(entry)
+    return merged
+
+
+def _youtube_surface_coverage_status(
+    entries_by_surface: dict[str, list[dict]],
+    enumeration_diag: dict,
+    probed: dict[str, str],
+    cutoff: datetime,
+) -> dict[str, dict]:
+    diagnostics = enumeration_diag.get("surfaces")
+    diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
+    out: dict[str, dict] = {}
+
+    for surface in yte.YOUTUBE_CHANNEL_SURFACES:
+        entries = entries_by_surface.get(surface, [])
+        surface_diag = diagnostics.get(surface) or {}
+        requested = int(surface_diag.get("requested_limit") or 0)
+        found = int(surface_diag.get("entries_found") or len(entries))
+        returncode = int(surface_diag.get("returncode") or 0)
+        known_times: list[datetime] = []
+        missing_publish_time_count = 0
+        for entry in entries:
+            raw = entry.get("published_at") or probed.get(str(entry.get("id") or ""))
+            if not raw:
+                missing_publish_time_count += 1
+                continue
+            try:
+                known_times.append(parse_iso_utc(str(raw)))
+            except (TypeError, ValueError, OverflowError):
+                missing_publish_time_count += 1
+
+        oldest = min(known_times) if known_times else None
+        if requested <= 0:
+            complete = True
+            reason = "NOT_REQUESTED"
+        elif returncode != 0:
+            complete = False
+            reason = "DISCOVERY_ERROR"
+        elif found < requested:
+            complete = True
+            reason = "SURFACE_EXHAUSTED"
+        elif oldest is not None and oldest < cutoff:
+            complete = True
+            reason = "CUTOFF_REACHED"
+        elif requested >= YOUTUBE_MAX_DISCOVERY_PER_SURFACE:
+            complete = False
+            reason = "DISCOVERY_LIMIT_REACHED_BEFORE_CUTOFF"
+        else:
+            complete = False
+            reason = "NEED_MORE"
+
+        out[surface] = {
+            "complete": complete,
+            "reason": reason,
+            "requested_limit": requested,
+            "entries_found": found,
+            "returncode": returncode,
+            "oldest_known_published_at": oldest.isoformat() if oldest else None,
+            "missing_publish_time_count": missing_publish_time_count,
+        }
+    return out
+
+
 def _youtube_surface_coverage_complete(
     entries: list[dict],
     enumeration_diag: dict,
     probed: dict[str, str],
     cutoff: datetime,
 ) -> bool:
-    """Prove cutoff coverage independently for Videos, Shorts and Streams."""
-    surfaces = enumeration_diag.get("surfaces")
-    if not isinstance(surfaces, dict) or not surfaces:
-        known_times: list[datetime] = []
-        for entry in entries:
-            raw = entry.get("published_at") or probed.get(str(entry.get("id") or ""))
-            if raw:
-                try:
-                    known_times.append(parse_iso_utc(str(raw)))
-                except (TypeError, ValueError, OverflowError):
-                    # Ignore malformed optional timestamps; coverage falls back to valid observations.
-                    pass
-        return _coverage_complete(
-            discovered_count=len(entries),
-            requested_limit=int(enumeration_diag.get("requested_limit") or len(entries) or 1),
-            known_times=known_times,
-            cutoff=cutoff,
-        )
-
-    times_by_surface: dict[str, list[datetime]] = defaultdict(list)
+    """Compatibility helper: prove cutoff coverage independently per surface."""
+    entries_by_surface: dict[str, list[dict]] = {
+        surface: [] for surface in yte.YOUTUBE_CHANNEL_SURFACES
+    }
     for entry in entries:
         surface = str(entry.get("surface") or "").lower()
-        raw = entry.get("published_at") or probed.get(str(entry.get("id") or ""))
-        if not surface or not raw:
-            continue
-        try:
-            times_by_surface[surface].append(parse_iso_utc(str(raw)))
-        except (TypeError, ValueError, OverflowError):
-            continue
-
-    for surface, surface_diag in surfaces.items():
-        requested = int(surface_diag.get("requested_limit") or 0)
-        if requested <= 0:
-            continue
-        if int(surface_diag.get("returncode") or 0) != 0:
-            return False
-        found = int(surface_diag.get("entries_found") or 0)
-        if found < requested:
-            continue
-        if not any(value < cutoff for value in times_by_surface.get(str(surface).lower(), [])):
-            return False
-    return True
+        if surface in entries_by_surface:
+            entries_by_surface[surface].append(entry)
+    statuses = _youtube_surface_coverage_status(
+        entries_by_surface,
+        enumeration_diag,
+        probed,
+        cutoff,
+    )
+    return all(status["complete"] for status in statuses.values())
 
 
-def discover_youtube(profile: dict, source: dict, cutoff: datetime, end: datetime, discovery_limit: int) -> dict:
-    target = max(1, int(discovery_limit))
-    entries: list[dict] = []
+def discover_youtube(
+    profile: dict,
+    source: dict,
+    cutoff: datetime,
+    end: datetime,
+    discovery_limit: int,
+) -> dict:
+    surface_limits = _youtube_initial_surface_limits(discovery_limit)
+    entries_by_surface: dict[str, list[dict]] = {
+        surface: [] for surface in yte.YOUTUBE_CHANNEL_SURFACES
+    }
+    latest_surface_diag: dict[str, dict] = {
+        surface: {
+            "surface": surface,
+            "ok": True,
+            "returncode": 0,
+            "requested_limit": surface_limits[surface],
+            "entries_found": 0,
+            "diagnostic_tail": "",
+        }
+        for surface in yte.YOUTUBE_CHANNEL_SURFACES
+    }
+    surface_complete = {
+        surface: False for surface in yte.YOUTUBE_CHANNEL_SURFACES
+    }
+
     shared_channel = bool(source.get("shared_channel"))
     required_attribution_term = str(source.get("required_attribution_term") or "").strip()
     if shared_channel and not required_attribution_term:
         raise ValueError("SHARED_CHANNEL_ATTRIBUTION_RULE_MISSING")
     if len(required_attribution_term) > 120 or any(ord(ch) < 32 for ch in required_attribution_term):
         raise ValueError("BAD_REQUIRED_ATTRIBUTION_TERM")
-    diag: dict = {}
+
     probed: dict[str, str] = {}
     probe_diag: dict = {}
     attempts: list[dict] = []
-
     discovery_timings: list[dict] = []
+    final_statuses: dict[str, dict] = {}
+
     while True:
+        active_limits = {
+            surface: surface_limits[surface]
+            for surface in yte.YOUTUBE_CHANNEL_SURFACES
+            if not surface_complete[surface]
+        }
+        if not active_limits:
+            break
+
         enumeration_clock = time.perf_counter()
-        entries, diag = yte.enumerate_channel(source["profile_url"], limit=target)
+        pass_entries_by_surface, pass_diag = yte.enumerate_channel_surfaces(
+            source["profile_url"],
+            surface_limits=active_limits,
+        )
         enumeration_ms = round((time.perf_counter() - enumeration_clock) * 1000, 1)
+
+        for surface in active_limits:
+            entries_by_surface[surface] = list(pass_entries_by_surface.get(surface) or [])
+            pass_surface_diag = (pass_diag.get("surfaces") or {}).get(surface)
+            if isinstance(pass_surface_diag, dict):
+                latest_surface_diag[surface] = pass_surface_diag
+
+        entries = _youtube_unique_entries(entries_by_surface)
 
         probe_clock = time.perf_counter()
         newly_probed, probe_diag = _youtube_probe_missing(
@@ -604,50 +726,125 @@ def discover_youtube(profile: dict, source: dict, cutoff: datetime, end: datetim
         )
         probed.update(newly_probed)
         metadata_probe_ms = round((time.perf_counter() - probe_clock) * 1000, 1)
+
+        aggregate_diag = {
+            "ok": all(
+                int((latest_surface_diag.get(surface) or {}).get("returncode") or 0) == 0
+                for surface in yte.YOUTUBE_CHANNEL_SURFACES
+            ),
+            "returncode": next(
+                (
+                    int((latest_surface_diag.get(surface) or {}).get("returncode") or 0)
+                    for surface in yte.YOUTUBE_CHANNEL_SURFACES
+                    if int((latest_surface_diag.get(surface) or {}).get("returncode") or 0) != 0
+                ),
+                0,
+            ),
+            "requested_limit": sum(surface_limits.values()),
+            "entries_found": len(entries),
+            "surface_limits": dict(surface_limits),
+            "surfaces": dict(latest_surface_diag),
+            "diagnostic_tail": pass_diag.get("diagnostic_tail") or "",
+        }
+        final_statuses = _youtube_surface_coverage_status(
+            entries_by_surface,
+            aggregate_diag,
+            probed,
+            cutoff,
+        )
+
         discovery_timings.append({
-            "requested_limit": target,
+            "requested_limit": sum(surface_limits.values()),
+            "surface_limits": dict(surface_limits),
+            "active_surfaces": sorted(active_limits),
             "enumeration_ms": enumeration_ms,
             "metadata_probe_ms": metadata_probe_ms,
             "metadata_probe_attempted": int(probe_diag.get("attempted") or 0),
             "metadata_probe_resolved": int(probe_diag.get("resolved") or 0),
             "metadata_probe_cache_size": len(probed),
         })
-
-        known_times: list[datetime] = []
-        for entry in entries:
-            raw = entry.get("published_at") or probed.get(str(entry.get("id") or ""))
-            if raw:
-                try:
-                    known_times.append(parse_iso_utc(str(raw)))
-                except (TypeError, ValueError, OverflowError):
-                    continue
-
-        window_complete = _youtube_surface_coverage_complete(
-            entries,
-            diag,
-            probed,
-            cutoff,
-        )
         attempts.append({
-            "requested_limit": target,
+            "requested_limit": sum(surface_limits.values()),
+            "surface_limits": dict(surface_limits),
+            "active_surfaces": sorted(active_limits),
             "discovered_count": len(entries),
-            "oldest_known_published_at": min(known_times).isoformat() if known_times else None,
-            "window_complete": window_complete,
-            "enumeration": diag,
+            "window_complete": all(
+                status["complete"] for status in final_statuses.values()
+            ),
+            "surface_coverage": final_statuses,
+            "enumeration": aggregate_diag,
             "metadata_probe": probe_diag,
         })
-        if window_complete or target >= YOUTUBE_MAX_DISCOVERY_PER_SOURCE:
+
+        changed = False
+        for surface, status in final_statuses.items():
+            if status["complete"]:
+                surface_complete[surface] = True
+                continue
+            if status["reason"] != "NEED_MORE":
+                continue
+            next_limit = _next_discovery_limit(
+                surface_limits[surface],
+                maximum=YOUTUBE_MAX_DISCOVERY_PER_SURFACE,
+            )
+            if next_limit > surface_limits[surface]:
+                surface_limits[surface] = next_limit
+                changed = True
+
+        if all(surface_complete.values()) or not changed:
             break
-        target = _next_discovery_limit(
-            target,
-            maximum=YOUTUBE_MAX_DISCOVERY_PER_SOURCE,
-        )
+
+    entries = _youtube_unique_entries(entries_by_surface)
+    aggregate_diag = {
+        "ok": all(
+            int((latest_surface_diag.get(surface) or {}).get("returncode") or 0) == 0
+            for surface in yte.YOUTUBE_CHANNEL_SURFACES
+        ),
+        "returncode": next(
+            (
+                int((latest_surface_diag.get(surface) or {}).get("returncode") or 0)
+                for surface in yte.YOUTUBE_CHANNEL_SURFACES
+                if int((latest_surface_diag.get(surface) or {}).get("returncode") or 0) != 0
+            ),
+            0,
+        ),
+        "requested_limit": sum(surface_limits.values()),
+        "entries_found": len(entries),
+        "surface_limits": dict(surface_limits),
+        "surfaces": dict(latest_surface_diag),
+        "diagnostic_tail": "",
+    }
+    final_statuses = _youtube_surface_coverage_status(
+        entries_by_surface,
+        aggregate_diag,
+        probed,
+        cutoff,
+    )
+    window_complete = all(status["complete"] for status in final_statuses.values())
+
+    incomplete_reasons = {
+        status["reason"]
+        for status in final_statuses.values()
+        if not status["complete"]
+    }
+    if "DISCOVERY_ERROR" in incomplete_reasons:
+        coverage_limited_reason = "DISCOVERY_ERROR"
+    elif "DISCOVERY_LIMIT_REACHED_BEFORE_CUTOFF" in incomplete_reasons:
+        coverage_limited_reason = "DISCOVERY_LIMIT_REACHED_BEFORE_CUTOFF"
+    elif incomplete_reasons:
+        coverage_limited_reason = "DISCOVERY_INCOMPLETE_BEFORE_CUTOFF"
+    else:
+        coverage_limited_reason = None
 
     items = []
     missing_time = []
     attribution_excluded_ids = []
+    seen_item_ids: set[str] = set()
     for entry in entries:
         vid = str(entry.get("id") or "")
+        if not vid or vid in seen_item_ids:
+            continue
+        seen_item_ids.add(vid)
         if shared_channel and not yte.metadata_has_attribution(entry, required_attribution_term):
             attribution_excluded_ids.append(vid)
             continue
@@ -678,23 +875,21 @@ def discover_youtube(profile: dict, source: dict, cutoff: datetime, end: datetim
         "profile_url": source["profile_url"],
         "items": items,
         "discovery_count": len(entries),
-        "discovery_limit_used": target,
+        "discovery_limit_used": sum(surface_limits.values()),
+        "discovery_surface_limits": dict(surface_limits),
         "discovery_passes": attempts,
         "window_complete": window_complete,
-        "coverage_limit_reached": bool(
-            not window_complete and target >= YOUTUBE_MAX_DISCOVERY_PER_SOURCE
+        "coverage_limit_reached": (
+            coverage_limited_reason == "DISCOVERY_LIMIT_REACHED_BEFORE_CUTOFF"
         ),
-        "coverage_limited_reason": (
-            "DISCOVERY_LIMIT_REACHED_BEFORE_CUTOFF"
-            if not window_complete and target >= YOUTUBE_MAX_DISCOVERY_PER_SOURCE
-            else None
-        ),
+        "coverage_limited_reason": coverage_limited_reason,
+        "surface_coverage": final_statuses,
         "missing_publish_time_ids": missing_time,
         "shared_channel": shared_channel,
         "required_attribution_term": required_attribution_term or None,
         "attribution_excluded_count": len(attribution_excluded_ids),
         "attribution_excluded_ids": attribution_excluded_ids[:100],
-        "discovery": diag,
+        "discovery": aggregate_diag,
         "metadata_probe": {
             **probe_diag,
             "cumulative_resolved": len(probed),
