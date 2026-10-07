@@ -455,6 +455,19 @@ class AnalysisQueueTests(unittest.TestCase):
             self.assertEqual(full["queue_item"]["transcript_text"], fixture["queue_item"]["transcript_text"])
             self.assertEqual(full["queue_item"]["discovery_tags"], ["market", "fixture"])
 
+    def test_queue_listing_tolerates_missing_optional_source_platform(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            build_fixture(root)
+            queue_path = root / "state" / "research_queue.json"
+            queue = json.loads(queue_path.read_text(encoding="utf-8"))
+            queue["items"][0].pop("source_platform", None)
+            write_json(queue_path, queue)
+
+            listing = list_analysis_queue(root)
+            self.assertEqual(listing["total"], 1)
+            self.assertNotIn("source_platform", listing["items"][0])
+
     def test_creator_evaluation_item_list_explains_completed_dispositions(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -554,6 +567,50 @@ class AnalysisQueueTests(unittest.TestCase):
             self.assertEqual(accounting["analysis_accounted_count"], 4)
             self.assertEqual(accounting["analysis_unaccounted_count"], 1)
             self.assertEqual(accounting["analysis_unaccounted_items"], ["tt_missing"])
+
+
+    def test_remaining_pending_counts_only_current_active_pending_work(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fixture = build_fixture(root)
+            queue_path = root / "state" / "research_queue.json"
+            queue = json.loads(queue_path.read_text(encoding="utf-8"))
+            queue["items"].append({
+                "queue_id": "legacy_finalized",
+                "creator": "creator",
+                "analysis_status": "FINALIZED",
+            })
+            queue["count"] = len(queue["items"])
+            write_json(queue_path, queue)
+
+            batch = record_analysis_decision_batch(
+                root,
+                [decision_payload("IGNORE", queue_id=fixture["queue_id"])],
+            )
+            self.assertEqual(batch["results"][0]["remaining_pending"], 0)
+            self.assertEqual(list_analysis_queue(root)["total"], 0)
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            fixture = build_fixture(root)
+            queue_path = root / "state" / "research_queue.json"
+            queue = json.loads(queue_path.read_text(encoding="utf-8"))
+            queue["items"].append({
+                "queue_id": "legacy_finalized",
+                "creator": "creator",
+                "analysis_status": "FINALIZED",
+            })
+            queue["count"] = len(queue["items"])
+            write_json(queue_path, queue)
+
+            result = mark_analysis_insufficient(
+                root,
+                fixture["queue_id"],
+                reason="RETAINED_FRAME_IS_BLANK_LOADING_SCREEN",
+                evidence_lineage_id="lineage-fixture-123",
+            )
+            self.assertEqual(result["remaining_pending"], 0)
+            self.assertEqual(list_analysis_queue(root)["total"], 0)
 
 
 if __name__ == "__main__":

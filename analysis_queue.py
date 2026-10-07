@@ -71,6 +71,19 @@ def _active_creator_keys(root: Path) -> set[str]:
     }
 
 
+def _pending_analysis_count(root: Path, items: list) -> int:
+    active = _active_creator_keys(root)
+    return sum(
+        1
+        for item in items
+        if (
+            isinstance(item, dict)
+            and str(item.get("analysis_status") or "").upper() == "PENDING_ANALYSIS"
+            and str(item.get("creator") or "") in active
+        )
+    )
+
+
 def _compact_queue_item(item: dict) -> dict:
     caption = str(item.get("caption") or "")
     if len(caption) > 500:
@@ -81,8 +94,8 @@ def _compact_queue_item(item: dict) -> dict:
             "queue_id": _queue_id(item),
             "analysis_status": item.get("analysis_status"),
             "analysis_content_status": item.get("analysis_content_status"),
-            "creator": item.get("creator") or run_status.get("creator"),
-            "source_platform": item.get("source_platform") or run_status.get("source_platform"),
+            "creator": item.get("creator"),
+            "source_platform": item.get("source_platform"),
             "source_type": item.get("source_type"),
             "source_id": item.get("source_id"),
             "source_url": item.get("source_url") or item.get("url"),
@@ -650,7 +663,7 @@ def mark_analysis_insufficient(
             "queue_id": wanted,
             "analysis_status": "INSUFFICIENT_CONTENT",
             "reason": reason,
-            "remaining_pending": len(queue_items),
+            "remaining_pending": _pending_analysis_count(root, queue_items),
         }
 
     queue["items"] = queue_items
@@ -668,7 +681,7 @@ def mark_analysis_insufficient(
         "queue_id": wanted,
         "analysis_status": "INSUFFICIENT_CONTENT",
         "reason": reason,
-        "remaining_pending": len(queue_items),
+        "remaining_pending": _pending_analysis_count(root, queue_items),
     }
 
 
@@ -752,7 +765,7 @@ def _apply_record(root: Path, queue_id: str, record: dict) -> dict:
             "queue_id": queue_id,
             "decision": canonical.get("decision"),
             "analysis_status": "FINALIZED",
-            "remaining_pending": len(queue_items),
+            "remaining_pending": _pending_analysis_count(root, queue_items),
             "screened_at": canonical.get("screened_at"),
         }
 
@@ -790,7 +803,7 @@ def _apply_record(root: Path, queue_id: str, record: dict) -> dict:
         "queue_id": queue_id,
         "decision": canonical.get("decision"),
         "analysis_status": "FINALIZED",
-        "remaining_pending": len(queue_items),
+        "remaining_pending": _pending_analysis_count(root, queue_items),
         "screened_at": canonical.get("screened_at"),
     }
 
