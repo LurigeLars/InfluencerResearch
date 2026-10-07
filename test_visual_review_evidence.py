@@ -231,8 +231,8 @@ class VisualReviewClassifierTests(unittest.TestCase):
         cmd = run.call_args.args[0]
         self.assertIn("-headers", cmd)
         headers_arg = cmd[cmd.index("-headers") + 1]
-        self.assertIn("User-Agent: fixture-agent\\r\\n", headers_arg)
-        self.assertIn("Referer: https://www.youtube.com/\\r\\n", headers_arg)
+        self.assertIn("User-Agent: fixture-agent\r\n", headers_arg)
+        self.assertIn("Referer: https://www.youtube.com/\r\n", headers_arg)
 
     def test_visual_ocr_timeout_is_nonfatal(self) -> None:
         with unittest.mock.patch("youtube_creator_evaluation.subprocess.run", side_effect=TimeoutError("timeout")):
