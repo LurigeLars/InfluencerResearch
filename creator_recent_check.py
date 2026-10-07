@@ -56,9 +56,16 @@ YOUTUBE_MAX_DISCOVERY_PER_SOURCE = _bounded_env_int(
     200,
     1200,
 )
+# New adaptive scanner caps each surface independently. If an operator still
+# carries the legacy total-cap setting, map it conservatively without allowing
+# a legacy 200-total value to recreate the old ~67-per-surface coverage hole.
+_legacy_surface_cap = max(
+    200,
+    min(400, (YOUTUBE_MAX_DISCOVERY_PER_SOURCE + 2) // 3),
+)
 YOUTUBE_MAX_DISCOVERY_PER_SURFACE = _bounded_env_int(
     "INFLUENCER_RESEARCH_YOUTUBE_MAX_DISCOVERY_PER_SURFACE",
-    max(15, YOUTUBE_MAX_DISCOVERY_PER_SOURCE // 3),
+    _legacy_surface_cap,
     15,
     400,
 )
