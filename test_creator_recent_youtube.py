@@ -216,6 +216,46 @@ class YouTubeMetadataProbeTests(unittest.TestCase):
             {"VIDEOS", "SHORTS", "STREAMS"},
         )
 
+    def test_channel_surface_enumeration_honors_independent_limits(self) -> None:
+        calls: list[tuple[str, int]] = []
+
+        def fake_surface(channel_url, *, surface, limit):
+            calls.append((surface, limit))
+            entries = [
+                {
+                    "id": f"{surface}_{index:02d}",
+                    "url": f"https://www.youtube.com/watch?v={surface}_{index:02d}",
+                    "title": surface,
+                    "published_at": None,
+                    "surface": surface.upper(),
+                }
+                for index in range(limit)
+            ]
+            return entries, {
+                "surface": surface,
+                "ok": True,
+                "returncode": 0,
+                "requested_limit": limit,
+                "entries_found": len(entries),
+                "diagnostic_tail": "",
+            }
+
+        with patch.object(recent.yte, "_enumerate_channel_surface", side_effect=fake_surface):
+            entries_by_surface, diag = recent.yte.enumerate_channel_surfaces(
+                "https://www.youtube.com/@example",
+                surface_limits={"videos": 9, "shorts": 2, "streams": 0},
+            )
+
+        self.assertEqual(sorted(calls), [("shorts", 2), ("videos", 9)])
+        self.assertEqual(len(entries_by_surface["videos"]), 9)
+        self.assertEqual(len(entries_by_surface["shorts"]), 2)
+        self.assertEqual(entries_by_surface["streams"], [])
+        self.assertEqual(diag["surface_limits"], {
+            "videos": 9,
+            "shorts": 2,
+            "streams": 0,
+        })
+
     def test_surface_coverage_does_not_stop_when_one_full_surface_is_still_recent(self) -> None:
         cutoff = recent.parse_iso_utc("2026-09-28T00:00:00+00:00")
         entries = [
@@ -282,38 +322,51 @@ class YouTubeMetadataProbeTests(unittest.TestCase):
         cutoff = recent.parse_iso_utc("2026-09-30T00:00:00+00:00")
         end = recent.parse_iso_utc("2026-10-07T00:00:00+00:00")
         probe_calls: list[list[str]] = []
+        enumeration_calls: list[dict[str, int]] = []
 
-        def fake_enumerate(url, *, limit):
-            count = 2 if limit <= 25 else 3
-            entries = [
-                {
-                    "id": f"video_{index:02d}",
-                    "url": f"https://www.youtube.com/watch?v=video_{index:02d}",
-                    "published_at": None,
-                    "surface": "VIDEOS",
-                    "title": "fixture",
+        def fake_enumerate_surfaces(url, *, surface_limits):
+            enumeration_calls.append(dict(surface_limits))
+            entries_by_surface = {
+                "videos": [],
+                "shorts": [],
+                "streams": [],
+            }
+            surfaces = {}
+            for surface in recent.yte.YOUTUBE_CHANNEL_SURFACES:
+                requested = int(surface_limits.get(surface, 0))
+                if requested <= 0:
+                    surfaces[surface] = {
+                        "surface": surface,
+                        "returncode": 0,
+                        "requested_limit": 0,
+                        "entries_found": 0,
+                    }
+                    continue
+                if surface == "videos":
+                    count = 2 if requested <= 9 else 3
+                    entries_by_surface[surface] = [
+                        {
+                            "id": f"video_{index:02d}",
+                            "url": f"https://www.youtube.com/watch?v=video_{index:02d}",
+                            "published_at": None,
+                            "surface": "VIDEOS",
+                            "title": "fixture",
+                        }
+                        for index in range(count)
+                    ]
+                    found = requested
+                else:
+                    found = 0
+                surfaces[surface] = {
+                    "surface": surface,
+                    "returncode": 0,
+                    "requested_limit": requested,
+                    "entries_found": found,
                 }
-                for index in range(count)
-            ]
-            return entries, {
-                "requested_limit": limit,
-                "surfaces": {
-                    "videos": {
-                        "returncode": 0,
-                        "requested_limit": count,
-                        "entries_found": count,
-                    },
-                    "shorts": {
-                        "returncode": 0,
-                        "requested_limit": 1,
-                        "entries_found": 0,
-                    },
-                    "streams": {
-                        "returncode": 0,
-                        "requested_limit": 1,
-                        "entries_found": 0,
-                    },
-                },
+            return entries_by_surface, {
+                "requested_limit": sum(surface_limits.values()),
+                "surfaces": surfaces,
+                "diagnostic_tail": "",
             }
 
         def fake_probe(entries, *, known_published_at=None):
@@ -343,9 +396,13 @@ class YouTubeMetadataProbeTests(unittest.TestCase):
             }
 
         with (
-            patch.object(recent.yte, "enumerate_channel", side_effect=fake_enumerate),
+            patch.object(
+                recent.yte,
+                "enumerate_channel_surfaces",
+                side_effect=fake_enumerate_surfaces,
+            ),
             patch.object(recent, "_youtube_probe_missing", side_effect=fake_probe),
-            patch.object(recent, "YOUTUBE_MAX_DISCOVERY_PER_SOURCE", 50),
+            patch.object(recent, "YOUTUBE_MAX_DISCOVERY_PER_SURFACE", 50),
         ):
             result = recent.discover_youtube(
                 {"creator_key": "dense"},
@@ -359,57 +416,78 @@ class YouTubeMetadataProbeTests(unittest.TestCase):
         self.assertEqual(probe_calls[1], ["video_02"])
         self.assertTrue(result["window_complete"])
         self.assertEqual(result["metadata_probe"]["cumulative_resolved"], 3)
+        self.assertEqual(set(enumeration_calls[0]), {"videos", "shorts", "streams"})
+        self.assertEqual(set(enumeration_calls[1]), {"videos"})
 
-    def test_youtube_dense_window_can_expand_beyond_generic_source_cap(self) -> None:
+    def test_youtube_dense_surface_expands_without_rescanning_sparse_surfaces(self) -> None:
         cutoff = recent.parse_iso_utc("2026-09-30T00:00:00+00:00")
         end = recent.parse_iso_utc("2026-10-07T00:00:00+00:00")
-        requested_limits: list[int] = []
+        calls: list[dict[str, int]] = []
 
-        def fake_enumerate(url, *, limit):
-            requested_limits.append(limit)
-            per_surface = max(1, limit // 3)
-            is_complete = limit > recent.MAX_DISCOVERY_PER_SOURCE
-            oldest = "2026-09-29T23:00:00+00:00" if is_complete else "2026-10-01T00:00:00+00:00"
-            entries = [
-                {
-                    "id": f"v{limit}",
-                    "url": f"https://www.youtube.com/watch?v=v{limit}",
-                    "published_at": oldest,
-                    "surface": "VIDEOS",
-                    "title": "fixture",
-                }
-            ]
-            diag = {
-                "requested_limit": limit,
-                "surfaces": {
-                    "videos": {
-                        "returncode": 0,
-                        "requested_limit": per_surface,
-                        "entries_found": per_surface,
-                    },
-                    "shorts": {
-                        "returncode": 0,
-                        "requested_limit": per_surface,
-                        "entries_found": 0,
-                    },
-                    "streams": {
-                        "returncode": 0,
-                        "requested_limit": per_surface,
-                        "entries_found": 0,
-                    },
-                },
+        def fake_enumerate_surfaces(url, *, surface_limits):
+            calls.append(dict(surface_limits))
+            entries_by_surface = {
+                "videos": [],
+                "shorts": [],
+                "streams": [],
             }
-            return entries, diag
+            surfaces = {}
+            for surface in recent.yte.YOUTUBE_CHANNEL_SURFACES:
+                requested = int(surface_limits.get(surface, 0))
+                if requested <= 0:
+                    surfaces[surface] = {
+                        "surface": surface,
+                        "returncode": 0,
+                        "requested_limit": 0,
+                        "entries_found": 0,
+                    }
+                    continue
+                if surface == "videos":
+                    published = (
+                        "2026-09-29T23:00:00+00:00"
+                        if requested >= 100
+                        else "2026-10-01T00:00:00+00:00"
+                    )
+                    entries_by_surface[surface] = [{
+                        "id": f"v{requested}",
+                        "url": f"https://www.youtube.com/watch?v=v{requested}",
+                        "published_at": published,
+                        "surface": "VIDEOS",
+                        "title": "fixture",
+                    }]
+                    found = requested
+                else:
+                    found = 0
+                surfaces[surface] = {
+                    "surface": surface,
+                    "returncode": 0,
+                    "requested_limit": requested,
+                    "entries_found": found,
+                }
+            return entries_by_surface, {
+                "requested_limit": sum(surface_limits.values()),
+                "surfaces": surfaces,
+                "diagnostic_tail": "",
+            }
 
         with (
-            patch.object(recent, "YOUTUBE_MAX_DISCOVERY_PER_SOURCE", 600),
-            patch.object(recent.yte, "enumerate_channel", side_effect=fake_enumerate),
-            patch.object(recent, "_youtube_probe_missing", return_value=({}, {
-                "attempted": 0,
-                "resolved": 0,
-                "returncode": 0,
-                "diagnostic_tail": "",
-            })),
+            patch.object(
+                recent.yte,
+                "enumerate_channel_surfaces",
+                side_effect=fake_enumerate_surfaces,
+            ),
+            patch.object(
+                recent,
+                "_youtube_probe_missing",
+                return_value=({}, {
+                    "attempted": 0,
+                    "resolved": 0,
+                    "returncode": 0,
+                    "diagnostic_tail": "",
+                    "cached": 0,
+                }),
+            ),
+            patch.object(recent, "YOUTUBE_MAX_DISCOVERY_PER_SURFACE", 200),
         ):
             result = recent.discover_youtube(
                 {"creator_key": "dense"},
@@ -422,53 +500,81 @@ class YouTubeMetadataProbeTests(unittest.TestCase):
         self.assertTrue(result["window_complete"])
         self.assertFalse(result["coverage_limit_reached"])
         self.assertIsNone(result["coverage_limited_reason"])
-        self.assertGreater(max(requested_limits), recent.MAX_DISCOVERY_PER_SOURCE)
-        self.assertLessEqual(max(requested_limits), 600)
+        video_limits = [call["videos"] for call in calls if "videos" in call]
+        self.assertGreater(max(video_limits), 200 // 3)
+        self.assertEqual(
+            sum(1 for call in calls if "shorts" in call),
+            1,
+        )
+        self.assertEqual(
+            sum(1 for call in calls if "streams" in call),
+            1,
+        )
+        self.assertEqual(result["surface_coverage"]["shorts"]["reason"], "SURFACE_EXHAUSTED")
+        self.assertEqual(result["surface_coverage"]["streams"]["reason"], "SURFACE_EXHAUSTED")
 
-    def test_youtube_dense_window_reports_explicit_cap_reason(self) -> None:
+    def test_youtube_dense_surface_reports_explicit_per_surface_cap_reason(self) -> None:
         cutoff = recent.parse_iso_utc("2026-09-30T00:00:00+00:00")
         end = recent.parse_iso_utc("2026-10-07T00:00:00+00:00")
 
-        def fake_enumerate(url, *, limit):
-            per_surface = max(1, limit // 3)
-            return [
-                {
-                    "id": f"v{limit}",
-                    "url": f"https://www.youtube.com/watch?v=v{limit}",
-                    "published_at": "2026-10-01T00:00:00+00:00",
-                    "surface": "VIDEOS",
-                    "title": "fixture",
+        def fake_enumerate_surfaces(url, *, surface_limits):
+            entries_by_surface = {
+                "videos": [],
+                "shorts": [],
+                "streams": [],
+            }
+            surfaces = {}
+            for surface in recent.yte.YOUTUBE_CHANNEL_SURFACES:
+                requested = int(surface_limits.get(surface, 0))
+                if requested <= 0:
+                    surfaces[surface] = {
+                        "surface": surface,
+                        "returncode": 0,
+                        "requested_limit": 0,
+                        "entries_found": 0,
+                    }
+                    continue
+                if surface == "videos":
+                    entries_by_surface[surface] = [{
+                        "id": f"v{requested}",
+                        "url": f"https://www.youtube.com/watch?v=v{requested}",
+                        "published_at": "2026-10-01T00:00:00+00:00",
+                        "surface": "VIDEOS",
+                        "title": "fixture",
+                    }]
+                    found = requested
+                else:
+                    found = 0
+                surfaces[surface] = {
+                    "surface": surface,
+                    "returncode": 0,
+                    "requested_limit": requested,
+                    "entries_found": found,
                 }
-            ], {
-                "requested_limit": limit,
-                "surfaces": {
-                    "videos": {
-                        "returncode": 0,
-                        "requested_limit": per_surface,
-                        "entries_found": per_surface,
-                    },
-                    "shorts": {
-                        "returncode": 0,
-                        "requested_limit": per_surface,
-                        "entries_found": 0,
-                    },
-                    "streams": {
-                        "returncode": 0,
-                        "requested_limit": per_surface,
-                        "entries_found": 0,
-                    },
-                },
+            return entries_by_surface, {
+                "requested_limit": sum(surface_limits.values()),
+                "surfaces": surfaces,
+                "diagnostic_tail": "",
             }
 
         with (
-            patch.object(recent, "YOUTUBE_MAX_DISCOVERY_PER_SOURCE", 50),
-            patch.object(recent.yte, "enumerate_channel", side_effect=fake_enumerate),
-            patch.object(recent, "_youtube_probe_missing", return_value=({}, {
-                "attempted": 0,
-                "resolved": 0,
-                "returncode": 0,
-                "diagnostic_tail": "",
-            })),
+            patch.object(
+                recent.yte,
+                "enumerate_channel_surfaces",
+                side_effect=fake_enumerate_surfaces,
+            ),
+            patch.object(
+                recent,
+                "_youtube_probe_missing",
+                return_value=({}, {
+                    "attempted": 0,
+                    "resolved": 0,
+                    "returncode": 0,
+                    "diagnostic_tail": "",
+                    "cached": 0,
+                }),
+            ),
+            patch.object(recent, "YOUTUBE_MAX_DISCOVERY_PER_SURFACE", 50),
         ):
             result = recent.discover_youtube(
                 {"creator_key": "dense"},
@@ -484,6 +590,13 @@ class YouTubeMetadataProbeTests(unittest.TestCase):
             result["coverage_limited_reason"],
             "DISCOVERY_LIMIT_REACHED_BEFORE_CUTOFF",
         )
+        self.assertEqual(
+            result["surface_coverage"]["videos"]["reason"],
+            "DISCOVERY_LIMIT_REACHED_BEFORE_CUTOFF",
+        )
+        self.assertTrue(result["surface_coverage"]["shorts"]["complete"])
+        self.assertTrue(result["surface_coverage"]["streams"]["complete"])
+
 
 
 if __name__ == "__main__":
