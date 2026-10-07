@@ -1719,6 +1719,24 @@ def _capture_seeked_visual_evidence(
     }
 
 
+def _seeked_fallback_progress(seeked: dict) -> dict:
+    return {
+        "visual_capture_mode": "BOUNDED_FULL_STREAM_FALLBACK",
+        "visual_capture_seek_total": None,
+        "visual_capture_seek_completed": None,
+        "visual_capture_elapsed_seconds": 0.0,
+        "visual_capture_frame_files": 0,
+        "visual_capture_child_rss_mib": 0.0,
+        "visual_capture_child_rss_peak_mib": 0.0,
+        "seeked_sampling_fallback_reason": seeked.get("error"),
+        "seeked_sampling_captured_frames": seeked.get("captured_frames"),
+        "seeked_sampling_required_frames": seeked.get("required_frames"),
+        "seeked_sampling_diagnostic_tail": str(
+            seeked.get("diagnostic_tail") or ""
+        )[-1000:],
+    }
+
+
 def capture_visual_evidence(
     root: Path,
     creator_key: str,
@@ -1789,16 +1807,7 @@ def capture_visual_evidence(
     # full-stream capture as a compatibility fallback. Explicitly reset seek
     # progress fields so merged heartbeat state reflects the active mode.
     if progress_callback is not None:
-        progress_callback({
-            "visual_capture_mode": "BOUNDED_FULL_STREAM_FALLBACK",
-            "visual_capture_seek_total": None,
-            "visual_capture_seek_completed": None,
-            "visual_capture_elapsed_seconds": 0.0,
-            "visual_capture_frame_files": 0,
-            "visual_capture_child_rss_mib": 0.0,
-            "visual_capture_child_rss_peak_mib": 0.0,
-            "seeked_sampling_fallback_reason": seeked.get("error"),
-        })
+        progress_callback(_seeked_fallback_progress(seeked))
     shutil.rmtree(evidence_dir, ignore_errors=True)
     evidence_dir.mkdir(parents=True, exist_ok=True)
 
