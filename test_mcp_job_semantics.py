@@ -235,6 +235,66 @@ class MCPJobSemanticsTests(unittest.TestCase):
 
             reconcile_mock.assert_called_once_with(status_path)
 
+
+    def test_refill_analysis_queue_when_materialized_window_drains(self) -> None:
+        with (
+            patch.object(
+                irm,
+                "_run_research_queue",
+                return_value={"ok": True, "returncode": 0, "stderr_tail": ""},
+            ) as rebuild_mock,
+            patch.object(
+                irm,
+                "list_analysis_queue",
+                return_value={"total": 26, "items": []},
+            ),
+        ):
+            result = irm._refill_analysis_queue_if_drained({
+                "written": 2,
+                "no_op": 0,
+                "failed": 0,
+                "results": [
+                    {"index": 0, "result": "WRITTEN", "remaining_pending": 1},
+                    {"index": 1, "result": "WRITTEN", "remaining_pending": 0},
+                ],
+            })
+
+        rebuild_mock.assert_called_once_with()
+        self.assertTrue(result["queue_refilled"])
+        self.assertEqual(result["remaining_pending"], 26)
+        self.assertEqual(result["results"][-1]["remaining_pending"], 26)
+
+    def test_refill_analysis_queue_does_not_rebuild_nonempty_window(self) -> None:
+        with patch.object(irm, "_run_research_queue") as rebuild_mock:
+            result = irm._refill_analysis_queue_if_drained({
+                "result": "WRITTEN",
+                "remaining_pending": 4,
+            })
+
+        rebuild_mock.assert_not_called()
+        self.assertEqual(result["remaining_pending"], 4)
+        self.assertNotIn("queue_refilled", result)
+
+    def test_refill_analysis_queue_marks_count_unknown_on_rebuild_failure(self) -> None:
+        with patch.object(
+            irm,
+            "_run_research_queue",
+            return_value={
+                "ok": False,
+                "returncode": 2,
+                "stderr_tail": "boom",
+            },
+        ):
+            result = irm._refill_analysis_queue_if_drained({
+                "result": "WRITTEN",
+                "remaining_pending": 0,
+            })
+
+        self.assertFalse(result["queue_refilled"])
+        self.assertIsNone(result["remaining_pending"])
+        self.assertEqual(result["queue_refill_error"], "RESEARCH_QUEUE_REBUILD_EXIT_2")
+
+
     def test_terminal_reconciliation_targets_completed_evaluation_items(self) -> None:
         import json
         from types import SimpleNamespace
