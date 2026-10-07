@@ -294,6 +294,96 @@ class YouTubeMetadataProbeTests(unittest.TestCase):
             recent._youtube_surface_coverage_complete(entries, diag, {}, cutoff)
         )
 
+    def test_surface_cutoff_proof_survives_nonzero_enumeration_exit(self) -> None:
+        cutoff = recent.parse_iso_utc("2026-09-28T00:00:00+00:00")
+        entries_by_surface = {
+            "videos": [
+                {
+                    "id": "video_old",
+                    "surface": "VIDEOS",
+                    "published_at": "2026-09-27T23:00:00+00:00",
+                }
+            ],
+            "shorts": [],
+            "streams": [],
+        }
+        diag = {
+            "surfaces": {
+                "videos": {
+                    "returncode": 1,
+                    "requested_limit": 20,
+                    "entries_found": 20,
+                },
+                "shorts": {
+                    "returncode": 0,
+                    "requested_limit": 5,
+                    "entries_found": 0,
+                },
+                "streams": {
+                    "returncode": 0,
+                    "requested_limit": 5,
+                    "entries_found": 0,
+                },
+            }
+        }
+
+        status = recent._youtube_surface_coverage_status(
+            entries_by_surface,
+            diag,
+            {},
+            cutoff,
+        )
+
+        self.assertTrue(status["videos"]["complete"])
+        self.assertEqual(
+            status["videos"]["reason"],
+            "CUTOFF_REACHED_WITH_ENUMERATION_WARNING",
+        )
+        self.assertEqual(status["videos"]["returncode"], 1)
+
+    def test_surface_nonzero_exit_without_cutoff_remains_fail_closed(self) -> None:
+        cutoff = recent.parse_iso_utc("2026-09-28T00:00:00+00:00")
+        entries_by_surface = {
+            "videos": [
+                {
+                    "id": "video_recent",
+                    "surface": "VIDEOS",
+                    "published_at": "2026-09-28T12:00:00+00:00",
+                }
+            ],
+            "shorts": [],
+            "streams": [],
+        }
+        diag = {
+            "surfaces": {
+                "videos": {
+                    "returncode": 1,
+                    "requested_limit": 20,
+                    "entries_found": 20,
+                },
+                "shorts": {
+                    "returncode": 0,
+                    "requested_limit": 5,
+                    "entries_found": 0,
+                },
+                "streams": {
+                    "returncode": 0,
+                    "requested_limit": 5,
+                    "entries_found": 0,
+                },
+            }
+        }
+
+        status = recent._youtube_surface_coverage_status(
+            entries_by_surface,
+            diag,
+            {},
+            cutoff,
+        )
+
+        self.assertFalse(status["videos"]["complete"])
+        self.assertEqual(status["videos"]["reason"], "DISCOVERY_ERROR")
+
     def test_successful_batches_survive_one_timeout(self) -> None:
         def fake_run(cmd, **kwargs):
             urls = [str(value) for value in cmd if str(value).startswith("https://")]
