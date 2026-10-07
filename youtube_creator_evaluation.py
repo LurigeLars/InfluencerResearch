@@ -723,27 +723,27 @@ def _enumerate_channel_surface(
     }
 
 
-def enumerate_channel(channel_url: str, *, limit: int) -> tuple[list[dict], dict]:
-    """Enumerate Videos/Shorts/Streams under one global discovery budget.
+YOUTUBE_CHANNEL_SURFACES = ("videos", "shorts", "streams")
 
-    yt-dlp applies --playlist-end independently to nested channel tabs when pointed
-    at a channel root. That made limit=15 return up to 45 entries. Split the global
-    budget across explicit surfaces instead and merge them round-robin.
-    """
+
+def enumerate_channel_surfaces(
+    channel_url: str,
+    *,
+    surface_limits: dict[str, int],
+) -> tuple[dict[str, list[dict]], dict]:
+    """Enumerate explicit YouTube channel surfaces under independent local caps."""
     channel_url = canonical_youtube_channel_url(channel_url)
-    global_limit = max(1, int(limit))
-    surfaces = ("videos", "shorts", "streams")
-    base, remainder = divmod(global_limit, len(surfaces))
-    surface_limits = {
-        surface: base + (1 if index < remainder else 0)
-        for index, surface in enumerate(surfaces)
+    limits = {
+        surface: max(0, int(surface_limits.get(surface, 0)))
+        for surface in YOUTUBE_CHANNEL_SURFACES
     }
-
     active = [
-        (surface, surface_limits[surface])
-        for surface in surfaces
-        if surface_limits[surface] > 0
+        (surface, limits[surface])
+        for surface in YOUTUBE_CHANNEL_SURFACES
+        if limits[surface] > 0
     ]
+
+    surface_results: list[tuple[list[dict], dict]] = []
     if len(active) == 1:
         surface_results = [
             _enumerate_channel_surface(
@@ -752,7 +752,7 @@ def enumerate_channel(channel_url: str, *, limit: int) -> tuple[list[dict], dict
                 limit=active[0][1],
             )
         ]
-    else:
+    elif active:
         with ThreadPoolExecutor(
             max_workers=min(YOUTUBE_SURFACE_WORKERS, len(active)),
             thread_name_prefix="youtube-surface",
@@ -768,20 +768,82 @@ def enumerate_channel(channel_url: str, *, limit: int) -> tuple[list[dict], dict
             ]
             surface_results = [future.result() for future in futures]
 
-    entries_by_surface = {
-        diag["surface"]: entries
-        for entries, diag in surface_results
+    entries_by_surface: dict[str, list[dict]] = {
+        surface: [] for surface in YOUTUBE_CHANNEL_SURFACES
     }
-    diagnostics = {
-        diag["surface"]: diag
-        for _, diag in surface_results
+    diagnostics: dict[str, dict] = {
+        surface: {
+            "surface": surface,
+            "ok": True,
+            "returncode": 0,
+            "requested_limit": limits[surface],
+            "entries_found": 0,
+            "diagnostic_tail": "",
+        }
+        for surface in YOUTUBE_CHANNEL_SURFACES
     }
+    for entries, diag in surface_results:
+        surface = str(diag.get("surface") or "").lower()
+        if surface not in entries_by_surface:
+            continue
+        entries_by_surface[surface] = entries
+        diagnostics[surface] = diag
+
+    nonzero = [
+        diagnostics[surface]
+        for surface in YOUTUBE_CHANNEL_SURFACES
+        if limits[surface] > 0
+    ]
+    diag = {
+        "ok": bool(active) and all(
+            int(item.get("returncode") or 0) == 0 for item in nonzero
+        ),
+        "returncode": next(
+            (
+                int(item.get("returncode") or 0)
+                for item in nonzero
+                if int(item.get("returncode") or 0) != 0
+            ),
+            0,
+        ),
+        "requested_limit": sum(limits.values()),
+        "entries_found": sum(len(entries_by_surface[s]) for s in YOUTUBE_CHANNEL_SURFACES),
+        "surface_limits": limits,
+        "surfaces": diagnostics,
+        "diagnostic_tail": "\n--- surface ---\n".join(
+            str(item.get("diagnostic_tail") or "")
+            for item in nonzero
+            if str(item.get("diagnostic_tail") or "").strip()
+        )[-2500:],
+    }
+    return entries_by_surface, diag
+
+
+def enumerate_channel(channel_url: str, *, limit: int) -> tuple[list[dict], dict]:
+    """Enumerate Videos/Shorts/Streams under one global discovery budget.
+
+    This compatibility wrapper preserves the historical global-budget behavior.
+    Recent-window discovery uses enumerate_channel_surfaces() so dense surfaces can
+    expand independently without borrowing budget from unrelated surfaces.
+    """
+    channel_url = canonical_youtube_channel_url(channel_url)
+    global_limit = max(1, int(limit))
+    base, remainder = divmod(global_limit, len(YOUTUBE_CHANNEL_SURFACES))
+    surface_limits = {
+        surface: base + (1 if index < remainder else 0)
+        for index, surface in enumerate(YOUTUBE_CHANNEL_SURFACES)
+    }
+
+    entries_by_surface, diag = enumerate_channel_surfaces(
+        channel_url,
+        surface_limits=surface_limits,
+    )
 
     merged: list[dict] = []
     seen: set[str] = set()
     max_depth = max((len(entries) for entries in entries_by_surface.values()), default=0)
     for index in range(max_depth):
-        for surface in surfaces:
+        for surface in YOUTUBE_CHANNEL_SURFACES:
             entries = entries_by_surface.get(surface, [])
             if index >= len(entries):
                 continue
@@ -797,29 +859,13 @@ def enumerate_channel(channel_url: str, *, limit: int) -> tuple[list[dict], dict
             break
 
     diag = {
-        "ok": bool(merged) and all(
-            int(item.get("returncode") or 0) == 0
-            for item in diagnostics.values()
-        ),
-        "returncode": next(
-            (
-                int(item.get("returncode") or 0)
-                for item in diagnostics.values()
-                if int(item.get("returncode") or 0) != 0
-            ),
-            0,
-        ),
+        **diag,
         "requested_limit": global_limit,
         "entries_found": len(merged),
         "surface_limits": surface_limits,
-        "surfaces": diagnostics,
-        "diagnostic_tail": "\n--- surface ---\n".join(
-            str(item.get("diagnostic_tail") or "")
-            for item in diagnostics.values()
-            if str(item.get("diagnostic_tail") or "").strip()
-        )[-2500:],
     }
     return merged, diag
+
 
 def _node_runtime_arg() -> tuple[list[str], dict]:
     node = shutil.which("node") or shutil.which("node.exe")
