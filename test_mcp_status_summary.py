@@ -87,6 +87,48 @@ class McpStatusSummaryTests(unittest.TestCase):
         self.assertNotIn("ingestion_results", summary)
 
 
+    def test_discovery_coverage_is_available_in_detail_and_compacted_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "status.json"
+            path.write_text(
+                json.dumps({
+                    "state": "PARTIAL",
+                    "discovery_coverage": [{
+                        "creator_key": "matfinog",
+                        "platform": "YOUTUBE",
+                        "window_complete": False,
+                        "coverage_limited_reason": "DISCOVERY_ERROR",
+                        "surface_diagnostics": {
+                            "shorts": {
+                                "requested_limit": 24,
+                                "entries_found": 20,
+                                "returncode": 1,
+                                "diagnostic_tail": "fixture warning",
+                            }
+                        },
+                    }],
+                }),
+                encoding="utf-8",
+            )
+            summary = summarize_status(path)
+
+        self.assertEqual(
+            summary["discovery_coverage"][0]["creator_key"],
+            "matfinog",
+        )
+        payload = {
+            "active": None,
+            "last": {
+                "job_id": "job-1",
+                "state": "PARTIAL",
+                "status": summary,
+            },
+        }
+        compact = compact_job_status(payload)
+        status = compact["last"]["status"]
+        self.assertEqual(status["discovery_coverage_count"], 1)
+        self.assertNotIn("discovery_coverage", status)
+
     def test_compact_job_status_drops_verbose_detail_lists_but_keeps_counts(self):
         payload = {
             "active": None,

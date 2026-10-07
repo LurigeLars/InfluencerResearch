@@ -3528,6 +3528,10 @@ def _main_impl() -> int:
                 [int(d.get("discovery_limit_used") or discovery_limit) for d in discoveries] or [discovery_limit]
             ),
             "source_count": len(discoveries),
+            "discovery_coverage": [
+                _compact_discovery_coverage(discovery)
+                for discovery in discoveries
+            ],
             "recent_found_count": len(all_recent),
             "already_ingested_count": sum(1 for x in all_recent if x["already_ingested"]),
             "pending_found_count": len(pending),
@@ -3665,6 +3669,37 @@ def _main_impl() -> int:
         print(json.dumps(status, ensure_ascii=True, indent=2))
         return 2
 
+
+
+def _compact_discovery_coverage(discovery: dict) -> dict:
+    row = {
+        "creator_key": discovery.get("creator_key"),
+        "platform": discovery.get("platform"),
+        "window_complete": bool(discovery.get("window_complete")),
+        "coverage_limited_reason": discovery.get("coverage_limited_reason"),
+        "discovery_count": int(discovery.get("discovery_count") or 0),
+        "discovery_limit_used": int(discovery.get("discovery_limit_used") or 0),
+    }
+    if isinstance(discovery.get("discovery_surface_limits"), dict):
+        row["discovery_surface_limits"] = discovery["discovery_surface_limits"]
+    if isinstance(discovery.get("surface_coverage"), dict):
+        row["surface_coverage"] = discovery["surface_coverage"]
+
+    raw_diag = discovery.get("discovery")
+    if isinstance(raw_diag, dict):
+        surface_diagnostics = {}
+        for surface, diag in (raw_diag.get("surfaces") or {}).items():
+            if not isinstance(diag, dict):
+                continue
+            surface_diagnostics[str(surface)] = {
+                "requested_limit": int(diag.get("requested_limit") or 0),
+                "entries_found": int(diag.get("entries_found") or 0),
+                "returncode": int(diag.get("returncode") or 0),
+                "diagnostic_tail": str(diag.get("diagnostic_tail") or "")[-1000:],
+            }
+        if surface_diagnostics:
+            row["surface_diagnostics"] = surface_diagnostics
+    return row
 
 
 def _recent_check_final_state(
