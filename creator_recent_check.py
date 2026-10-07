@@ -47,6 +47,12 @@ def _bounded_env_int(
 RECENT_CHECK_VERSION = "0.3.7"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
+YOUTUBE_MAX_DISCOVERY_PER_SOURCE = _bounded_env_int(
+    "INFLUENCER_RESEARCH_YOUTUBE_MAX_DISCOVERY_PER_SOURCE",
+    600,
+    200,
+    1200,
+)
 MIN_DISCOVERY_PER_SOURCE = 15
 INSTAGRAM_INITIAL_DISCOVERY_LIMIT = 60
 YOUTUBE_METADATA_PROBE_WORKERS = 2
@@ -339,10 +345,15 @@ def resolve_window(window: str, lookback_days: int | None) -> tuple[datetime, da
 
 
 
-def _next_discovery_limit(current: int) -> int:
-    """Grow discovery geometrically while keeping a hard per-source safety cap."""
+def _next_discovery_limit(
+    current: int,
+    *,
+    maximum: int = MAX_DISCOVERY_PER_SOURCE,
+) -> int:
+    """Grow discovery geometrically while keeping a hard caller-selected safety cap."""
     current = max(1, int(current))
-    return min(MAX_DISCOVERY_PER_SOURCE, max(current + MIN_DISCOVERY_PER_SOURCE, current * 2))
+    maximum = max(current, int(maximum))
+    return min(maximum, max(current + MIN_DISCOVERY_PER_SOURCE, current * 2))
 
 
 def _coverage_complete(*, discovered_count: int, requested_limit: int, known_times: list[datetime], cutoff: datetime) -> bool:
@@ -608,9 +619,12 @@ def discover_youtube(profile: dict, source: dict, cutoff: datetime, end: datetim
             "enumeration": diag,
             "metadata_probe": probe_diag,
         })
-        if window_complete or target >= MAX_DISCOVERY_PER_SOURCE:
+        if window_complete or target >= YOUTUBE_MAX_DISCOVERY_PER_SOURCE:
             break
-        target = _next_discovery_limit(target)
+        target = _next_discovery_limit(
+            target,
+            maximum=YOUTUBE_MAX_DISCOVERY_PER_SOURCE,
+        )
 
     items = []
     missing_time = []
@@ -650,7 +664,14 @@ def discover_youtube(profile: dict, source: dict, cutoff: datetime, end: datetim
         "discovery_limit_used": target,
         "discovery_passes": attempts,
         "window_complete": window_complete,
-        "coverage_limit_reached": bool(not window_complete and target >= MAX_DISCOVERY_PER_SOURCE),
+        "coverage_limit_reached": bool(
+            not window_complete and target >= YOUTUBE_MAX_DISCOVERY_PER_SOURCE
+        ),
+        "coverage_limited_reason": (
+            "DISCOVERY_LIMIT_REACHED_BEFORE_CUTOFF"
+            if not window_complete and target >= YOUTUBE_MAX_DISCOVERY_PER_SOURCE
+            else None
+        ),
         "missing_publish_time_ids": missing_time,
         "shared_channel": shared_channel,
         "required_attribution_term": required_attribution_term or None,
