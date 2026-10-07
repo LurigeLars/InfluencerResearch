@@ -503,6 +503,24 @@ class VisualReviewClassifierTests(unittest.TestCase):
         self.assertEqual(progress[0]["visual_capture_frame_files"], 1)
         self.assertGreaterEqual(progress[0]["visual_capture_child_rss_mib"], 800.0)
 
+    def test_youtube_seek_fallback_progress_exposes_bounded_diagnostics(self) -> None:
+        payload = yte._seeked_fallback_progress({
+            "error": "SEEKED_VISUAL_INSUFFICIENT_FRAMES",
+            "captured_frames": 2,
+            "required_frames": 6,
+            "diagnostic_tail": "x" * 1200,
+        })
+        self.assertEqual(payload["visual_capture_mode"], "BOUNDED_FULL_STREAM_FALLBACK")
+        self.assertEqual(
+            payload["seeked_sampling_fallback_reason"],
+            "SEEKED_VISUAL_INSUFFICIENT_FRAMES",
+        )
+        self.assertEqual(payload["seeked_sampling_captured_frames"], 2)
+        self.assertEqual(payload["seeked_sampling_required_frames"], 6)
+        self.assertEqual(len(payload["seeked_sampling_diagnostic_tail"]), 1000)
+        self.assertIsNone(payload["visual_capture_seek_total"])
+        self.assertIsNone(payload["visual_capture_seek_completed"])
+
     def test_youtube_visual_bundle_reports_ocr_progress(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
