@@ -1485,10 +1485,13 @@ def _capture_visual_snapshot(
             "error": f"{type(exc).__name__}:VISUAL_SNAPSHOT_FAILED",
         }
     ok = p.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0
+    diagnostic_tail = (p.stderr or b"")[-1200:].decode("utf-8", errors="replace")
+    if stream_url:
+        diagnostic_tail = diagnostic_tail.replace(stream_url, "<stream-url>")
     return {
         "ok": ok,
         "returncode": int(p.returncode),
-        "diagnostic_tail": (p.stderr or b"")[-1200:].decode("utf-8", errors="replace"),
+        "diagnostic_tail": diagnostic_tail,
     }
 
 
