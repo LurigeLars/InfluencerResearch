@@ -164,7 +164,15 @@ class CreatorEvaluationPipelineTests(unittest.TestCase):
 
             visual_calls = {"count": 0}
 
-            def fake_visual(root_arg, creator_key, url, video_id, *, progress_callback=None):
+            def fake_visual(
+                root_arg,
+                creator_key,
+                url,
+                video_id,
+                *,
+                duration_seconds=None,
+                progress_callback=None,
+            ):
                 visual_calls["count"] += 1
                 if video_id == "vid003":
                     raise KeyboardInterrupt("simulated cancellation")
