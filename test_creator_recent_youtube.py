@@ -423,7 +423,7 @@ class YouTubeMetadataProbeTests(unittest.TestCase):
         self.assertFalse(result["coverage_limit_reached"])
         self.assertIsNone(result["coverage_limited_reason"])
         self.assertGreater(max(requested_limits), recent.MAX_DISCOVERY_PER_SOURCE)
-        self.assertLessEqual(max(requested_limits), recent.YOUTUBE_MAX_DISCOVERY_PER_SOURCE)
+        self.assertLessEqual(max(requested_limits), 600)
 
     def test_youtube_dense_window_reports_explicit_cap_reason(self) -> None:
         cutoff = recent.parse_iso_utc("2026-09-30T00:00:00+00:00")
