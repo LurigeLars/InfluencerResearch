@@ -133,6 +133,73 @@ def _persist_creator_evaluation_accounting(status_path: Path, run_id: str) -> di
     return {"ok": True, **accounting}
 
 
+
+def _run_research_queue(*, must_include: list[str] | None = None) -> dict:
+    cmd = [sys.executable, str(APP_DIR / "research_queue.py"), "--root", str(ROOT)]
+    for shortcode in sorted(set(must_include or [])):
+        cmd.extend(["--must-include-shortcode", shortcode])
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=str(APP_DIR),
+            capture_output=True,
+            text=True,
+            timeout=120,
+            shell=False,
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "error": "RESEARCH_QUEUE_REBUILD_TIMEOUT",
+            "returncode": None,
+            "stderr_tail": "",
+        }
+    return {
+        "ok": result.returncode == 0,
+        "returncode": int(result.returncode),
+        "stderr_tail": (result.stderr or "")[-1000:],
+    }
+
+
+def _refill_analysis_queue_if_drained(result: dict) -> dict:
+    pending: int | None = None
+    pending_target: dict | None = None
+
+    if isinstance(result.get("remaining_pending"), int):
+        pending = int(result["remaining_pending"])
+        pending_target = result
+    else:
+        rows = result.get("results")
+        if isinstance(rows, list):
+            for row in reversed(rows):
+                if isinstance(row, dict) and isinstance(row.get("remaining_pending"), int):
+                    pending = int(row["remaining_pending"])
+                    pending_target = row
+                    break
+
+    if pending != 0:
+        return result
+
+    rebuild = _run_research_queue()
+    if not rebuild.get("ok"):
+        if pending_target is not None:
+            pending_target["remaining_pending"] = None
+        result["remaining_pending"] = None
+        result["queue_refilled"] = False
+        result["queue_refill_error"] = rebuild.get("error") or (
+            f"RESEARCH_QUEUE_REBUILD_EXIT_{rebuild.get('returncode')}"
+        )
+        return result
+
+    refreshed = list_analysis_queue(ROOT, limit=1, offset=0)
+    refreshed_total = int(refreshed.get("total") or 0)
+    if pending_target is not None:
+        pending_target["remaining_pending"] = refreshed_total
+    result["remaining_pending"] = refreshed_total
+    result["queue_refilled"] = True
+    return result
+
+
 def _reconcile_completed_creator_evaluation(status_path: Path) -> dict:
     status = load_json(status_path, {})
     run_id = str(status.get("evaluation_run_id") or "").strip()
@@ -176,20 +243,9 @@ def _reconcile_completed_creator_evaluation(status_path: Path) -> dict:
             "analysis_accounting": accounting,
         }
 
-    cmd = [sys.executable, str(APP_DIR / "research_queue.py"), "--root", str(ROOT)]
-    for shortcode in sorted(set(targets)):
-        cmd.extend(["--must-include-shortcode", shortcode])
-    try:
-        result = subprocess.run(
-            cmd,
-            cwd=str(APP_DIR),
-            capture_output=True,
-            text=True,
-            timeout=120,
-            shell=False,
-        )
-    except subprocess.TimeoutExpired:
-        accounting = _persist_creator_evaluation_accounting(status_path, run_id)
+    queue_result = _run_research_queue(must_include=targets)
+    accounting = _persist_creator_evaluation_accounting(status_path, run_id)
+    if queue_result.get("error") == "RESEARCH_QUEUE_REBUILD_TIMEOUT":
         return {
             "ok": False,
             "error": "DELIVERY_RECONCILIATION_TIMEOUT",
@@ -197,14 +253,10 @@ def _reconcile_completed_creator_evaluation(status_path: Path) -> dict:
             "membership_source": "STATUS_MEMBERSHIP" if membership_ids else "MANIFEST_RUN_ID",
             "analysis_accounting": accounting,
         }
-
-    accounting = _persist_creator_evaluation_accounting(status_path, run_id)
     return {
-        "ok": result.returncode == 0,
-        "returncode": int(result.returncode),
+        **queue_result,
         "target_count": len(set(targets)),
         "membership_source": "STATUS_MEMBERSHIP" if membership_ids else "MANIFEST_RUN_ID",
-        "stderr_tail": (result.stderr or "")[-1000:],
         "analysis_accounting": accounting,
     }
 
@@ -872,14 +924,13 @@ def analysis_queue_mark_insufficient(
     evidence_lineage_id: str,
 ) -> str:
     try:
-        return as_text(
-            mark_analysis_insufficient(
-                ROOT,
-                queue_id,
-                reason=reason,
-                evidence_lineage_id=evidence_lineage_id,
-            )
+        result = mark_analysis_insufficient(
+            ROOT,
+            queue_id,
+            reason=reason,
+            evidence_lineage_id=evidence_lineage_id,
         )
+        return as_text(_refill_analysis_queue_if_drained(result))
     except Exception as exc:
         return as_text({"result": "REJECTED", "queue_id": queue_id, "error": f"{type(exc).__name__}:{exc}"})
 
@@ -975,7 +1026,8 @@ def analysis_decision_record(
         "duplicate_basis": duplicate_basis,
     }
     try:
-        return as_text(record_analysis_decision(ROOT, queue_id, payload))
+        result = record_analysis_decision(ROOT, queue_id, payload)
+        return as_text(_refill_analysis_queue_if_drained(result))
     except Exception as exc:
         return as_text({"result": "REJECTED", "queue_id": queue_id, "error": f"{type(exc).__name__}:{exc}"})
 
@@ -988,7 +1040,8 @@ def analysis_decision_record(
 def analysis_decision_record_batch(items: list[AnalysisDecisionInput]) -> str:
     try:
         payload = [item.model_dump() for item in items]
-        return as_text(record_analysis_decision_batch(ROOT, payload))
+        result = record_analysis_decision_batch(ROOT, payload)
+        return as_text(_refill_analysis_queue_if_drained(result))
     except Exception as exc:
         return as_text({"result": "REJECTED", "error": f"{type(exc).__name__}:{exc}"})
 
