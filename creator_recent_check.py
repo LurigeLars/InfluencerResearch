@@ -44,7 +44,7 @@ def _bounded_env_int(
     return max(minimum, min(maximum, value))
 
 
-RECENT_CHECK_VERSION = "0.3.9"
+RECENT_CHECK_VERSION = "0.3.10"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 # Backward-compatible total-budget knob from PR #227. Recent-window discovery
@@ -605,15 +605,23 @@ def _youtube_surface_coverage_status(
         if requested <= 0:
             complete = True
             reason = "NOT_REQUESTED"
+        elif oldest is not None and oldest < cutoff:
+            # Coverage is a proof about the observed ordered window, not about
+            # yt-dlp's process exit status. If the scan already crossed the
+            # cutoff, a later unavailable/private item may make yt-dlp exit
+            # nonzero without invalidating the cutoff proof.
+            complete = True
+            reason = (
+                "CUTOFF_REACHED"
+                if returncode == 0
+                else "CUTOFF_REACHED_WITH_ENUMERATION_WARNING"
+            )
         elif returncode != 0:
             complete = False
             reason = "DISCOVERY_ERROR"
         elif found < requested:
             complete = True
             reason = "SURFACE_EXHAUSTED"
-        elif oldest is not None and oldest < cutoff:
-            complete = True
-            reason = "CUTOFF_REACHED"
         elif requested >= YOUTUBE_MAX_DISCOVERY_PER_SURFACE:
             complete = False
             reason = "DISCOVERY_LIMIT_REACHED_BEFORE_CUTOFF"
