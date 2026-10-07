@@ -69,6 +69,7 @@ def _run_youtube_subprocess_with_spawn_retry(cmd: list[str], **kwargs):
             ):
                 raise
             time.sleep(YOUTUBE_SUBPROCESS_SPAWN_RETRY_BASE_SECONDS * (2 ** attempt))
+    raise AssertionError("subprocess retry loop exhausted without return or exception")
 
 
 def utc_now() -> str:
