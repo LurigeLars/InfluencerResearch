@@ -88,7 +88,7 @@ def latest_camofox_browser_sha() -> tuple[str, str]:
 
 def current_mcp_version() -> str:
     match = re.search(
-        r"^mcp==([^\\s#]+)",
+        r"^mcp==([^\s#]+)",
         REQUIREMENTS.read_text(encoding="utf-8"),
         re.MULTILINE,
     )
@@ -100,7 +100,7 @@ def current_mcp_version() -> str:
 def latest_mcp_release() -> tuple[str, str]:
     release = github_json(f"/repos/{MCP_REPO}/releases/latest")
     tag = str(release.get("tag_name") or "").removeprefix("v")
-    if not re.fullmatch(r"\\d+\\.\\d+\\.\\d+", tag):
+    if not re.fullmatch(r"\d+\.\d+\.\d+", tag):
         raise RuntimeError("MCP Python SDK latest release tag is invalid")
     return tag, str(release.get("html_url") or "")
 
