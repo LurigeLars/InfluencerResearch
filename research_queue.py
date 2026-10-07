@@ -11,7 +11,7 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 
-SCREEN_VERSION = "0.4.7"
+SCREEN_VERSION = "0.4.8"
 ANALYSIS_OWNER = "EKONOMI"
 MIN_TRANSCRIPT_WORDS = 8
 MIN_TRANSCRIPT_CHARS = 48
@@ -471,7 +471,38 @@ def main() -> int:
     skipped_missing_transcript = 0
     manifest_changed = False
     for shortcode, item in manifest.get("items", {}).items():
-        if str(item.get("research_status") or "").upper() == "INVALID":
+        research_status = str(item.get("research_status") or "").upper()
+        if research_status == "INVALID":
+            continue
+
+        # An explicit analyst/Ekonomi insufficient-content disposition is terminal.
+        # Do not recalculate retained screenshots back to READY on a later queue
+        # rebuild. Automatically inferred insufficiency has no marked-at field and
+        # remains eligible for recovery if better evidence arrives later.
+        if (
+            research_status == "INSUFFICIENT_CONTENT"
+            and item.get("analysis_insufficient_marked_at")
+        ):
+            insufficient_content_items.append({
+                "queue_id": shortcode,
+                "creator": item.get("creator"),
+                "source_platform": item.get("source_platform"),
+                "source_id": item.get("source_id"),
+                "source_url": item.get("url"),
+                "published_at": item.get("published_at"),
+                "status": "INSUFFICIENT_CONTENT",
+                "reason": (
+                    item.get("analysis_insufficient_reason")
+                    or item.get("analysis_content_reason")
+                    or "ANALYST_MARKED_INSUFFICIENT_CONTENT"
+                ),
+                "analysis_content_status": "INSUFFICIENT_CONTENT",
+                "analysis_content_reason": (
+                    item.get("analysis_insufficient_reason")
+                    or item.get("analysis_content_reason")
+                    or "ANALYST_MARKED_INSUFFICIENT_CONTENT"
+                ),
+            })
             continue
 
         # Older Story captures used a whole-screenshot SHA when Instagram stayed
