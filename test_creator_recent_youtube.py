@@ -84,6 +84,37 @@ class YouTubeMetadataProbeTests(unittest.TestCase):
         self.assertEqual(diag["batch_count"], recent.YOUTUBE_METADATA_PROBE_WORKERS)
         self.assertEqual(diag["returncode"], 0)
 
+    def test_missing_metadata_skips_ids_already_cached(self) -> None:
+        entries = self._entries(3)
+        cached = {"video_00": "2026-10-01T00:00:00+00:00"}
+        seen: list[str] = []
+
+        def fake_run(cmd, **kwargs):
+            urls = [str(value) for value in cmd if str(value).startswith("https://")]
+            seen.extend(url.rsplit("=", 1)[-1] for url in urls)
+            return SimpleNamespace(
+                returncode=0,
+                stdout="\n".join(
+                    json.dumps({
+                        "id": url.rsplit("=", 1)[-1],
+                        "timestamp": 1790611200,
+                    })
+                    for url in urls
+                ),
+                stderr="",
+            )
+
+        with patch.object(recent.subprocess, "run", side_effect=fake_run):
+            resolved, diag = recent._youtube_probe_missing(
+                entries,
+                known_published_at=cached,
+            )
+
+        self.assertNotIn("video_00", seen)
+        self.assertEqual(set(resolved), {"video_01", "video_02"})
+        self.assertEqual(diag["attempted"], 2)
+        self.assertEqual(diag["cached"], 1)
+
     def test_metadata_probe_retries_transient_process_spawn_failure(self) -> None:
         success = SimpleNamespace(
             returncode=0,
@@ -246,6 +277,88 @@ class YouTubeMetadataProbeTests(unittest.TestCase):
         self.assertGreater(len(resolved), 0)
         self.assertLess(len(resolved), len(entries))
         self.assertIn(124, diag["batch_returncodes"])
+
+    def test_discover_youtube_reuses_probe_results_between_passes(self) -> None:
+        cutoff = recent.parse_iso_utc("2026-09-30T00:00:00+00:00")
+        end = recent.parse_iso_utc("2026-10-07T00:00:00+00:00")
+        probe_calls: list[list[str]] = []
+
+        def fake_enumerate(url, *, limit):
+            count = 2 if limit <= 25 else 3
+            entries = [
+                {
+                    "id": f"video_{index:02d}",
+                    "url": f"https://www.youtube.com/watch?v=video_{index:02d}",
+                    "published_at": None,
+                    "surface": "VIDEOS",
+                    "title": "fixture",
+                }
+                for index in range(count)
+            ]
+            return entries, {
+                "requested_limit": limit,
+                "surfaces": {
+                    "videos": {
+                        "returncode": 0,
+                        "requested_limit": count,
+                        "entries_found": count,
+                    },
+                    "shorts": {
+                        "returncode": 0,
+                        "requested_limit": 1,
+                        "entries_found": 0,
+                    },
+                    "streams": {
+                        "returncode": 0,
+                        "requested_limit": 1,
+                        "entries_found": 0,
+                    },
+                },
+            }
+
+        def fake_probe(entries, *, known_published_at=None):
+            known_published_at = known_published_at or {}
+            ids = [
+                str(entry["id"])
+                for entry in entries
+                if str(entry["id"]) not in known_published_at
+            ]
+            probe_calls.append(ids)
+            resolved = {
+                video_id: (
+                    "2026-10-01T00:00:00+00:00"
+                    if video_id != "video_02"
+                    else "2026-09-29T23:00:00+00:00"
+                )
+                for video_id in ids
+            }
+            return resolved, {
+                "attempted": len(ids),
+                "resolved": len(ids),
+                "returncode": 0,
+                "diagnostic_tail": "",
+                "worker_count": 1 if ids else 0,
+                "batch_count": 1 if ids else 0,
+                "cached": len(known_published_at),
+            }
+
+        with (
+            patch.object(recent.yte, "enumerate_channel", side_effect=fake_enumerate),
+            patch.object(recent, "_youtube_probe_missing", side_effect=fake_probe),
+            patch.object(recent, "YOUTUBE_MAX_DISCOVERY_PER_SOURCE", 50),
+        ):
+            result = recent.discover_youtube(
+                {"creator_key": "dense"},
+                {"profile_url": "https://www.youtube.com/@dense"},
+                cutoff,
+                end,
+                25,
+            )
+
+        self.assertEqual(probe_calls[0], ["video_00", "video_01"])
+        self.assertEqual(probe_calls[1], ["video_02"])
+        self.assertTrue(result["window_complete"])
+        self.assertEqual(result["metadata_probe"]["cumulative_resolved"], 3)
 
     def test_youtube_dense_window_can_expand_beyond_generic_source_cap(self) -> None:
         cutoff = recent.parse_iso_utc("2026-09-30T00:00:00+00:00")
