@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import json
 import os
 import signal
@@ -43,12 +44,12 @@ def _bounded_env_int(
     return max(minimum, min(maximum, value))
 
 
-RECENT_CHECK_VERSION = "0.3.6"
+RECENT_CHECK_VERSION = "0.3.7"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 MIN_DISCOVERY_PER_SOURCE = 15
 INSTAGRAM_INITIAL_DISCOVERY_LIMIT = 60
-YOUTUBE_METADATA_PROBE_WORKERS = 4
+YOUTUBE_METADATA_PROBE_WORKERS = 2
 # Default remains conservative. The worker count is configurable for bounded
 # capacity experiments, but the reviewed Compose deployment currently uses 2.
 DISCOVERY_BROWSER_WORKERS = _bounded_env_int(
@@ -57,7 +58,7 @@ DISCOVERY_BROWSER_WORKERS = _bounded_env_int(
     1,
     4,
 )
-DISCOVERY_NETWORK_WORKERS = 4
+DISCOVERY_NETWORK_WORKERS = 2
 INGESTION_GROUP_TIMEOUT_SECONDS = _bounded_env_int(
     "INFLUENCER_RESEARCH_INGESTION_GROUP_TIMEOUT_SECONDS",
     360,
@@ -72,6 +73,10 @@ STORY_PREFETCH_TIMEOUT_SECONDS = _bounded_env_int(
 )
 WORKER_HEARTBEAT_SECONDS = 5.0
 WORKER_POLL_SECONDS = 0.25
+SUBPROCESS_SPAWN_RETRIES = 2
+SUBPROCESS_SPAWN_RETRY_BASE_SECONDS = 0.25
+INSTAGRAM_TRANSIENT_DISCOVERY_RETRIES = 2
+INSTAGRAM_TRANSIENT_DISCOVERY_RETRY_BASE_SECONDS = 0.5
 MAX_ANALYSIS_EVIDENCE_CHARS = 6000
 STOCKHOLM_TZ = ZoneInfo("Europe/Stockholm")
 
@@ -95,6 +100,23 @@ def atomic_json(path: Path, obj: dict) -> None:
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(tmp, path)
+
+
+def _is_transient_spawn_error(exc: BaseException) -> bool:
+    return isinstance(exc, OSError) and getattr(exc, "errno", None) in {
+        errno.EAGAIN,
+        errno.ENOMEM,
+    }
+
+
+def _run_subprocess_with_spawn_retry(cmd: list[str], **kwargs):
+    for attempt in range(SUBPROCESS_SPAWN_RETRIES + 1):
+        try:
+            return subprocess.run(cmd, **kwargs)
+        except OSError as exc:
+            if not _is_transient_spawn_error(exc) or attempt >= SUBPROCESS_SPAWN_RETRIES:
+                raise
+            time.sleep(SUBPROCESS_SPAWN_RETRY_BASE_SECONDS * (2 ** attempt))
 
 
 def _terminate_process_group(proc: subprocess.Popen, *, grace_seconds: float = 2.0) -> None:
@@ -401,7 +423,7 @@ def _probe_youtube_metadata_batch(urls: list[str]) -> tuple[dict[str, str], dict
         *urls,
     ]
     try:
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=240)
+        p = _run_subprocess_with_spawn_retry(cmd, capture_output=True, text=True, timeout=240)
     except subprocess.TimeoutExpired as exc:
         return {}, {
             "attempted": len(urls),
@@ -795,13 +817,27 @@ def discover_instagram(
     discovery_ok = False
     blocked = False
     media_auth_gated = False
+    transient_retry_count = 0
+    transient_retry_total = 0
 
     while True:
-        probe = instagram.discover_reels_authenticated(
-            handle,
-            max_scan=target,
-            known_reel_times=cached_times,
-        )
+        try:
+            probe = instagram.discover_reels_authenticated(
+                handle,
+                max_scan=target,
+                known_reel_times=cached_times,
+            )
+        except Exception as exc:
+            probe = {
+                "ok": False,
+                "authenticated": False,
+                "blocked": False,
+                "media_auth_gated": False,
+                "reel_count": 0,
+                "reel_items": [],
+                "error": f"{type(exc).__name__}: {exc}",
+                "timings": {},
+            }
         entries = list(probe.get("reel_items") or [])
         timestamp_cache_size = _update_instagram_discovery_catalog(
             root,
@@ -861,6 +897,20 @@ def discover_instagram(
         })
 
         if (
+            not discovery_ok
+            and not blocked
+            and not media_auth_gated
+            and transient_retry_count < INSTAGRAM_TRANSIENT_DISCOVERY_RETRIES
+        ):
+            delay = INSTAGRAM_TRANSIENT_DISCOVERY_RETRY_BASE_SECONDS * (
+                2 ** transient_retry_count
+            )
+            transient_retry_count += 1
+            transient_retry_total += 1
+            time.sleep(delay)
+            continue
+
+        if (
             attempt_complete
             or blocked
             or media_auth_gated
@@ -868,6 +918,8 @@ def discover_instagram(
             or target >= MAX_DISCOVERY_PER_SOURCE
         ):
             break
+
+        transient_retry_count = 0
         target = _next_discovery_limit(target)
 
     items: list[dict] = []
@@ -924,6 +976,7 @@ def discover_instagram(
         ),
         "coverage_limited_reason": coverage_limited_reason,
         "missing_publish_time_ids": missing_time,
+        "transient_discovery_retry_count": transient_retry_total,
         "discovery": {
             "ok": discovery_ok,
             "authenticated": bool(probe.get("authenticated")),

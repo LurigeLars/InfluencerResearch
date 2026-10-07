@@ -271,6 +271,61 @@ class RecentInstagramTests(unittest.TestCase):
             "TimeoutError: profile navigation timed out",
         )
 
+    def test_instagram_transient_discovery_error_retries_and_proves_window(self) -> None:
+        end = datetime(2026, 10, 7, 8, 0, tzinfo=timezone.utc)
+        cutoff = end - timedelta(days=7)
+        transient = {
+            "ok": False,
+            "authenticated": True,
+            "reel_count": 0,
+            "blocked": False,
+            "media_auth_gated": False,
+            "reel_items": [],
+            "error": "TimeoutError: profile navigation timed out",
+            "timings": {},
+        }
+        recovered = {
+            "ok": True,
+            "authenticated": True,
+            "reel_count": 2,
+            "blocked": False,
+            "media_auth_gated": False,
+            "reel_items": [
+                {
+                    "url": "https://www.instagram.com/reel/RECENT123/",
+                    "published_at": (end - timedelta(hours=1)).isoformat(),
+                },
+                {
+                    "url": "https://www.instagram.com/reel/OLD456/",
+                    "published_at": (end - timedelta(days=8)).isoformat(),
+                },
+            ],
+            "error": None,
+            "timings": {},
+        }
+        with (
+            unittest.mock.patch.object(
+                crc.instagram,
+                "discover_reels_authenticated",
+                side_effect=[transient, recovered],
+            ) as run,
+            unittest.mock.patch.object(crc.time, "sleep") as sleep,
+        ):
+            result = crc.discover_instagram(
+                {"creator_key": "creator"},
+                {"profile_url": "https://www.instagram.com/example/"},
+                cutoff,
+                end,
+                15,
+            )
+
+        self.assertTrue(result["window_complete"])
+        self.assertIsNone(result["coverage_limited_reason"])
+        self.assertEqual(result["transient_discovery_retry_count"], 1)
+        self.assertEqual(run.call_count, 2)
+        sleep.assert_called_once()
+        self.assertEqual([item["source_id"] for item in result["items"]], ["RECENT123"])
+
     def test_instagram_discovery_reuses_cached_publish_times(self) -> None:
         end = datetime(2026, 9, 29, 18, 0, tzinfo=timezone.utc)
         cutoff = end - timedelta(days=1)

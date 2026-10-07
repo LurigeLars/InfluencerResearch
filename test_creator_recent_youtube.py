@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import subprocess
 import tempfile
@@ -82,6 +83,60 @@ class YouTubeMetadataProbeTests(unittest.TestCase):
         self.assertEqual(diag["worker_count"], recent.YOUTUBE_METADATA_PROBE_WORKERS)
         self.assertEqual(diag["batch_count"], recent.YOUTUBE_METADATA_PROBE_WORKERS)
         self.assertEqual(diag["returncode"], 0)
+
+    def test_metadata_probe_retries_transient_process_spawn_failure(self) -> None:
+        success = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({"id": "video_00", "timestamp": 1790611200}),
+            stderr="",
+        )
+        transient = BlockingIOError(
+            errno.EAGAIN,
+            "Resource temporarily unavailable",
+            "/usr/local/bin/python",
+        )
+        with (
+            patch.object(recent.subprocess, "run", side_effect=[transient, success]) as run,
+            patch.object(recent.time, "sleep") as sleep,
+        ):
+            resolved, diag = recent._probe_youtube_metadata_batch(
+                ["https://www.youtube.com/watch?v=video_00"]
+            )
+
+        self.assertEqual(run.call_count, 2)
+        sleep.assert_called_once()
+        self.assertEqual(diag["returncode"], 0)
+        self.assertIn("video_00", resolved)
+
+    def test_surface_enumeration_retries_transient_process_spawn_failure(self) -> None:
+        success = SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({
+                "id": "abcdefghijk",
+                "title": "fixture",
+                "timestamp": 1790611200,
+            }),
+            stderr="",
+        )
+        transient = BlockingIOError(
+            errno.EAGAIN,
+            "Resource temporarily unavailable",
+            "/usr/local/bin/python",
+        )
+        with (
+            patch.object(recent.yte.subprocess, "run", side_effect=[transient, success]) as run,
+            patch.object(recent.yte.time, "sleep") as sleep,
+        ):
+            entries, diag = recent.yte._enumerate_channel_surface(
+                "https://www.youtube.com/@example",
+                surface="videos",
+                limit=1,
+            )
+
+        self.assertEqual(run.call_count, 2)
+        sleep.assert_called_once()
+        self.assertEqual(diag["returncode"], 0)
+        self.assertEqual([entry["id"] for entry in entries], ["abcdefghijk"])
 
     def test_channel_enumeration_respects_one_global_budget(self) -> None:
         calls: list[tuple[str, int]] = []

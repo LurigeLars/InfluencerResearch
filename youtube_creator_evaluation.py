@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import errno
 import html
 import json
 import os
@@ -19,7 +20,7 @@ from evaluation_progress import heartbeat, sample_outcome, terminalize
 import video_visual_evidence as vve
 from urllib.parse import urlparse
 
-YOUTUBE_EVAL_VERSION = "0.8.5"
+YOUTUBE_EVAL_VERSION = "0.8.6"
 DEFAULT_MAX_UNPINNED_WHISPER_DURATION_SECONDS = 20 * 60
 DEFAULT_VISUAL_CAPTURE_MAX_CHILD_RSS_MB = 768
 VISUAL_CAPTURE_MAX_FRAMES_PER_BRANCH = 120
@@ -45,6 +46,29 @@ YOUTUBE_VISUAL_FORMAT_SELECTOR = (
 VISUAL_CAPTURE_POLL_SECONDS = 0.25
 VISUAL_CAPTURE_HEARTBEAT_SECONDS = 5.0
 VISUAL_CAPTURE_TIMEOUT_SECONDS = 600
+YOUTUBE_SURFACE_WORKERS = 2
+YOUTUBE_SUBPROCESS_SPAWN_RETRIES = 2
+YOUTUBE_SUBPROCESS_SPAWN_RETRY_BASE_SECONDS = 0.25
+
+
+def _is_transient_spawn_error(exc: BaseException) -> bool:
+    return isinstance(exc, OSError) and getattr(exc, "errno", None) in {
+        errno.EAGAIN,
+        errno.ENOMEM,
+    }
+
+
+def _run_youtube_subprocess_with_spawn_retry(cmd: list[str], **kwargs):
+    for attempt in range(YOUTUBE_SUBPROCESS_SPAWN_RETRIES + 1):
+        try:
+            return subprocess.run(cmd, **kwargs)
+        except OSError as exc:
+            if (
+                not _is_transient_spawn_error(exc)
+                or attempt >= YOUTUBE_SUBPROCESS_SPAWN_RETRIES
+            ):
+                raise
+            time.sleep(YOUTUBE_SUBPROCESS_SPAWN_RETRY_BASE_SECONDS * (2 ** attempt))
 
 
 def utc_now() -> str:
@@ -644,7 +668,13 @@ def _enumerate_channel_surface(
         # URL is strict-canonical YouTube and '--' terminates yt-dlp option parsing.
 
         # lgtm[py/command-line-injection]
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=120, shell=False)
+        p = _run_youtube_subprocess_with_spawn_retry(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            shell=False,
+        )
     except subprocess.TimeoutExpired as exc:
         return [], {
             "surface": surface,
@@ -724,7 +754,7 @@ def enumerate_channel(channel_url: str, *, limit: int) -> tuple[list[dict], dict
         ]
     else:
         with ThreadPoolExecutor(
-            max_workers=len(active),
+            max_workers=min(YOUTUBE_SURFACE_WORKERS, len(active)),
             thread_name_prefix="youtube-surface",
         ) as executor:
             futures = [
