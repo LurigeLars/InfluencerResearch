@@ -24,9 +24,10 @@ DEFAULT_VISUAL_CAPTURE_MAX_CHILD_RSS_MB = 768
 VISUAL_CAPTURE_MAX_FRAMES_PER_BRANCH = 120
 VISUAL_CAPTURE_FALLBACK_SAMPLE_FPS = 0.1
 YOUTUBE_VISUAL_FORMAT_SELECTOR = (
+    "bv*[height<=720][protocol!=m3u8_native][protocol!=m3u8]/"
+    "b[height<=720][protocol!=m3u8_native][protocol!=m3u8]/"
     "bv*[height<=720][protocol=m3u8_native]/"
-    "bv*[height<=720][protocol=m3u8]/"
-    "bv*[height<=720]/b[height<=720]"
+    "bv*[height<=720][protocol=m3u8]"
 )
 VISUAL_CAPTURE_POLL_SECONDS = 0.25
 VISUAL_CAPTURE_HEARTBEAT_SECONDS = 5.0
