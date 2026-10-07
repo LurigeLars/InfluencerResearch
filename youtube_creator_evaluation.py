@@ -1415,13 +1415,44 @@ def visual_capture_seek_timestamps(
     ]
 
 
+SENSITIVE_VISUAL_HEADER_NAMES = {
+    "authorization",
+    "cookie",
+    "proxy-authorization",
+}
+
+
+def _sanitize_visual_http_headers(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    sanitized: dict[str, str] = {}
+    for raw_key, raw_value in value.items():
+        key = str(raw_key or "").strip()
+        if not re.fullmatch(r"[A-Za-z0-9-]{1,64}", key):
+            continue
+        if key.lower() in SENSITIVE_VISUAL_HEADER_NAMES:
+            continue
+        header_value = re.sub(r"[\r\n]+", " ", str(raw_value or "")).strip()
+        if not header_value:
+            continue
+        sanitized[key] = header_value[:2048]
+    return sanitized
+
+
+def _visual_headers_arg(headers: dict[str, str]) -> str:
+    if not headers:
+        return ""
+    return "".join(f"{key}: {value}\r\n" for key, value in headers.items())
+
+
 def _resolve_visual_stream_url(url: str) -> dict:
     base, js_diag = _yt_base_args()
     cmd = [
         *base,
         "--no-playlist",
+        "--skip-download",
         "--format", YOUTUBE_VISUAL_SEEK_FORMAT_SELECTOR,
-        "--get-url",
+        "--dump-single-json",
         "--",
         url,
     ]
@@ -1441,18 +1472,48 @@ def _resolve_visual_stream_url(url: str) -> dict:
             "error": f"{type(exc).__name__}:VISUAL_STREAM_RESOLVE_FAILED",
             "js_runtime": js_diag,
         }
-    urls = [
-        line.strip()
-        for line in (p.stdout or "").splitlines()
-        if line.strip().startswith(("https://", "http://"))
-    ]
+
+    try:
+        info = json.loads(p.stdout or "{}")
+    except json.JSONDecodeError:
+        info = {}
+
+    selected = info if isinstance(info, dict) else {}
+    if not selected.get("url"):
+        for field in ("requested_formats", "requested_downloads"):
+            values = selected.get(field)
+            if not isinstance(values, list):
+                continue
+            candidate = next(
+                (
+                    value
+                    for value in values
+                    if isinstance(value, dict)
+                    and str(value.get("url") or "").startswith(("https://", "http://"))
+                ),
+                None,
+            )
+            if candidate is not None:
+                selected = candidate
+                break
+
+    stream_url = str(selected.get("url") or "").strip()
+    if not stream_url.startswith(("https://", "http://")):
+        stream_url = ""
+
+    headers = _sanitize_visual_http_headers(
+        selected.get("http_headers")
+        or (info.get("http_headers") if isinstance(info, dict) else {})
+    )
     diagnostic_tail = (p.stderr or "")[-2000:]
-    for resolved_url in urls:
-        diagnostic_tail = diagnostic_tail.replace(resolved_url, "<stream-url>")
+    if stream_url:
+        diagnostic_tail = diagnostic_tail.replace(stream_url, "<stream-url>")
+
     return {
-        "ok": p.returncode == 0 and bool(urls),
+        "ok": p.returncode == 0 and bool(stream_url),
         "returncode": int(p.returncode),
-        "stream_url": urls[0] if urls else None,
+        "stream_url": stream_url or None,
+        "http_headers": headers,
         "diagnostic_tail": diagnostic_tail,
         "js_runtime": js_diag,
     }
@@ -1463,6 +1524,8 @@ def _capture_visual_snapshot(
     stream_url: str,
     timestamp_s: float,
     output_path: Path,
+    *,
+    http_headers: dict[str, str] | None = None,
 ) -> dict:
     cmd = [
         ffmpeg,
@@ -1470,12 +1533,17 @@ def _capture_visual_snapshot(
         "-loglevel", "error",
         "-y",
         "-ss", f"{max(0.0, float(timestamp_s)):.3f}",
+    ]
+    headers_arg = _visual_headers_arg(http_headers or {})
+    if headers_arg:
+        cmd.extend(["-headers", headers_arg])
+    cmd.extend([
         "-i", stream_url,
         "-an",
         "-frames:v", "1",
         "-q:v", "5",
         str(output_path),
-    ]
+    ])
     try:
         p = subprocess.run(
             cmd,
@@ -1554,6 +1622,7 @@ def _capture_seeked_visual_evidence(
             stream_url,
             timestamp_s,
             frame_path,
+            http_headers=resolved.get("http_headers") or {},
         )
         if result.get("ok"):
             records.append({
