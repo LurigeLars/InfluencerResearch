@@ -402,6 +402,7 @@ class YouTubeMetadataProbeTests(unittest.TestCase):
             return entries, diag
 
         with (
+            patch.object(recent, "YOUTUBE_MAX_DISCOVERY_PER_SOURCE", 600),
             patch.object(recent.yte, "enumerate_channel", side_effect=fake_enumerate),
             patch.object(recent, "_youtube_probe_missing", return_value=({}, {
                 "attempted": 0,
