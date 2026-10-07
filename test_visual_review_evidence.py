@@ -218,7 +218,7 @@ class VisualReviewClassifierTests(unittest.TestCase):
         self.assertIn("<url>", redacted)
 
     def test_visual_ocr_timeout_is_nonfatal(self) -> None:
-        with unittest.mock.patch("youtube_creator_evaluation.subprocess.run", side_effect=TimeoutError("timeout")):
+        with unittest.mock.patch("video_visual_evidence.subprocess.run", side_effect=TimeoutError("timeout")):
             self.assertEqual(yte._ocr_visual_frame(Path("/tmp/frame.jpg")), "")
 
     def test_shared_visual_ocr_retries_block_layout_when_sparse_layout_is_empty(self) -> None:
@@ -234,7 +234,7 @@ class VisualReviewClassifierTests(unittest.TestCase):
     def test_youtube_visual_ocr_retries_block_layout_when_sparse_layout_is_empty(self) -> None:
         empty = unittest.mock.Mock(returncode=0, stdout="")
         caption = unittest.mock.Mock(returncode=0, stdout="Cheap oil doesn't mean cheap energy\n")
-        with unittest.mock.patch("youtube_creator_evaluation.subprocess.run", side_effect=[empty, caption]) as run:
+        with unittest.mock.patch("video_visual_evidence.subprocess.run", side_effect=[empty, caption]) as run:
             text = yte._ocr_visual_frame(Path("/tmp/frame.jpg"))
         self.assertEqual(text, "Cheap oil doesn't mean cheap energy")
         self.assertEqual(run.call_count, 2)
@@ -411,10 +411,10 @@ class VisualReviewClassifierTests(unittest.TestCase):
             root = Path(td)
             records = self._records(root)
             with unittest.mock.patch.object(
-                yte,
+                vve,
                 "_ocr_visual_frame",
                 return_value="NASDAQ QQQ 500 resistance support 495 volume 1.8%",
-            ), unittest.mock.patch.object(yte, "_make_contact_sheet", return_value=None):
+            ), unittest.mock.patch.object(vve, "_make_contact_sheet", return_value=None):
                 bundle = yte.build_agent_visual_bundle(
                     root, "nicholascrown", records, "ffmpeg", root
                 )
@@ -427,10 +427,10 @@ class VisualReviewClassifierTests(unittest.TestCase):
             root = Path(td)
             records = self._records(root)
             with unittest.mock.patch.object(
-                yte,
+                vve,
                 "_ocr_visual_frame",
                 return_value="Welcome back everyone today we are discussing a general market topic",
-            ), unittest.mock.patch.object(yte, "_make_contact_sheet", return_value=None):
+            ), unittest.mock.patch.object(vve, "_make_contact_sheet", return_value=None):
                 bundle = yte.build_agent_visual_bundle(
                     root, "nicholascrown", records, "ffmpeg", root
                 )
@@ -509,10 +509,10 @@ class VisualReviewClassifierTests(unittest.TestCase):
             records = self._records(root, count=4)
             progress: list[dict] = []
             with unittest.mock.patch.object(
-                yte,
+                vve,
                 "_ocr_visual_frame",
                 return_value="NASDAQ QQQ 500 support resistance 495",
-            ), unittest.mock.patch.object(yte, "_make_contact_sheet", return_value=None):
+            ), unittest.mock.patch.object(vve, "_make_contact_sheet", return_value=None):
                 bundle = yte.build_agent_visual_bundle(
                     root,
                     "nicholascrown",
@@ -564,19 +564,50 @@ class VisualReviewClassifierTests(unittest.TestCase):
         self.assertTrue(result["agent_visual_bundle"]["available"])
         self.assertTrue(updated["agent_visual_bundle"]["visual_review_recommended"])
 
-    def test_trading_fraternity_has_high_creator_prior(self) -> None:
+    def test_trading_fraternity_has_high_creator_prior_and_skips_ocr(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            records = self._records(root)
-            with unittest.mock.patch.object(yte, "_ocr_visual_frame", return_value="market update"), unittest.mock.patch.object(
-                yte, "_make_contact_sheet", return_value=None
+            records = self._records(root, count=vve.VISUAL_OCR_MAX_FRAMES)
+            with unittest.mock.patch.object(vve, "_ocr_visual_frame") as ocr, unittest.mock.patch.object(
+                vve, "_make_contact_sheet", return_value=None
             ):
                 bundle = yte.build_agent_visual_bundle(
                     root, "thetradingfraternity", records, "ffmpeg", root
                 )
+        ocr.assert_not_called()
         self.assertEqual(bundle["creator_visual_prior"], "HIGH")
         self.assertTrue(bundle["visual_review_recommended"])
+        self.assertTrue(bundle["ocr_skipped"])
+        self.assertEqual(bundle["ocr_worker_limit"], 0)
         self.assertIn("CREATOR_CHART_PRIOR", bundle["visual_review_reason"])
+
+
+    def test_youtube_visual_bundle_uses_shared_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            records = self._records(root, count=3)
+            expected = {
+                "available": True,
+                "creator_visual_prior": "HIGH",
+                "visual_review_recommended": True,
+                "ocr_skipped": True,
+                "representative_frames": [],
+            }
+            with unittest.mock.patch.object(
+                vve,
+                "build_agent_visual_bundle",
+                return_value=expected,
+            ) as shared:
+                result = yte.build_agent_visual_bundle(
+                    root,
+                    "thetradingfraternity",
+                    records,
+                    "ffmpeg",
+                    root,
+                )
+        self.assertIs(result, expected)
+        shared.assert_called_once()
+
 
 
 class EvidenceToolContractTests(unittest.TestCase):
