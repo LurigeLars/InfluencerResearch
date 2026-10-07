@@ -16,9 +16,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 from evaluation_progress import heartbeat, sample_outcome, terminalize
+import video_visual_evidence as vve
 from urllib.parse import urlparse
 
-YOUTUBE_EVAL_VERSION = "0.8.4"
+YOUTUBE_EVAL_VERSION = "0.8.5"
 DEFAULT_MAX_UNPINNED_WHISPER_DURATION_SECONDS = 20 * 60
 DEFAULT_VISUAL_CAPTURE_MAX_CHILD_RSS_MB = 768
 VISUAL_CAPTURE_MAX_FRAMES_PER_BRANCH = 120
@@ -1188,120 +1189,45 @@ def _merge_frame_records(records: list[dict]) -> list[dict]:
 
 
 
-VISUAL_OCR_MAX_FRAMES = 24
-VISUAL_REPRESENTATIVE_FRAMES = 12
-VISUAL_OCR_TIMEOUT_SECONDS = 8
-CHART_HEAVY_CREATORS = {"thetradingfraternity"}
-CHART_TERMS = {
-    "support", "resistance", "breakout", "trend", "vwap", "volume", "price",
-    "yield", "spread", "gamma", "delta", "rsi", "macd", "moving average",
-    "s&p", "spx", "nasdaq", "qqq", "dow", "dxy", "vix", "btc", "eth",
-    "treasury", "crude", "oil", "gold", "copper", "eur", "usd", "jpy",
-}
+# Visual-review policy and OCR/post-processing live in video_visual_evidence.py.
+# Keep these aliases/wrappers for backward-compatible tests and callers while
+# avoiding a second drifting implementation in the YouTube evaluator.
+VISUAL_OCR_MAX_FRAMES = vve.VISUAL_OCR_MAX_FRAMES
+VISUAL_REPRESENTATIVE_FRAMES = vve.VISUAL_REPRESENTATIVE_FRAMES
+VISUAL_OCR_TIMEOUT_SECONDS = vve.VISUAL_OCR_TIMEOUT_SECONDS
+CHART_HEAVY_CREATORS = vve.CHART_HEAVY_CREATORS
+CHART_TERMS = vve.CHART_TERMS
 
 
 def _sample_visual_records(records: list[dict], limit: int = VISUAL_OCR_MAX_FRAMES) -> list[dict]:
-    if len(records) <= limit:
-        return list(records)
-    scene = [row for row in records if row.get("reason") == "SCENE_CHANGE"]
-    selected: list[dict] = []
-    seen: set[str] = set()
-    for row in scene[: max(1, limit // 2)]:
-        key = str(row.get("file") or "")
-        if key and key not in seen:
-            selected.append(row)
-            seen.add(key)
-    remaining = max(0, limit - len(selected))
-    if remaining:
-        step = max(1, len(records) // remaining)
-        for row in records[::step]:
-            key = str(row.get("file") or "")
-            if key and key not in seen:
-                selected.append(row)
-                seen.add(key)
-            if len(selected) >= limit:
-                break
-    return sorted(selected[:limit], key=lambda row: float(row.get("timestamp_s") or 0.0))
+    return vve._sample_visual_records(records, limit=limit)
 
 
 def _run_tesseract_visual_frame(path: Path, psm: int) -> str:
-    try:
-        proc = subprocess.run(
-            ["tesseract", str(path), "stdout", "-l", "eng", "--psm", str(psm)],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=VISUAL_OCR_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ""
-    if proc.returncode != 0:
-        return ""
-    return re.sub(r"[ \t]+", " ", str(proc.stdout or "")).strip()
+    return vve._run_tesseract_visual_frame(path, psm)
 
 
 def _ocr_visual_frame(path: Path) -> str:
-    # Sparse-text mode works well for charts and dashboards. Social-video captions
-    # can instead present as one coherent block, so retry with a block layout only
-    # when the sparse pass found nothing.
-    text = _run_tesseract_visual_frame(path, 11)
-    if text:
-        return text
-    return _run_tesseract_visual_frame(path, 6)
+    return vve._ocr_visual_frame(path)
 
 
 def _score_visual_frame_text(text: str) -> tuple[float, list[str]]:
-    normalized = str(text or "").strip()
-    lower = normalized.casefold()
-    if not normalized:
-        return 0.0, []
-    reasons: list[str] = []
-    term_hits = sum(1 for term in CHART_TERMS if term in lower)
-    numeric_hits = len(re.findall(r"(?:[$€£]?\d+(?:[.,]\d+)?%?)", normalized))
-    ticker_hits = len(re.findall(r"\b[A-Z]{2,6}\b", normalized))
-    score = min(10.0, term_hits * 1.8 + min(numeric_hits, 8) * 0.35 + min(ticker_hits, 6) * 0.25)
-    if term_hits:
-        reasons.append("CHART_TERMS")
-    if numeric_hits >= 3:
-        reasons.append("NUMERIC_DENSITY")
-    if ticker_hits >= 2:
-        reasons.append("TICKER_DENSITY")
-    if len(normalized.split()) >= 18:
-        score += 0.5
-        reasons.append("TEXT_DENSITY")
-    return round(min(score, 10.0), 2), reasons
+    return vve.score_visual_frame_text(text)
 
 
-def _make_contact_sheet(ffmpeg: str, evidence_dir: Path, selected: list[dict]) -> Path | None:
-    if not selected:
-        return None
-    staging = evidence_dir / ".contact_sheet"
-    shutil.rmtree(staging, ignore_errors=True)
-    staging.mkdir(parents=True, exist_ok=True)
-    try:
-        for idx, row in enumerate(selected[:VISUAL_REPRESENTATIVE_FRAMES]):
-            source = Path(row["file"])
-            shutil.copyfile(source, staging / f"frame_{idx:02d}.jpg")
-        out = evidence_dir / "contact_sheet.jpg"
-        try:
-            proc = subprocess.run(
-                [
-                    ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
-                    "-framerate", "1", "-i", str(staging / "frame_%02d.jpg"),
-                    "-vf", "scale=320:-2,tile=4x3:padding=4:margin=4",
-                    "-frames:v", "1", str(out),
-                ],
-                capture_output=True,
-                timeout=60,
-                check=False,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return None
-        return out if proc.returncode == 0 and out.exists() else None
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
+def _make_contact_sheet(
+    ffmpeg: str,
+    evidence_dir: Path,
+    selected: list[dict],
+    *,
+    progress_callback: Callable[[dict], None] | None = None,
+) -> Path | None:
+    return vve._make_contact_sheet(
+        ffmpeg,
+        evidence_dir,
+        selected,
+        progress_callback=progress_callback,
+    )
 
 
 def build_agent_visual_bundle(
@@ -1313,92 +1239,15 @@ def build_agent_visual_bundle(
     *,
     progress_callback: Callable[[dict], None] | None = None,
 ) -> dict:
-    sampled = _sample_visual_records(records)
-    if progress_callback is not None:
-        progress_callback({
-            "visual_postprocess_phase": "OCR",
-            "visual_ocr_total": len(sampled),
-            "visual_ocr_completed": 0,
-        })
-
-    def inspect(row: dict) -> dict:
-        text = _ocr_visual_frame(Path(row["file"]))
-        score, reasons = _score_visual_frame_text(text)
-        return {**row, "ocr_text": text[:1200], "visual_score": score, "visual_signals": reasons}
-
-    if sampled:
-        inspected = []
-        with ThreadPoolExecutor(max_workers=min(4, len(sampled)), thread_name_prefix="visual-ocr") as executor:
-            for completed_count, row in enumerate(executor.map(inspect, sampled), start=1):
-                inspected.append(row)
-                if progress_callback is not None:
-                    progress_callback({
-                        "visual_postprocess_phase": "OCR",
-                        "visual_ocr_total": len(sampled),
-                        "visual_ocr_completed": completed_count,
-                    })
-    else:
-        inspected = []
-
-    strong = [row for row in inspected if float(row.get("visual_score") or 0.0) >= 2.0]
-    chart_ratio = (len(strong) / len(inspected)) if inspected else 0.0
-    creator_prior = "HIGH" if creator_key.casefold() in CHART_HEAVY_CREATORS else "NEUTRAL"
-    content_signal = len(strong) >= 2 or chart_ratio >= 0.20
-    visual_review_recommended = bool(inspected) and (creator_prior == "HIGH" or content_signal)
-    reasons: list[str] = []
-    if creator_prior == "HIGH":
-        reasons.append("CREATOR_CHART_PRIOR")
-    if content_signal:
-        reasons.append("PER_VIDEO_VISUAL_SIGNAL")
-
-    ranked = sorted(
-        inspected,
-        key=lambda row: (float(row.get("visual_score") or 0.0), row.get("reason") == "SCENE_CHANGE"),
-        reverse=True,
+    return vve.build_agent_visual_bundle(
+        root,
+        creator_key,
+        records,
+        ffmpeg,
+        evidence_dir,
+        progress_callback=progress_callback,
     )
-    representative = ranked[:VISUAL_REPRESENTATIVE_FRAMES]
-    if len(representative) < min(3, len(inspected)):
-        representative = inspected[: min(VISUAL_REPRESENTATIVE_FRAMES, len(inspected))]
-    representative = sorted(representative, key=lambda row: float(row.get("timestamp_s") or 0.0))
-    if progress_callback is not None:
-        progress_callback({
-            "visual_postprocess_phase": "CONTACT_SHEET",
-            "visual_ocr_total": len(sampled),
-            "visual_ocr_completed": len(inspected),
-        })
-    contact_sheet = _make_contact_sheet(ffmpeg, evidence_dir, representative)
-    if progress_callback is not None:
-        progress_callback({
-            "visual_postprocess_phase": "DONE",
-            "visual_ocr_total": len(sampled),
-            "visual_ocr_completed": len(inspected),
-        })
 
-    def public_row(row: dict) -> dict:
-        path = Path(row["file"])
-        return {
-            "timestamp_s": row.get("timestamp_s"),
-            "reason": row.get("reason"),
-            "file": str(path.relative_to(root)),
-            "visual_score": row.get("visual_score"),
-            "visual_signals": row.get("visual_signals"),
-            "ocr_text": row.get("ocr_text"),
-        }
-
-    return {
-        "available": bool(representative),
-        "analysis_mode_recommended": (
-            "TRANSCRIPT_PLUS_VISUAL_REVIEW" if visual_review_recommended else "TRANSCRIPT_ONLY"
-        ),
-        "visual_review_recommended": visual_review_recommended,
-        "visual_review_reason": reasons,
-        "creator_visual_prior": creator_prior,
-        "sampled_frame_count": len(inspected),
-        "chart_signal_frame_count": len(strong),
-        "chart_signal_ratio": round(chart_ratio, 3),
-        "contact_sheet": str(contact_sheet.relative_to(root)) if contact_sheet else None,
-        "representative_frames": [public_row(row) for row in representative],
-    }
 
 def visual_capture_seek_timestamps(
     duration_seconds: Any,

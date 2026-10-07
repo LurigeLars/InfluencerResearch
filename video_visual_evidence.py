@@ -7,10 +7,10 @@ import re
 import shutil
 import subprocess
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 VISUAL_REVIEW_POLICY_VERSION = 5
 VISUAL_CAPTURE_VERSION = 1
@@ -18,6 +18,8 @@ VISUAL_OCR_MAX_FRAMES = 24
 VISUAL_OCR_WORKERS = 2
 VISUAL_REPRESENTATIVE_FRAMES = 12
 VISUAL_OCR_TIMEOUT_SECONDS = 8
+VISUAL_POSTPROCESS_HEARTBEAT_SECONDS = 2.0
+VISUAL_CONTACT_SHEET_TIMEOUT_SECONDS = 60
 CHART_HEAVY_CREATORS = {"thetradingfraternity"}
 CHART_TERMS = {
     "support", "resistance", "breakout", "trend", "vwap", "volume", "price",
@@ -248,7 +250,13 @@ def classify_visual_review(
     }
 
 
-def _make_contact_sheet(ffmpeg: str, evidence_dir: Path, selected: list[dict]) -> Path | None:
+def _make_contact_sheet(
+    ffmpeg: str,
+    evidence_dir: Path,
+    selected: list[dict],
+    *,
+    progress_callback: Callable[[dict], None] | None = None,
+) -> Path | None:
     if not selected:
         return None
     staging = evidence_dir / ".contact_sheet"
@@ -259,21 +267,52 @@ def _make_contact_sheet(ffmpeg: str, evidence_dir: Path, selected: list[dict]) -
             source = Path(row["file"])
             shutil.copyfile(source, staging / f"frame_{idx:02d}.jpg")
         out = evidence_dir / "contact_sheet.jpg"
+        cmd = [
+            ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+            "-framerate", "1", "-i", str(staging / "frame_%02d.jpg"),
+            "-vf", "scale=320:-2,tile=4x3:padding=4:margin=4",
+            "-frames:v", "1", str(out),
+        ]
+        proc = None
+        started = time.monotonic()
+        last_heartbeat: float | None = None
         try:
-            proc = subprocess.run(
-                [
-                    ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
-                    "-framerate", "1", "-i", str(staging / "frame_%02d.jpg"),
-                    "-vf", "scale=320:-2,tile=4x3:padding=4:margin=4",
-                    "-frames:v", "1", str(out),
-                ],
-                capture_output=True,
-                timeout=60,
-                check=False,
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
             )
+            while proc.poll() is None:
+                now = time.monotonic()
+                elapsed = max(0.0, now - started)
+                if progress_callback is not None and (
+                    last_heartbeat is None
+                    or now - last_heartbeat >= VISUAL_POSTPROCESS_HEARTBEAT_SECONDS
+                ):
+                    progress_callback({
+                        "visual_postprocess_phase": "CONTACT_SHEET",
+                        "visual_postprocess_elapsed_seconds": round(elapsed, 1),
+                    })
+                    last_heartbeat = now
+                if elapsed > VISUAL_CONTACT_SHEET_TIMEOUT_SECONDS:
+                    with contextlib.suppress(OSError, ProcessLookupError):
+                        proc.terminate()
+                    with contextlib.suppress(subprocess.TimeoutExpired, OSError):
+                        proc.wait(timeout=2)
+                    if proc.poll() is None:
+                        with contextlib.suppress(OSError, ProcessLookupError):
+                            proc.kill()
+                    return None
+                time.sleep(0.25)
         except (OSError, subprocess.SubprocessError):
             return None
-        return out if proc.returncode == 0 and out.exists() else None
+        finally:
+            if proc is not None and proc.poll() is None:
+                with contextlib.suppress(OSError, ProcessLookupError):
+                    proc.terminate()
+                with contextlib.suppress(subprocess.TimeoutExpired, OSError):
+                    proc.wait(timeout=2)
+        return out if proc is not None and proc.returncode == 0 and out.exists() else None
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 
@@ -287,6 +326,7 @@ def build_agent_visual_bundle(
     *,
     media_path: Path | None = None,
     transcript_text: str = "",
+    progress_callback: Callable[[dict], None] | None = None,
 ) -> dict:
     creator_prior_high = creator_key.casefold() in CHART_HEAVY_CREATORS
     transcript_lower = str(transcript_text or "").casefold()
@@ -305,6 +345,14 @@ def build_agent_visual_bundle(
         return {**row, "ocr_text": text[:1200], "visual_score": score, "visual_signals": reasons}
 
     ocr_skipped = bool(sampled) and policy_already_requires_visual_review
+    if progress_callback is not None:
+        progress_callback({
+            "visual_postprocess_phase": "OCR",
+            "visual_ocr_total": 0 if ocr_skipped else len(sampled),
+            "visual_ocr_completed": 0,
+            "visual_ocr_skipped": ocr_skipped,
+        })
+
     if ocr_skipped:
         inspected = [
             {
@@ -316,15 +364,46 @@ def build_agent_visual_bundle(
             for row in sampled
         ]
     elif sampled:
+        inspected_by_index: list[dict | None] = [None] * len(sampled)
+        worker_count = min(VISUAL_OCR_WORKERS, len(sampled))
         with ThreadPoolExecutor(
-            max_workers=min(VISUAL_OCR_WORKERS, len(sampled)),
+            max_workers=worker_count,
             thread_name_prefix="visual-ocr",
         ) as executor:
-            inspected = list(executor.map(inspect, sampled))
+            futures = {
+                executor.submit(inspect, row): index
+                for index, row in enumerate(sampled)
+            }
+            completed_count = 0
+            for future in as_completed(futures):
+                index = futures[future]
+                try:
+                    inspected_by_index[index] = future.result()
+                except Exception:
+                    row = sampled[index]
+                    inspected_by_index[index] = {
+                        **row,
+                        "ocr_text": "",
+                        "visual_score": 0.0,
+                        "visual_signals": [],
+                    }
+                completed_count += 1
+                if progress_callback is not None:
+                    progress_callback({
+                        "visual_postprocess_phase": "OCR",
+                        "visual_ocr_total": len(sampled),
+                        "visual_ocr_completed": completed_count,
+                        "visual_ocr_worker_limit": worker_count,
+                    })
+        inspected = [row for row in inspected_by_index if row is not None]
     else:
         inspected = []
 
-    policy = classify_visual_review(creator_key, inspected, transcript_text=transcript_text)
+    policy = classify_visual_review(
+        creator_key,
+        inspected,
+        transcript_text=transcript_text,
+    )
     ranked = sorted(
         inspected,
         key=lambda row: (
@@ -336,8 +415,31 @@ def build_agent_visual_bundle(
     representative = ranked[:VISUAL_REPRESENTATIVE_FRAMES]
     if len(representative) < min(3, len(inspected)):
         representative = inspected[: min(VISUAL_REPRESENTATIVE_FRAMES, len(inspected))]
-    representative = sorted(representative, key=lambda row: float(row.get("timestamp_s") or 0.0))
-    contact_sheet = _make_contact_sheet(ffmpeg, evidence_dir, representative)
+    representative = sorted(
+        representative,
+        key=lambda row: float(row.get("timestamp_s") or 0.0),
+    )
+
+    if progress_callback is not None:
+        progress_callback({
+            "visual_postprocess_phase": "CONTACT_SHEET",
+            "visual_ocr_total": 0 if ocr_skipped else len(sampled),
+            "visual_ocr_completed": 0 if ocr_skipped else len(inspected),
+            "visual_ocr_skipped": ocr_skipped,
+        })
+    contact_sheet = _make_contact_sheet(
+        ffmpeg,
+        evidence_dir,
+        representative,
+        progress_callback=progress_callback,
+    )
+    if progress_callback is not None:
+        progress_callback({
+            "visual_postprocess_phase": "DONE",
+            "visual_ocr_total": 0 if ocr_skipped else len(sampled),
+            "visual_ocr_completed": 0 if ocr_skipped else len(inspected),
+            "visual_ocr_skipped": ocr_skipped,
+        })
 
     def public_row(row: dict) -> dict:
         path = Path(row["file"])
