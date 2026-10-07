@@ -37,11 +37,13 @@ class VisualReviewClassifierTests(unittest.TestCase):
             yte.VISUAL_CAPTURE_FALLBACK_SAMPLE_FPS,
         )
 
-    def test_youtube_visual_transport_prefers_hls_before_direct_formats(self) -> None:
+    def test_youtube_visual_transport_prefers_direct_before_hls_formats(self) -> None:
         selector = yte.YOUTUBE_VISUAL_FORMAT_SELECTOR
-        self.assertIn("protocol=m3u8_native", selector)
-        self.assertIn("protocol=m3u8", selector)
-        self.assertTrue(selector.endswith("bv*[height<=720]/b[height<=720]"))
+        direct = "bv*[height<=720][protocol!=m3u8_native][protocol!=m3u8]"
+        hls = "bv*[height<=720][protocol=m3u8_native]"
+        self.assertIn(direct, selector)
+        self.assertIn(hls, selector)
+        self.assertLess(selector.index(direct), selector.index(hls))
 
     def test_visual_ocr_timeout_is_nonfatal(self) -> None:
         with unittest.mock.patch("youtube_creator_evaluation.subprocess.run", side_effect=TimeoutError("timeout")):
