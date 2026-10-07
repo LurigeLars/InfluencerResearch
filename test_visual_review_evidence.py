@@ -64,8 +64,16 @@ class VisualReviewClassifierTests(unittest.TestCase):
             progress: list[dict] = []
             signed_url = "https://media.example/video.m3u8?signature=secret"
 
-            def fake_snapshot(_ffmpeg, stream_url, timestamp_s, output_path):
+            def fake_snapshot(
+                _ffmpeg,
+                stream_url,
+                timestamp_s,
+                output_path,
+                *,
+                http_headers=None,
+            ):
                 self.assertEqual(stream_url, signed_url)
+                self.assertEqual(http_headers, {"User-Agent": "fixture-agent"})
                 output_path.write_bytes(b"jpeg")
                 return {"ok": True, "returncode": 0, "diagnostic_tail": ""}
 
@@ -76,6 +84,7 @@ class VisualReviewClassifierTests(unittest.TestCase):
                     "ok": True,
                     "returncode": 0,
                     "stream_url": signed_url,
+                    "http_headers": {"User-Agent": "fixture-agent"},
                     "diagnostic_tail": "",
                     "js_runtime": {"enabled": True},
                 },
@@ -159,11 +168,20 @@ class VisualReviewClassifierTests(unittest.TestCase):
         self.assertIn("SEEKED_VISUAL_TOTAL_TIMEOUT", result["diagnostic_tail"])
         snapshot.assert_not_called()
 
-    def test_youtube_stream_resolver_redacts_url_from_diagnostics(self) -> None:
+    def test_youtube_stream_resolver_keeps_safe_headers_in_memory(self) -> None:
         signed_url = "https://media.example/video.mp4?signature=secret"
         proc = unittest.mock.Mock(
             returncode=0,
-            stdout=signed_url + "\n",
+            stdout=json.dumps({
+                "url": signed_url,
+                "http_headers": {
+                    "User-Agent": "fixture-agent",
+                    "Referer": "https://www.youtube.com/",
+                    "Cookie": "secret-cookie",
+                    "Authorization": "Bearer secret",
+                    "Bad\\r\\nHeader": "ignored",
+                },
+            }),
             stderr="selected " + signed_url,
         )
         with unittest.mock.patch.object(
@@ -177,8 +195,16 @@ class VisualReviewClassifierTests(unittest.TestCase):
             result = yte._resolve_visual_stream_url(
                 "https://www.youtube.com/watch?v=vid001"
             )
+
         self.assertTrue(result["ok"])
         self.assertEqual(result["stream_url"], signed_url)
+        self.assertEqual(
+            result["http_headers"],
+            {
+                "User-Agent": "fixture-agent",
+                "Referer": "https://www.youtube.com/",
+            },
+        )
         self.assertNotIn(signed_url, result["diagnostic_tail"])
         self.assertIn("<stream-url>", result["diagnostic_tail"])
 
@@ -188,16 +214,25 @@ class VisualReviewClassifierTests(unittest.TestCase):
         with unittest.mock.patch(
             "youtube_creator_evaluation.subprocess.run",
             return_value=proc,
-        ):
+        ) as run:
             result = yte._capture_visual_snapshot(
                 "ffmpeg",
                 signed_url,
                 12.5,
                 Path("/tmp/nonexistent-frame.jpg"),
+                http_headers={
+                    "User-Agent": "fixture-agent",
+                    "Referer": "https://www.youtube.com/",
+                },
             )
         self.assertFalse(result["ok"])
         self.assertNotIn(signed_url, result["diagnostic_tail"])
         self.assertIn("<stream-url>", result["diagnostic_tail"])
+        cmd = run.call_args.args[0]
+        self.assertIn("-headers", cmd)
+        headers_arg = cmd[cmd.index("-headers") + 1]
+        self.assertIn("User-Agent: fixture-agent\\r\\n", headers_arg)
+        self.assertIn("Referer: https://www.youtube.com/\\r\\n", headers_arg)
 
     def test_visual_ocr_timeout_is_nonfatal(self) -> None:
         with unittest.mock.patch("youtube_creator_evaluation.subprocess.run", side_effect=TimeoutError("timeout")):
