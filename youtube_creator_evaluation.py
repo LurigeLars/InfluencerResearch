@@ -26,6 +26,7 @@ VISUAL_CAPTURE_FALLBACK_SAMPLE_FPS = 0.1
 VISUAL_CAPTURE_SEEK_MAX_FRAMES = 24
 VISUAL_CAPTURE_SEEK_MIN_FRAMES = 6
 VISUAL_CAPTURE_SEEK_TIMEOUT_SECONDS = 25
+VISUAL_CAPTURE_SEEK_TOTAL_TIMEOUT_SECONDS = 120
 YOUTUBE_VISUAL_FORMAT_SELECTOR = (
     "bv*[height<=720][protocol!=m3u8_native][protocol!=m3u8]/"
     "b[height<=720][protocol!=m3u8_native][protocol!=m3u8]/"
@@ -1523,7 +1524,27 @@ def _capture_seeked_visual_evidence(
     started = time.monotonic()
     records: list[dict] = []
     failures: list[dict] = []
+    minimum = min(
+        len(timestamps),
+        max(3, (len(timestamps) + 1) // 2),
+    )
     for index, timestamp_s in enumerate(timestamps, start=1):
+        elapsed_before = time.monotonic() - started
+        if elapsed_before > VISUAL_CAPTURE_SEEK_TOTAL_TIMEOUT_SECONDS:
+            failures.append({
+                "timestamp_s": round(float(timestamp_s), 3),
+                "error": "SEEKED_VISUAL_TOTAL_TIMEOUT",
+            })
+            break
+
+        remaining_after_this = len(timestamps) - index
+        if len(records) + remaining_after_this + 1 < minimum:
+            failures.append({
+                "timestamp_s": round(float(timestamp_s), 3),
+                "error": "SEEKED_VISUAL_MINIMUM_NO_LONGER_REACHABLE",
+            })
+            break
+
         frame_path = evidence_dir / f"timeline_{index:03d}.jpg"
         result = _capture_visual_snapshot(
             ffmpeg,
@@ -1555,10 +1576,6 @@ def _capture_seeked_visual_evidence(
                 "visual_capture_frame_files": len(records),
             })
 
-    minimum = min(
-        len(timestamps),
-        max(3, (len(timestamps) + 1) // 2),
-    )
     if len(records) < minimum:
         return {
             "ok": False,
@@ -1593,6 +1610,7 @@ def _capture_seeked_visual_evidence(
         "visual_capture_seek_samples_requested": len(timestamps),
         "visual_capture_seek_samples_completed": len(records),
         "visual_capture_seek_timeout_seconds": VISUAL_CAPTURE_SEEK_TIMEOUT_SECONDS,
+        "visual_capture_seek_total_timeout_seconds": VISUAL_CAPTURE_SEEK_TOTAL_TIMEOUT_SECONDS,
         "visual_capture_stream_selector": YOUTUBE_VISUAL_SEEK_FORMAT_SELECTOR,
         "visual_capture_elapsed_seconds": elapsed,
         "visual_capture_child_rss_peak_mib": None,
