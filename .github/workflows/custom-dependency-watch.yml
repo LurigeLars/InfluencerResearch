@@ -2,7 +2,7 @@ name: Custom dependency watch
 
 on:
   schedule:
-    - cron: "17 7 * * 1"
+    - cron: "45 6 * * *"
   workflow_dispatch:
 
 permissions:
