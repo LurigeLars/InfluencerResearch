@@ -24,6 +24,25 @@ class VisualReviewClassifierTests(unittest.TestCase):
             })
         return rows
 
+    def test_youtube_visual_frame_budget_spans_known_duration(self) -> None:
+        self.assertEqual(yte.VISUAL_CAPTURE_MAX_FRAMES_PER_BRANCH, 120)
+        self.assertEqual(yte.visual_capture_sample_fps(60), 1.0)
+        self.assertAlmostEqual(
+            yte.visual_capture_sample_fps(720),
+            120 / 720,
+            places=6,
+        )
+        self.assertEqual(
+            yte.visual_capture_sample_fps(None),
+            yte.VISUAL_CAPTURE_FALLBACK_SAMPLE_FPS,
+        )
+
+    def test_youtube_visual_transport_prefers_hls_before_direct_formats(self) -> None:
+        selector = yte.YOUTUBE_VISUAL_FORMAT_SELECTOR
+        self.assertIn("protocol=m3u8_native", selector)
+        self.assertIn("protocol=m3u8", selector)
+        self.assertTrue(selector.endswith("bv*[height<=720]/b[height<=720]"))
+
     def test_visual_ocr_timeout_is_nonfatal(self) -> None:
         with unittest.mock.patch("youtube_creator_evaluation.subprocess.run", side_effect=TimeoutError("timeout")):
             self.assertEqual(yte._ocr_visual_frame(Path("/tmp/frame.jpg")), "")

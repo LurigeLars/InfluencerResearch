@@ -18,9 +18,16 @@ from typing import Any, Callable
 from evaluation_progress import heartbeat, sample_outcome, terminalize
 from urllib.parse import urlparse
 
-YOUTUBE_EVAL_VERSION = "0.8.1"
+YOUTUBE_EVAL_VERSION = "0.8.2"
 DEFAULT_MAX_UNPINNED_WHISPER_DURATION_SECONDS = 20 * 60
 DEFAULT_VISUAL_CAPTURE_MAX_CHILD_RSS_MB = 768
+VISUAL_CAPTURE_MAX_FRAMES_PER_BRANCH = 120
+VISUAL_CAPTURE_FALLBACK_SAMPLE_FPS = 0.1
+YOUTUBE_VISUAL_FORMAT_SELECTOR = (
+    "bv*[height<=720][protocol=m3u8_native]/"
+    "bv*[height<=720][protocol=m3u8]/"
+    "bv*[height<=720]/b[height<=720]"
+)
 VISUAL_CAPTURE_POLL_SECONDS = 0.25
 VISUAL_CAPTURE_HEARTBEAT_SECONDS = 5.0
 VISUAL_CAPTURE_TIMEOUT_SECONDS = 600
@@ -57,6 +64,16 @@ def visual_capture_max_child_rss_bytes() -> int:
     except (TypeError, ValueError):
         value = DEFAULT_VISUAL_CAPTURE_MAX_CHILD_RSS_MB
     return max(256, min(value, 1024)) * 1024 * 1024
+
+
+def visual_capture_sample_fps(duration_seconds: Any) -> float:
+    try:
+        duration = float(duration_seconds)
+    except (TypeError, ValueError):
+        return VISUAL_CAPTURE_FALLBACK_SAMPLE_FPS
+    if duration <= 0:
+        return VISUAL_CAPTURE_FALLBACK_SAMPLE_FPS
+    return min(1.0, VISUAL_CAPTURE_MAX_FRAMES_PER_BRANCH / duration)
 
 
 def _process_tree_rss_bytes(pid: int) -> int:
@@ -1367,6 +1384,7 @@ def capture_visual_evidence(
     url: str,
     video_id: str,
     *,
+    duration_seconds: float | None = None,
     progress_callback: Callable[[dict], None] | None = None,
 ) -> dict:
     evidence_dir = root / "output" / creator_key / "youtube" / "frames" / video_id
@@ -1413,23 +1431,28 @@ def capture_visual_evidence(
     evidence_dir.mkdir(parents=True, exist_ok=True)
 
     base, js_diag = _yt_base_args()
+    sample_fps = visual_capture_sample_fps(duration_seconds)
     yt_cmd = [
         *base,
-        "--format", "bv*[height<=720]/b[height<=720]",
+        "--format", YOUTUBE_VISUAL_FORMAT_SELECTOR,
         "--output", "-",
         url,
     ]
     filter_complex = (
         "[0:v]split=2[fpssrc][scsrc];"
-        "[fpssrc]fps=1,mpdecimate,showinfo@fps[fpsout];"
+        f"[fpssrc]fps={sample_fps:.8f},mpdecimate,showinfo@fps[fpsout];"
         "[scsrc]select='gt(scene\\,0.30)',showinfo@scene[scout]"
     )
     ff_cmd = [
         ffmpeg, "-hide_banner", "-loglevel", "info", "-y",
         "-i", "pipe:0",
         "-filter_complex", filter_complex,
-        "-map", "[fpsout]", "-fps_mode", "vfr", "-q:v", "5", str(evidence_dir / "fps_%05d.jpg"),
-        "-map", "[scout]", "-fps_mode", "vfr", "-q:v", "5", str(evidence_dir / "scene_%05d.jpg"),
+        "-map", "[fpsout]",
+        "-frames:v", str(VISUAL_CAPTURE_MAX_FRAMES_PER_BRANCH),
+        "-fps_mode", "vfr", "-q:v", "5", str(evidence_dir / "fps_%05d.jpg"),
+        "-map", "[scout]",
+        "-frames:v", str(VISUAL_CAPTURE_MAX_FRAMES_PER_BRANCH),
+        "-fps_mode", "vfr", "-q:v", "5", str(evidence_dir / "scene_%05d.jpg"),
     ]
 
     with tempfile.NamedTemporaryFile(mode="w+b", delete=False) as yt_err:
@@ -1533,7 +1556,12 @@ def capture_visual_evidence(
         })
 
     summary = {
-        "capture_strategy": "1FPS_PLUS_SCENE_CHANGE_WITH_FFMPEG_MPDECIMATE_BOUNDED_RSS",
+        "capture_strategy": "BOUNDED_TIMELINE_PLUS_SCENE_CHANGE_WITH_FFMPEG_MPDECIMATE",
+        "visual_capture_sample_fps": round(sample_fps, 6),
+        "visual_capture_duration_seconds": duration_seconds,
+        "visual_capture_max_frames_per_branch": VISUAL_CAPTURE_MAX_FRAMES_PER_BRANCH,
+        "visual_capture_max_candidate_frames": VISUAL_CAPTURE_MAX_FRAMES_PER_BRANCH * 2,
+        "visual_capture_format_selector": YOUTUBE_VISUAL_FORMAT_SELECTOR,
         "visual_capture_elapsed_seconds": monitor.get("elapsed_seconds"),
         "visual_capture_child_rss_peak_mib": monitor.get("child_rss_peak_mib"),
         "visual_capture_memory_limit_mib": monitor.get("memory_limit_mib"),
@@ -1724,7 +1752,10 @@ def main() -> int:
         },
         "evidence_policy": {
             "transcript_order": ["YOUTUBE_CAPTIONS", "FASTER_WHISPER_FALLBACK"],
-            "visual_capture": "1FPS_PLUS_SCENE_CHANGE_WITH_BOUNDED_CHILD_RSS",
+            "visual_capture": "BOUNDED_TIMELINE_PLUS_SCENE_CHANGE",
+            "visual_capture_max_frames_per_branch": VISUAL_CAPTURE_MAX_FRAMES_PER_BRANCH,
+            "visual_capture_max_candidate_frames": VISUAL_CAPTURE_MAX_FRAMES_PER_BRANCH * 2,
+            "visual_capture_format_selector": YOUTUBE_VISUAL_FORMAT_SELECTOR,
             "visual_capture_max_child_rss_mb": round(
                 visual_capture_max_child_rss_bytes() / (1024 * 1024)
             ),
@@ -1911,6 +1942,7 @@ def main() -> int:
             creator_key,
             url,
             vid,
+            duration_seconds=_duration_seconds({"duration": entry.get("duration_seconds")}),
             progress_callback=visual_capture_progress,
         )
         if not visual.get("ok"):
