@@ -139,6 +139,7 @@ def _run_subprocess_with_spawn_retry(cmd: list[str], **kwargs):
             if not _is_transient_spawn_error(exc) or attempt >= SUBPROCESS_SPAWN_RETRIES:
                 raise
             time.sleep(SUBPROCESS_SPAWN_RETRY_BASE_SECONDS * (2 ** attempt))
+    raise AssertionError("subprocess retry loop exhausted without return or exception")
 
 
 def _terminate_process_group(proc: subprocess.Popen, *, grace_seconds: float = 2.0) -> None:
