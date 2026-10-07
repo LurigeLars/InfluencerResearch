@@ -41,7 +41,6 @@ YOUTUBE_VISUAL_FORMAT_SELECTOR = (
     "bv*[height<=720][protocol=m3u8_native]/"
     "bv*[height<=720][protocol=m3u8]"
 )
-YOUTUBE_VISUAL_SEEK_FORMAT_SELECTOR = YOUTUBE_VISUAL_FORMAT_SELECTOR
 VISUAL_CAPTURE_POLL_SECONDS = 0.25
 VISUAL_CAPTURE_HEARTBEAT_SECONDS = 5.0
 VISUAL_CAPTURE_TIMEOUT_SECONDS = 600
@@ -146,6 +145,14 @@ def _tail_text_file(path: Path, max_bytes: int = 8192) -> str:
             return handle.read(max_bytes).decode("utf-8", errors="replace")
     except OSError:
         return ""
+
+
+def _redact_urls(text: str) -> str:
+    return re.sub(
+        r"https?://[^\s\"'<>]+",
+        "<url>",
+        str(text or ""),
+    )
 
 
 def _showinfo_times_file(path: Path, instance: str) -> list[float]:
@@ -1516,7 +1523,7 @@ def _download_visual_stage_source(
                 _terminate_process(proc)
 
         returncode = int(proc.poll() if proc is not None and proc.poll() is not None else -1)
-        diagnostic_tail = _tail_text_file(err_path, 2000)
+        diagnostic_tail = _redact_urls(_tail_text_file(err_path, 2000))
         candidates = [
             path
             for path in _visual_stage_artifacts(evidence_dir)
@@ -1564,7 +1571,7 @@ def _download_visual_stage_source(
         return {
             "ok": False,
             "error": f"{type(exc).__name__}:VISUAL_STAGE_DOWNLOAD_FAILED",
-            "diagnostic_tail": _tail_text_file(err_path, 2000),
+            "diagnostic_tail": _redact_urls(_tail_text_file(err_path, 2000)),
             "js_runtime": js_diag,
         }
     finally:
