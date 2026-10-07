@@ -247,6 +247,130 @@ class YouTubeMetadataProbeTests(unittest.TestCase):
         self.assertLess(len(resolved), len(entries))
         self.assertIn(124, diag["batch_returncodes"])
 
+    def test_youtube_dense_window_can_expand_beyond_generic_source_cap(self) -> None:
+        cutoff = recent.parse_iso_utc("2026-09-30T00:00:00+00:00")
+        end = recent.parse_iso_utc("2026-10-07T00:00:00+00:00")
+        requested_limits: list[int] = []
+
+        def fake_enumerate(url, *, limit):
+            requested_limits.append(limit)
+            per_surface = max(1, limit // 3)
+            is_complete = limit > recent.MAX_DISCOVERY_PER_SOURCE
+            oldest = "2026-09-29T23:00:00+00:00" if is_complete else "2026-10-01T00:00:00+00:00"
+            entries = [
+                {
+                    "id": f"v{limit}",
+                    "url": f"https://www.youtube.com/watch?v=v{limit}",
+                    "published_at": oldest,
+                    "surface": "VIDEOS",
+                    "title": "fixture",
+                }
+            ]
+            diag = {
+                "requested_limit": limit,
+                "surfaces": {
+                    "videos": {
+                        "returncode": 0,
+                        "requested_limit": per_surface,
+                        "entries_found": per_surface,
+                    },
+                    "shorts": {
+                        "returncode": 0,
+                        "requested_limit": per_surface,
+                        "entries_found": 0,
+                    },
+                    "streams": {
+                        "returncode": 0,
+                        "requested_limit": per_surface,
+                        "entries_found": 0,
+                    },
+                },
+            }
+            return entries, diag
+
+        with (
+            patch.object(recent.yte, "enumerate_channel", side_effect=fake_enumerate),
+            patch.object(recent, "_youtube_probe_missing", return_value=({}, {
+                "attempted": 0,
+                "resolved": 0,
+                "returncode": 0,
+                "diagnostic_tail": "",
+            })),
+        ):
+            result = recent.discover_youtube(
+                {"creator_key": "dense"},
+                {"profile_url": "https://www.youtube.com/@dense"},
+                cutoff,
+                end,
+                25,
+            )
+
+        self.assertTrue(result["window_complete"])
+        self.assertFalse(result["coverage_limit_reached"])
+        self.assertIsNone(result["coverage_limited_reason"])
+        self.assertGreater(max(requested_limits), recent.MAX_DISCOVERY_PER_SOURCE)
+        self.assertLessEqual(max(requested_limits), recent.YOUTUBE_MAX_DISCOVERY_PER_SOURCE)
+
+    def test_youtube_dense_window_reports_explicit_cap_reason(self) -> None:
+        cutoff = recent.parse_iso_utc("2026-09-30T00:00:00+00:00")
+        end = recent.parse_iso_utc("2026-10-07T00:00:00+00:00")
+
+        def fake_enumerate(url, *, limit):
+            per_surface = max(1, limit // 3)
+            return [
+                {
+                    "id": f"v{limit}",
+                    "url": f"https://www.youtube.com/watch?v=v{limit}",
+                    "published_at": "2026-10-01T00:00:00+00:00",
+                    "surface": "VIDEOS",
+                    "title": "fixture",
+                }
+            ], {
+                "requested_limit": limit,
+                "surfaces": {
+                    "videos": {
+                        "returncode": 0,
+                        "requested_limit": per_surface,
+                        "entries_found": per_surface,
+                    },
+                    "shorts": {
+                        "returncode": 0,
+                        "requested_limit": per_surface,
+                        "entries_found": 0,
+                    },
+                    "streams": {
+                        "returncode": 0,
+                        "requested_limit": per_surface,
+                        "entries_found": 0,
+                    },
+                },
+            }
+
+        with (
+            patch.object(recent, "YOUTUBE_MAX_DISCOVERY_PER_SOURCE", 50),
+            patch.object(recent.yte, "enumerate_channel", side_effect=fake_enumerate),
+            patch.object(recent, "_youtube_probe_missing", return_value=({}, {
+                "attempted": 0,
+                "resolved": 0,
+                "returncode": 0,
+                "diagnostic_tail": "",
+            })),
+        ):
+            result = recent.discover_youtube(
+                {"creator_key": "dense"},
+                {"profile_url": "https://www.youtube.com/@dense"},
+                cutoff,
+                end,
+                25,
+            )
+
+        self.assertFalse(result["window_complete"])
+        self.assertTrue(result["coverage_limit_reached"])
+        self.assertEqual(
+            result["coverage_limited_reason"],
+            "DISCOVERY_LIMIT_REACHED_BEFORE_CUTOFF",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
