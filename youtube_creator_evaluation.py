@@ -18,16 +18,26 @@ from typing import Any, Callable
 from evaluation_progress import heartbeat, sample_outcome, terminalize
 from urllib.parse import urlparse
 
-YOUTUBE_EVAL_VERSION = "0.8.2"
+YOUTUBE_EVAL_VERSION = "0.8.3"
 DEFAULT_MAX_UNPINNED_WHISPER_DURATION_SECONDS = 20 * 60
 DEFAULT_VISUAL_CAPTURE_MAX_CHILD_RSS_MB = 768
 VISUAL_CAPTURE_MAX_FRAMES_PER_BRANCH = 120
 VISUAL_CAPTURE_FALLBACK_SAMPLE_FPS = 0.1
+VISUAL_CAPTURE_SEEK_MAX_FRAMES = 24
+VISUAL_CAPTURE_SEEK_MIN_FRAMES = 6
+VISUAL_CAPTURE_SEEK_TIMEOUT_SECONDS = 25
+VISUAL_CAPTURE_SEEK_TOTAL_TIMEOUT_SECONDS = 120
 YOUTUBE_VISUAL_FORMAT_SELECTOR = (
     "bv*[height<=720][protocol!=m3u8_native][protocol!=m3u8]/"
     "b[height<=720][protocol!=m3u8_native][protocol!=m3u8]/"
     "bv*[height<=720][protocol=m3u8_native]/"
     "bv*[height<=720][protocol=m3u8]"
+)
+YOUTUBE_VISUAL_SEEK_FORMAT_SELECTOR = (
+    "bv*[height<=720][protocol=m3u8_native]/"
+    "bv*[height<=720][protocol=m3u8]/"
+    "bv*[height<=720][protocol!=m3u8_native][protocol!=m3u8]/"
+    "b[height<=720][protocol!=m3u8_native][protocol!=m3u8]"
 )
 VISUAL_CAPTURE_POLL_SECONDS = 0.25
 VISUAL_CAPTURE_HEARTBEAT_SECONDS = 5.0
@@ -1379,6 +1389,271 @@ def build_agent_visual_bundle(
         "representative_frames": [public_row(row) for row in representative],
     }
 
+def visual_capture_seek_timestamps(
+    duration_seconds: Any,
+    *,
+    max_frames: int = VISUAL_CAPTURE_SEEK_MAX_FRAMES,
+) -> list[float]:
+    try:
+        duration = float(duration_seconds)
+    except (TypeError, ValueError):
+        return []
+    if duration <= 0:
+        return []
+    bounded_max = max(1, int(max_frames))
+    requested = max(
+        VISUAL_CAPTURE_SEEK_MIN_FRAMES,
+        int(duration // 15.0) + 1,
+    )
+    count = min(bounded_max, requested)
+    usable_end = max(0.0, duration - 0.5)
+    if count == 1:
+        return [round(usable_end / 2.0, 3)]
+    return [
+        round(((index + 0.5) / count) * usable_end, 3)
+        for index in range(count)
+    ]
+
+
+def _resolve_visual_stream_url(url: str) -> dict:
+    base, js_diag = _yt_base_args()
+    cmd = [
+        *base,
+        "--no-playlist",
+        "--format", YOUTUBE_VISUAL_SEEK_FORMAT_SELECTOR,
+        "--get-url",
+        "--",
+        url,
+    ]
+    try:
+        # URL is canonical YouTube input and shell=False prevents option text
+        # from becoming executable syntax.
+        p = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            shell=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {
+            "ok": False,
+            "error": f"{type(exc).__name__}:VISUAL_STREAM_RESOLVE_FAILED",
+            "js_runtime": js_diag,
+        }
+    urls = [
+        line.strip()
+        for line in (p.stdout or "").splitlines()
+        if line.strip().startswith(("https://", "http://"))
+    ]
+    diagnostic_tail = (p.stderr or "")[-2000:]
+    for resolved_url in urls:
+        diagnostic_tail = diagnostic_tail.replace(resolved_url, "<stream-url>")
+    return {
+        "ok": p.returncode == 0 and bool(urls),
+        "returncode": int(p.returncode),
+        "stream_url": urls[0] if urls else None,
+        "diagnostic_tail": diagnostic_tail,
+        "js_runtime": js_diag,
+    }
+
+
+def _capture_visual_snapshot(
+    ffmpeg: str,
+    stream_url: str,
+    timestamp_s: float,
+    output_path: Path,
+) -> dict:
+    cmd = [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel", "error",
+        "-y",
+        "-ss", f"{max(0.0, float(timestamp_s)):.3f}",
+        "-i", stream_url,
+        "-an",
+        "-frames:v", "1",
+        "-q:v", "5",
+        str(output_path),
+    ]
+    try:
+        p = subprocess.run(
+            cmd,
+            capture_output=True,
+            timeout=VISUAL_CAPTURE_SEEK_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return {
+            "ok": False,
+            "error": f"{type(exc).__name__}:VISUAL_SNAPSHOT_FAILED",
+        }
+    ok = p.returncode == 0 and output_path.exists() and output_path.stat().st_size > 0
+    diagnostic_tail = (p.stderr or b"")[-1200:].decode("utf-8", errors="replace")
+    if stream_url:
+        diagnostic_tail = diagnostic_tail.replace(stream_url, "<stream-url>")
+    return {
+        "ok": ok,
+        "returncode": int(p.returncode),
+        "diagnostic_tail": diagnostic_tail,
+    }
+
+
+def _capture_seeked_visual_evidence(
+    root: Path,
+    creator_key: str,
+    url: str,
+    video_id: str,
+    ffmpeg: str,
+    evidence_dir: Path,
+    index_path: Path,
+    *,
+    duration_seconds: float | None,
+    progress_callback: Callable[[dict], None] | None,
+) -> dict:
+    timestamps = visual_capture_seek_timestamps(duration_seconds)
+    if not timestamps:
+        return {"ok": False, "error": "SEEKED_VISUAL_DURATION_UNAVAILABLE"}
+
+    resolved = _resolve_visual_stream_url(url)
+    stream_url = resolved.get("stream_url")
+    if not resolved.get("ok") or not isinstance(stream_url, str):
+        return {
+            "ok": False,
+            "error": "SEEKED_VISUAL_STREAM_UNAVAILABLE",
+            "diagnostic_tail": resolved.get("diagnostic_tail"),
+        }
+
+    started = time.monotonic()
+    records: list[dict] = []
+    failures: list[dict] = []
+    minimum = min(
+        len(timestamps),
+        max(3, (len(timestamps) + 1) // 2),
+    )
+    for index, timestamp_s in enumerate(timestamps, start=1):
+        elapsed_before = time.monotonic() - started
+        if elapsed_before > VISUAL_CAPTURE_SEEK_TOTAL_TIMEOUT_SECONDS:
+            failures.append({
+                "timestamp_s": round(float(timestamp_s), 3),
+                "error": "SEEKED_VISUAL_TOTAL_TIMEOUT",
+            })
+            break
+
+        remaining_after_this = len(timestamps) - index
+        if len(records) + remaining_after_this + 1 < minimum:
+            failures.append({
+                "timestamp_s": round(float(timestamp_s), 3),
+                "error": "SEEKED_VISUAL_MINIMUM_NO_LONGER_REACHABLE",
+            })
+            break
+
+        frame_path = evidence_dir / f"timeline_{index:03d}.jpg"
+        result = _capture_visual_snapshot(
+            ffmpeg,
+            stream_url,
+            timestamp_s,
+            frame_path,
+        )
+        if result.get("ok"):
+            records.append({
+                "timestamp_s": round(float(timestamp_s), 3),
+                "reason": "TIMELINE_SAMPLE",
+                "file": frame_path,
+                "size_bytes": frame_path.stat().st_size,
+            })
+        else:
+            failures.append({
+                "timestamp_s": round(float(timestamp_s), 3),
+                "error": result.get("error") or "VISUAL_SNAPSHOT_FAILED",
+                "returncode": result.get("returncode"),
+                "diagnostic_tail": result.get("diagnostic_tail"),
+            })
+
+        if progress_callback is not None:
+            progress_callback({
+                "visual_capture_mode": "SEEKED_TIMELINE_SNAPSHOTS",
+                "visual_capture_elapsed_seconds": round(time.monotonic() - started, 1),
+                "visual_capture_seek_total": len(timestamps),
+                "visual_capture_seek_completed": index,
+                "visual_capture_frame_files": len(records),
+            })
+
+    if len(records) < minimum:
+        return {
+            "ok": False,
+            "error": "SEEKED_VISUAL_INSUFFICIENT_FRAMES",
+            "captured_frames": len(records),
+            "required_frames": minimum,
+            "diagnostic_tail": str(failures[-3:])[-2000:],
+        }
+
+    agent_visual_bundle = build_agent_visual_bundle(
+        root,
+        creator_key,
+        records,
+        ffmpeg,
+        evidence_dir,
+        progress_callback=progress_callback,
+    )
+
+    frames = [
+        {
+            "timestamp_s": row["timestamp_s"],
+            "reason": row["reason"],
+            "file": str(Path(row["file"]).relative_to(root)),
+            "size_bytes": row["size_bytes"],
+        }
+        for row in records
+    ]
+    elapsed = round(time.monotonic() - started, 1)
+    summary = {
+        "capture_strategy": "SEEKED_TIMELINE_SNAPSHOTS",
+        "visual_capture_duration_seconds": duration_seconds,
+        "visual_capture_seek_samples_requested": len(timestamps),
+        "visual_capture_seek_samples_completed": len(records),
+        "visual_capture_seek_timeout_seconds": VISUAL_CAPTURE_SEEK_TIMEOUT_SECONDS,
+        "visual_capture_seek_total_timeout_seconds": VISUAL_CAPTURE_SEEK_TOTAL_TIMEOUT_SECONDS,
+        "visual_capture_stream_selector": YOUTUBE_VISUAL_SEEK_FORMAT_SELECTOR,
+        "visual_capture_elapsed_seconds": elapsed,
+        "visual_capture_child_rss_peak_mib": None,
+        "visual_capture_memory_limit_mib": round(
+            visual_capture_max_child_rss_bytes() / (1024 * 1024),
+            1,
+        ),
+        "candidate_frames": len(records),
+        "retained_frames": len(frames),
+        "scene_change_frames": 0,
+        "one_fps_frames": 0,
+        "timeline_sample_frames": len(frames),
+        "video_persisted": False,
+        "agent_visual_bundle": agent_visual_bundle,
+    }
+    index = {
+        "schema_version": 1,
+        "app_version": YOUTUBE_EVAL_VERSION,
+        "source_platform": "YOUTUBE",
+        "source_url": url,
+        "video_id": video_id,
+        "generated_at": utc_now(),
+        "summary": summary,
+        "frames": frames,
+        "agent_visual_bundle": agent_visual_bundle,
+        "diagnostics": {
+            "stream_resolver_returncode": resolved.get("returncode"),
+            "stream_resolver_tail": resolved.get("diagnostic_tail"),
+            "stream_resolver_js_runtime": resolved.get("js_runtime"),
+            "snapshot_failures": failures,
+        },
+    }
+    atomic_json(index_path, index)
+    return {
+        "ok": True,
+        "index": index_path,
+        **summary,
+    }
+
+
 def capture_visual_evidence(
     root: Path,
     creator_key: str,
@@ -1429,6 +1704,25 @@ def capture_visual_evidence(
 
     if evidence_dir.exists():
         shutil.rmtree(evidence_dir, ignore_errors=True)
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+
+    seeked = _capture_seeked_visual_evidence(
+        root,
+        creator_key,
+        url,
+        video_id,
+        ffmpeg,
+        evidence_dir,
+        index_path,
+        duration_seconds=duration_seconds,
+        progress_callback=progress_callback,
+    )
+    if seeked.get("ok"):
+        return seeked
+
+    # Fail closed on the optimized path, then preserve the existing bounded
+    # full-stream capture as a compatibility fallback.
+    shutil.rmtree(evidence_dir, ignore_errors=True)
     evidence_dir.mkdir(parents=True, exist_ok=True)
 
     base, js_diag = _yt_base_args()
@@ -1563,6 +1857,8 @@ def capture_visual_evidence(
         "visual_capture_max_frames_per_branch": VISUAL_CAPTURE_MAX_FRAMES_PER_BRANCH,
         "visual_capture_max_candidate_frames": VISUAL_CAPTURE_MAX_FRAMES_PER_BRANCH * 2,
         "visual_capture_format_selector": YOUTUBE_VISUAL_FORMAT_SELECTOR,
+        "seeked_sampling_fallback_reason": seeked.get("error"),
+        "seeked_sampling_fallback_diagnostic_tail": seeked.get("diagnostic_tail"),
         "visual_capture_elapsed_seconds": monitor.get("elapsed_seconds"),
         "visual_capture_child_rss_peak_mib": monitor.get("child_rss_peak_mib"),
         "visual_capture_memory_limit_mib": monitor.get("memory_limit_mib"),

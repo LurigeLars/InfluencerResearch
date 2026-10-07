@@ -45,6 +45,160 @@ class VisualReviewClassifierTests(unittest.TestCase):
         self.assertIn(hls, selector)
         self.assertLess(selector.index(direct), selector.index(hls))
 
+    def test_youtube_seek_timestamps_are_bounded_and_spread(self) -> None:
+        short = yte.visual_capture_seek_timestamps(60)
+        long = yte.visual_capture_seek_timestamps(900)
+        self.assertEqual(len(short), yte.VISUAL_CAPTURE_SEEK_MIN_FRAMES)
+        self.assertEqual(len(long), yte.VISUAL_CAPTURE_SEEK_MAX_FRAMES)
+        self.assertEqual(short, sorted(short))
+        self.assertGreater(short[0], 0)
+        self.assertLess(short[-1], 60)
+        self.assertLess(long[-1], 900)
+
+    def test_youtube_seeked_capture_does_not_persist_signed_stream_url(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            evidence_dir = root / "output" / "creator" / "youtube" / "frames" / "vid001"
+            evidence_dir.mkdir(parents=True)
+            index_path = evidence_dir / "visual_index.json"
+            progress: list[dict] = []
+            signed_url = "https://media.example/video.m3u8?signature=secret"
+
+            def fake_snapshot(_ffmpeg, stream_url, timestamp_s, output_path):
+                self.assertEqual(stream_url, signed_url)
+                output_path.write_bytes(b"jpeg")
+                return {"ok": True, "returncode": 0, "diagnostic_tail": ""}
+
+            with unittest.mock.patch.object(
+                yte,
+                "_resolve_visual_stream_url",
+                return_value={
+                    "ok": True,
+                    "returncode": 0,
+                    "stream_url": signed_url,
+                    "diagnostic_tail": "",
+                    "js_runtime": {"enabled": True},
+                },
+            ), unittest.mock.patch.object(
+                yte,
+                "_capture_visual_snapshot",
+                side_effect=fake_snapshot,
+            ), unittest.mock.patch.object(
+                yte,
+                "build_agent_visual_bundle",
+                return_value={
+                    "available": True,
+                    "analysis_mode_recommended": "TRANSCRIPT_PLUS_VISUAL_REVIEW",
+                    "visual_review_recommended": True,
+                    "visual_review_reason": ["CREATOR_CHART_PRIOR"],
+                    "creator_visual_prior": "HIGH",
+                    "representative_frames": [],
+                },
+            ):
+                result = yte._capture_seeked_visual_evidence(
+                    root,
+                    "creator",
+                    "https://www.youtube.com/watch?v=vid001",
+                    "vid001",
+                    "ffmpeg",
+                    evidence_dir,
+                    index_path,
+                    duration_seconds=60,
+                    progress_callback=progress.append,
+                )
+
+            persisted = index_path.read_text(encoding="utf-8")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["capture_strategy"], "SEEKED_TIMELINE_SNAPSHOTS")
+        self.assertEqual(result["retained_frames"], yte.VISUAL_CAPTURE_SEEK_MIN_FRAMES)
+        self.assertNotIn(signed_url, persisted)
+        self.assertEqual(
+            progress[-1]["visual_capture_seek_completed"],
+            yte.VISUAL_CAPTURE_SEEK_MIN_FRAMES,
+        )
+
+    def test_youtube_seeked_capture_has_total_time_budget(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            evidence_dir = root / "frames"
+            evidence_dir.mkdir()
+            index_path = evidence_dir / "visual_index.json"
+            with unittest.mock.patch.object(
+                yte,
+                "_resolve_visual_stream_url",
+                return_value={
+                    "ok": True,
+                    "returncode": 0,
+                    "stream_url": "https://media.example/video.mp4?signature=secret",
+                    "diagnostic_tail": "",
+                    "js_runtime": {"enabled": True},
+                },
+            ), unittest.mock.patch.object(
+                yte.time,
+                "monotonic",
+                side_effect=[0.0, yte.VISUAL_CAPTURE_SEEK_TOTAL_TIMEOUT_SECONDS + 1.0],
+            ), unittest.mock.patch.object(
+                yte,
+                "_capture_visual_snapshot",
+            ) as snapshot:
+                result = yte._capture_seeked_visual_evidence(
+                    root,
+                    "creator",
+                    "https://www.youtube.com/watch?v=vid001",
+                    "vid001",
+                    "ffmpeg",
+                    evidence_dir,
+                    index_path,
+                    duration_seconds=900,
+                    progress_callback=None,
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "SEEKED_VISUAL_INSUFFICIENT_FRAMES")
+        self.assertIn("SEEKED_VISUAL_TOTAL_TIMEOUT", result["diagnostic_tail"])
+        snapshot.assert_not_called()
+
+    def test_youtube_stream_resolver_redacts_url_from_diagnostics(self) -> None:
+        signed_url = "https://media.example/video.mp4?signature=secret"
+        proc = unittest.mock.Mock(
+            returncode=0,
+            stdout=signed_url + "\n",
+            stderr="selected " + signed_url,
+        )
+        with unittest.mock.patch.object(
+            yte,
+            "_yt_base_args",
+            return_value=(["yt-dlp"], {"enabled": True}),
+        ), unittest.mock.patch(
+            "youtube_creator_evaluation.subprocess.run",
+            return_value=proc,
+        ):
+            result = yte._resolve_visual_stream_url(
+                "https://www.youtube.com/watch?v=vid001"
+            )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["stream_url"], signed_url)
+        self.assertNotIn(signed_url, result["diagnostic_tail"])
+        self.assertIn("<stream-url>", result["diagnostic_tail"])
+
+    def test_youtube_snapshot_redacts_signed_stream_url_from_diagnostics(self) -> None:
+        signed_url = "https://media.example/video.mp4?signature=secret"
+        proc = unittest.mock.Mock(returncode=1, stderr=f"failed {signed_url}".encode())
+        with unittest.mock.patch(
+            "youtube_creator_evaluation.subprocess.run",
+            return_value=proc,
+        ):
+            result = yte._capture_visual_snapshot(
+                "ffmpeg",
+                signed_url,
+                12.5,
+                Path("/tmp/nonexistent-frame.jpg"),
+            )
+        self.assertFalse(result["ok"])
+        self.assertNotIn(signed_url, result["diagnostic_tail"])
+        self.assertIn("<stream-url>", result["diagnostic_tail"])
+
     def test_visual_ocr_timeout_is_nonfatal(self) -> None:
         with unittest.mock.patch("youtube_creator_evaluation.subprocess.run", side_effect=TimeoutError("timeout")):
             self.assertEqual(yte._ocr_visual_frame(Path("/tmp/frame.jpg")), "")
