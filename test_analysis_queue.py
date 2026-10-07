@@ -436,6 +436,15 @@ class AnalysisQueueTests(unittest.TestCase):
             self.assertEqual(historical["result"], "FOUND")
             self.assertEqual(historical["queue_item"]["creator"], "creator")
 
+    def test_empty_queue_list_reports_empty_status(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            build_fixture(root, creator_status="RETIRED")
+            listing = list_analysis_queue(root)
+            self.assertEqual(listing["status"], "EMPTY")
+            self.assertEqual(listing["total"], 0)
+            self.assertEqual(listing["count"], 0)
+
     def test_queue_read_filters_and_get_full_analysis_input(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
