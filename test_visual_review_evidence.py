@@ -44,6 +44,7 @@ class VisualReviewClassifierTests(unittest.TestCase):
         self.assertIn(direct, selector)
         self.assertIn(hls, selector)
         self.assertLess(selector.index(direct), selector.index(hls))
+        self.assertEqual(yte.YOUTUBE_VISUAL_SEEK_FORMAT_SELECTOR, selector)
 
     def test_youtube_seek_timestamps_are_bounded_and_spread(self) -> None:
         short = yte.visual_capture_seek_timestamps(60)
@@ -498,6 +499,7 @@ class VisualReviewClassifierTests(unittest.TestCase):
         self.assertTrue(ff.terminated)
         self.assertTrue(yt.terminated)
         self.assertEqual(len(progress), 1)
+        self.assertEqual(progress[0]["visual_capture_mode"], "BOUNDED_FULL_STREAM_FALLBACK")
         self.assertEqual(progress[0]["visual_capture_frame_files"], 1)
         self.assertGreaterEqual(progress[0]["visual_capture_child_rss_mib"], 800.0)
 
