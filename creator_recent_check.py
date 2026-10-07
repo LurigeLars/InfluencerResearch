@@ -44,12 +44,12 @@ def _bounded_env_int(
     return max(minimum, min(maximum, value))
 
 
-RECENT_CHECK_VERSION = "0.3.7"
+RECENT_CHECK_VERSION = "0.3.8"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 YOUTUBE_MAX_DISCOVERY_PER_SOURCE = _bounded_env_int(
     "INFLUENCER_RESEARCH_YOUTUBE_MAX_DISCOVERY_PER_SOURCE",
-    600,
+    200,
     200,
     1200,
 )
@@ -461,8 +461,18 @@ def _probe_youtube_metadata_batch(urls: list[str]) -> tuple[dict[str, str], dict
     }
 
 
-def _youtube_probe_missing(entries: list[dict]) -> tuple[dict[str, str], dict]:
-    missing = [e for e in entries if not e.get("published_at")]
+def _youtube_probe_missing(
+    entries: list[dict],
+    *,
+    known_published_at: dict[str, str] | None = None,
+) -> tuple[dict[str, str], dict]:
+    known_published_at = known_published_at or {}
+    missing = [
+        e
+        for e in entries
+        if not e.get("published_at")
+        and str(e.get("id") or "") not in known_published_at
+    ]
     if not missing:
         return {}, {
             "attempted": 0,
@@ -471,6 +481,7 @@ def _youtube_probe_missing(entries: list[dict]) -> tuple[dict[str, str], dict]:
             "diagnostic_tail": "",
             "worker_count": 0,
             "batch_count": 0,
+            "cached": len(known_published_at),
         }
 
     urls = [str(e["url"]) for e in missing]
@@ -513,6 +524,7 @@ def _youtube_probe_missing(entries: list[dict]) -> tuple[dict[str, str], dict]:
         "worker_count": worker_count,
         "batch_count": len(batches),
         "batch_returncodes": returncodes,
+        "cached": len(known_published_at),
     }
 
 def _youtube_surface_coverage_complete(
@@ -586,7 +598,11 @@ def discover_youtube(profile: dict, source: dict, cutoff: datetime, end: datetim
         enumeration_ms = round((time.perf_counter() - enumeration_clock) * 1000, 1)
 
         probe_clock = time.perf_counter()
-        probed, probe_diag = _youtube_probe_missing(entries)
+        newly_probed, probe_diag = _youtube_probe_missing(
+            entries,
+            known_published_at=probed,
+        )
+        probed.update(newly_probed)
         metadata_probe_ms = round((time.perf_counter() - probe_clock) * 1000, 1)
         discovery_timings.append({
             "requested_limit": target,
@@ -594,6 +610,7 @@ def discover_youtube(profile: dict, source: dict, cutoff: datetime, end: datetim
             "metadata_probe_ms": metadata_probe_ms,
             "metadata_probe_attempted": int(probe_diag.get("attempted") or 0),
             "metadata_probe_resolved": int(probe_diag.get("resolved") or 0),
+            "metadata_probe_cache_size": len(probed),
         })
 
         known_times: list[datetime] = []
@@ -678,7 +695,10 @@ def discover_youtube(profile: dict, source: dict, cutoff: datetime, end: datetim
         "attribution_excluded_count": len(attribution_excluded_ids),
         "attribution_excluded_ids": attribution_excluded_ids[:100],
         "discovery": diag,
-        "metadata_probe": probe_diag,
+        "metadata_probe": {
+            **probe_diag,
+            "cumulative_resolved": len(probed),
+        },
         "timings": discovery_timings,
     }
 
