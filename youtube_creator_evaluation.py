@@ -33,12 +33,7 @@ YOUTUBE_VISUAL_FORMAT_SELECTOR = (
     "bv*[height<=720][protocol=m3u8_native]/"
     "bv*[height<=720][protocol=m3u8]"
 )
-YOUTUBE_VISUAL_SEEK_FORMAT_SELECTOR = (
-    "bv*[height<=720][protocol=m3u8_native]/"
-    "bv*[height<=720][protocol=m3u8]/"
-    "bv*[height<=720][protocol!=m3u8_native][protocol!=m3u8]/"
-    "b[height<=720][protocol!=m3u8_native][protocol!=m3u8]"
-)
+YOUTUBE_VISUAL_SEEK_FORMAT_SELECTOR = YOUTUBE_VISUAL_FORMAT_SELECTOR
 VISUAL_CAPTURE_POLL_SECONDS = 0.25
 VISUAL_CAPTURE_HEARTBEAT_SECONDS = 5.0
 VISUAL_CAPTURE_TIMEOUT_SECONDS = 600
@@ -188,6 +183,7 @@ def _wait_visual_capture(
         ):
             frame_count = sum(1 for _ in evidence_dir.glob("*.jpg"))
             progress_callback({
+                "visual_capture_mode": "BOUNDED_FULL_STREAM_FALLBACK",
                 "visual_capture_elapsed_seconds": round(elapsed, 1),
                 "visual_capture_child_rss_mib": round(rss / (1024 * 1024), 1),
                 "visual_capture_child_rss_peak_mib": round(peak_rss / (1024 * 1024), 1),
@@ -1721,7 +1717,19 @@ def capture_visual_evidence(
         return seeked
 
     # Fail closed on the optimized path, then preserve the existing bounded
-    # full-stream capture as a compatibility fallback.
+    # full-stream capture as a compatibility fallback. Explicitly reset seek
+    # progress fields so merged heartbeat state reflects the active mode.
+    if progress_callback is not None:
+        progress_callback({
+            "visual_capture_mode": "BOUNDED_FULL_STREAM_FALLBACK",
+            "visual_capture_seek_total": None,
+            "visual_capture_seek_completed": None,
+            "visual_capture_elapsed_seconds": 0.0,
+            "visual_capture_frame_files": 0,
+            "visual_capture_child_rss_mib": 0.0,
+            "visual_capture_child_rss_peak_mib": 0.0,
+            "seeked_sampling_fallback_reason": seeked.get("error"),
+        })
     shutil.rmtree(evidence_dir, ignore_errors=True)
     evidence_dir.mkdir(parents=True, exist_ok=True)
 
