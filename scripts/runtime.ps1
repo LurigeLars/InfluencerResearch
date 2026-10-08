@@ -398,6 +398,32 @@ function Materialize-CamofoxRuntimeSecrets {
     }
 }
 
+# Recovery must not race Compose's service_healthy dependency gate.
+# docker inspect exposes health status only; no runtime credentials are read.
+function Wait-ForContainerHealth([string[]]$Containers, [int]$TimeoutSeconds) {
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    $states = @{}
+    while ($true) {
+        $allHealthy = $true
+        foreach ($container in $Containers) {
+            $output = @(& docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}no_healthcheck{{end}}' $container 2>$null)
+            $status = if ($LASTEXITCODE -eq 0) {
+                [string]($output | Select-Object -Last 1)
+            } else {
+                "inspect_failed"
+            }
+            $states[$container] = $status.Trim()
+            if ($states[$container] -ne "healthy") { $allHealthy = $false }
+        }
+        if ($allHealthy) { return }
+        if ([DateTime]::UtcNow -ge $deadline) {
+            $details = ($Containers | ForEach-Object { '{0}={1}' -f $_, $states[$_] }) -join ", "
+            throw "Recovery health timeout after $($TimeoutSeconds)s: $details"
+        }
+        Start-Sleep -Seconds 2
+    }
+}
+
 function Invoke-ComposeUp([bool]$Build = $true) {
     Compose -ComposeArgs @("up", "-d", "secret-holder")
     Materialize-CamofoxRuntimeSecrets
@@ -409,7 +435,21 @@ function Invoke-ComposeUp([bool]$Build = $true) {
     }
 
     if (-not $Build) {
+        # Start only browser services without waiting on dependent services.
+        # The secret-holder volumes have already been hydrated above.
+        $camofoxServices = @("camofox")
+        $camofoxContainers = @("influencerresearch-camofox")
+        if ($publicProxyConfigured) {
+            $camofoxServices += "camofox-public-proxy"
+            $camofoxContainers += "influencerresearch-camofox-public-proxy"
+        }
+        Compose -ComposeArgs @($profileArgs + @("up", "-d", "--no-deps") + $camofoxServices)
+        Wait-ForContainerHealth -Containers $camofoxContainers -TimeoutSeconds 75
+
+        # Compose's service_healthy gate is now satisfied; recover the MCP.
         Compose -ComposeArgs @($profileArgs + @("up", "-d"))
+        Wait-ForContainerHealth -Containers @("influencerresearch-mcp") -TimeoutSeconds 30
+        Write-Host "INFLUENCERRESEARCH_RECOVERED_HEALTHY"
         return
     }
 
@@ -591,7 +631,7 @@ function Update-RuntimeSupervisorConfig([bool]$Enabled = $true) {
             working_directory = $Repo
         }
         cooldown_seconds = 30
-        recovery_wait_seconds = 90
+        recovery_wait_seconds = 150
     }
 
     $supervisor.runtimes = @($existing + $runtimeEntry)
