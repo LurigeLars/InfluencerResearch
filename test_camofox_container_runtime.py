@@ -165,8 +165,40 @@ class CamofoxContainerRuntimeTests(TestCase):
         self.assertIn('name = "influencerresearch"', runtime)
         self.assertIn('arguments = @("-Action", "Recover")', runtime)
         self.assertIn("required_files = $holderRequired", runtime)
-        self.assertIn("recovery_wait_seconds = 90", runtime)
+        self.assertIn("recovery_wait_seconds = 150", runtime)
         self.assertIn('Update-RuntimeSupervisorConfig -Enabled $false', runtime)
+
+    def test_recover_waits_for_both_browser_services_before_compose_dependency_gate(self) -> None:
+        runtime = (BASE / "scripts" / "runtime.ps1").read_text(encoding="utf-8")
+        recover = runtime.split('    if (-not $Build) {', 1)[1].split('    $buildServices =', 1)[0]
+        start_browser = 'Compose -ComposeArgs @($profileArgs + @("up", "-d", "--no-deps") + $camofoxServices)'
+        wait_browser = 'Wait-ForContainerHealth -Containers $camofoxContainers -TimeoutSeconds 75'
+        start_mcp = 'Compose -ComposeArgs @($profileArgs + @("up", "-d"))'
+        wait_mcp = 'Wait-ForContainerHealth -Containers @("influencerresearch-mcp") -TimeoutSeconds 30'
+        self.assertIn('$camofoxServices = @("camofox")', recover)
+        self.assertIn('$camofoxServices += "camofox-public-proxy"', recover)
+        self.assertIn('$camofoxContainers += "influencerresearch-camofox-public-proxy"', recover)
+        for step in (start_browser, wait_browser, start_mcp, wait_mcp):
+            self.assertIn(step, recover)
+        self.assertLess(recover.index(start_browser), recover.index(wait_browser))
+        self.assertLess(recover.index(wait_browser), recover.index(start_mcp))
+        self.assertLess(recover.index(start_mcp), recover.index(wait_mcp))
+        self.assertIn('Write-Host "INFLUENCERRESEARCH_RECOVERED_HEALTHY"', recover)
+        self.assertNotIn("--force-recreate", recover)
+        self.assertNotIn('"build"', recover)
+
+    def test_recovery_health_wait_is_bounded_and_diagnostic(self) -> None:
+        runtime = (BASE / "scripts" / "runtime.ps1").read_text(encoding="utf-8")
+        helper = runtime.split("function Wait-ForContainerHealth", 1)[1].split(
+            "function Invoke-ComposeUp", 1
+        )[0]
+        self.assertIn("[DateTime]::UtcNow.AddSeconds($TimeoutSeconds)", helper)
+        self.assertIn("docker inspect --format", helper)
+        self.assertIn('"healthy"', helper)
+        self.assertIn("Start-Sleep -Seconds 2", helper)
+        self.assertIn('throw "Recovery health timeout', helper)
+        self.assertNotIn("docker restart", helper)
+        self.assertNotIn("docker exec", helper)
 
     def test_redeploy_recreates_built_images_without_recreating_secret_holder(self) -> None:
         runtime = (BASE / "scripts/runtime.ps1").read_text(encoding="utf-8")
