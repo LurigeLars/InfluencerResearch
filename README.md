@@ -21,14 +21,14 @@ arbitrary command-execution service.
 Researching creators across YouTube, TikTok and Instagram is not one API call. A useful
 workflow has to deal with:
 
-- creator identity across platforms and changing handles;
-- recent-content discovery over a defined time window;
-- browser-dependent public pages and anti-bot friction;
-- video/audio acquisition and transcription;
-- visual evidence when spoken text is not enough;
-- Stories and other ephemeral content;
-- retries, partial coverage and evidence provenance;
-- long-running jobs that must survive beyond a single chat turn;
+- creator identity across platforms and changing handles.
+- recent-content discovery over a defined time window.
+- browser-dependent public pages and anti-bot friction.
+- video/audio acquisition and transcription.
+- visual evidence when spoken text is not enough.
+- Stories and other ephemeral content.
+- retries, partial coverage and evidence provenance.
+- long-running jobs that must survive beyond a single chat turn.
 - a persistent registry so the next research run knows what has already been seen.
 
 This repository turns those concerns into a repeatable pipeline with explicit state and
@@ -38,14 +38,14 @@ coverage semantics.
 
 At a high level the system can:
 
-- register and inspect creator identities;
-- evaluate a creator from collected public evidence;
-- monitor registered creators;
-- discover and ingest recent public content;
-- collect YouTube, TikTok and Instagram evidence through platform-specific paths;
-- transcribe audio/video with Gemini or local faster-whisper;
-- extract selected visual evidence, including bounded OCR/review paths;
-- preserve analysis evidence and research artifacts;
+- register and inspect creator identities.
+- evaluate a creator from collected public evidence.
+- monitor registered creators.
+- discover and ingest recent public content.
+- collect YouTube, TikTok and Instagram evidence through platform-specific paths.
+- transcribe audio/video with Gemini or local faster-whisper.
+- extract selected visual evidence, including bounded OCR/review paths.
+- preserve analysis evidence and research artifacts.
 - expose job status/cancellation to MCP clients.
 
 The current MCP surface is intentionally limited to seventeen tools:
