@@ -970,6 +970,65 @@ def parse_vtt(path: Path) -> list[dict]:
     return rows
 
 
+def render_caption_transcript(rows: list[dict]) -> str:
+    """Render rolling YouTube captions without repeating overlapping cue text.
+
+    Auto-generated VTT cues often restate a growing phrase in several adjacent
+    windows. Keep the original timestamped segments intact for provenance, but
+    suppress those overlaps in the plain-text transcript used for analysis.
+    """
+    words: list[str] = []
+    previous_end: float | None = None
+
+    def key(token: str) -> str:
+        return re.sub(r"^\W+|\W+$", "", token.casefold())
+
+    for row in rows:
+        incoming = str(row.get("text") or "").split()
+        if not incoming:
+            continue
+        start = float(row.get("start") or 0)
+        end = float(row.get("end") or start)
+        if previous_end is not None and start <= previous_end + 2.0 and words:
+            tail_length = min(len(words), len(incoming), 120)
+            overlap = 0
+            for n in range(tail_length, 2, -1):
+                if [key(v) for v in words[-n:]] == [key(v) for v in incoming[:n]]:
+                    overlap = n
+                    break
+            incoming = incoming[overlap:]
+        words.extend(incoming)
+        previous_end = end
+
+    # A few automatic caption exports repeat a full phrase within one cue.
+    # Collapse only long adjacent n-grams or triple-printed medium phrases;
+    # preserve ordinary short rhetorical repetitions ("yes, yes", etc.).
+    result: list[str] = []
+    normalized = [key(w) for w in words]
+    i = 0
+    while i < len(words):
+        match_size = 0
+        match_count = 1
+        for n in range(min(60, (len(words) - i) // 2), 3, -1):
+            if normalized[i:i + n] != normalized[i + n:i + 2 * n]:
+                continue
+            count = 2
+            while (i + (count + 1) * n <= len(words)
+                   and normalized[i:i + n] == normalized[i + count * n:i + (count + 1) * n]):
+                count += 1
+            if n >= 7 or count >= 3:
+                match_size, match_count = n, count
+                break
+        if match_size:
+            result.extend(words[i:i + match_size])
+            i += match_size * match_count
+        else:
+            result.append(words[i])
+            i += 1
+
+    return " ".join(result).strip()
+
+
 def _caption_candidates(caption_dir: Path, video_id: str) -> list[Path]:
     candidates = []
     for path in caption_dir.glob(f"{video_id}*.vtt"):
@@ -1049,7 +1108,7 @@ def fetch_captions(root: Path, creator_key: str, url: str, video_id: str) -> dic
             "js_runtime": js_diag,
         }
 
-    text = " ".join(row["text"] for row in best_rows).strip()
+    text = render_caption_transcript(best_rows)
     when = utc_now()
     txt_path.write_text(text + "\n", encoding="utf-8")
     atomic_json(json_path, {
