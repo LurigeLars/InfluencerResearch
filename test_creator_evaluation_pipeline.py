@@ -15,6 +15,36 @@ from creator_registry import select_evaluation_source
 from evaluation_progress import heartbeat, sample_outcome, terminalize
 
 
+class YoutubeCaptionDeduplicationTests(unittest.TestCase):
+    def test_rolling_vtt_cues_do_not_triple_words(self) -> None:
+        rows = [
+            {"start": 0, "end": 1, "text": "The experience of watching at home I think you"},
+            {"start": 0.5, "end": 2, "text": "experience of watching at home I think you know you're watching"},
+            {"start": 1.8, "end": 3, "text": "you know you're watching in a room and the lights are on"},
+            {"start": 3, "end": 4, "text": "the lights are on but the kids are running around"},
+        ]
+        self.assertEqual(
+            yce.render_caption_transcript(rows),
+            "The experience of watching at home I think you know you're watching "
+            "in a room and the lights are on but the kids are running around",
+        )
+
+    def test_triplicate_phrase_within_caption_is_collapsed(self) -> None:
+        phrase = "People watch at home because screens are cheap"
+        rows = [{"start": 0, "end": 3, "text": " ".join([phrase] * 3)}]
+        self.assertEqual(yce.render_caption_transcript(rows), phrase)
+
+    def test_distant_or_short_legitimate_repetitions_are_preserved(self) -> None:
+        rows = [
+            {"start": 0, "end": 1, "text": "Yes yes yes I agree"},
+            {"start": 10, "end": 12, "text": "Yes yes yes I agree"},
+        ]
+        self.assertEqual(
+            yce.render_caption_transcript(rows),
+            "Yes yes yes I agree Yes yes yes I agree",
+        )
+
+
 class CreatorEvaluationPipelineTests(unittest.TestCase):
     def test_youtube_visual_capture_default_ceiling_is_768_mib_and_bounded(self) -> None:
         with patch.dict("os.environ", {}, clear=True):
