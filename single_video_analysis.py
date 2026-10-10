@@ -159,10 +159,13 @@ def _tiktok(root: Path, url: str, video_id: str, handle: str, status_path: Path)
             "error": str(failures[0].get("stage") or "VIDEO_NOT_INGESTED") if failures else "VIDEO_NOT_INGESTED",
         }
 
-    item["evaluation_mode"] = "SINGLE_VIDEO_URL"
-    item["permanent_source"] = False
-    item["evaluation_source_profile"] = profile
-    tiktok.atomic_json(manifest_path, manifest)
+    # Existing registered-creator evidence is canonical; an ad-hoc request
+    # must not rewrite attribution or permanence on previously ingested items.
+    if not item.get("evaluation_mode") and not item.get("permanent_source"):
+        item["evaluation_mode"] = "SINGLE_VIDEO_URL"
+        item["permanent_source"] = False
+        item["evaluation_source_profile"] = profile
+        tiktok.atomic_json(manifest_path, manifest)
 
     heartbeat(status_path, "QUEUE_WRITE", source_platform="TIKTOK", source_id=video_id)
     queue_result, _, delivery = reconcile_delivery(root, [queue_id])
