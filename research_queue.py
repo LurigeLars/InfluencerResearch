@@ -538,7 +538,7 @@ def main() -> int:
             continue
         creator = str(item.get("creator") or "").lower()
         is_creator_evaluation = (
-            item.get("evaluation_mode") == "CREATOR_EVALUATION"
+            item.get("evaluation_mode") in {"CREATOR_EVALUATION", "SINGLE_VIDEO_URL"}
             and item.get("permanent_source") is False
         )
         if (

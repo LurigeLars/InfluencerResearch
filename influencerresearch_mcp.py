@@ -42,6 +42,7 @@ from creator_registry import (
     update_creator,
 )
 from research_status_summary import compact_job_status, summarize_status
+from single_video_analysis import canonical_video_url
 
 
 SERVER_NAME = "InfluencerResearch"
@@ -355,7 +356,7 @@ class AnalysisDecisionInput(BaseModel):
 
 
 def resolve_job_state(kind: str, returncode: int, status: dict | None) -> str:
-    if kind in {"creator_recent_check", "creator_evaluate"} and isinstance(status, dict):
+    if kind in {"creator_recent_check", "creator_evaluate", "video_url_analyze"} and isinstance(status, dict):
         state = str(status.get("state") or "").upper()
         if state in {"COMPLETE", "PARTIAL", "FAILED", "STOPPED"}:
             return state
@@ -365,6 +366,7 @@ def resolve_job_state(kind: str, returncode: int, status: dict | None) -> str:
 class JobManager:
     STATUS_FILES = {
         "creator_evaluate": Path("/research/state/creator_evaluation_status.json"),
+        "video_url_analyze": Path("/research/state/video_url_analysis_status.json"),
         "creator_monitor": Path("/research/state/creator_monitor_status.json"),
         "creator_recent_check": Path("/research/state/creator_recent_check_status.json"),
     }
@@ -766,6 +768,21 @@ def creator_evaluate(
         "source_platform": source_platform,
     }
     return as_text(jobs.start("creator_evaluate", params))
+
+
+@mcp.tool(
+    description="Analyze one public YouTube or TikTok video URL without registering or monitoring its creator. Start a single queued job; use research_status and analysis_queue_get(queue_id) for the result.",
+    annotations=RUN,
+    structured_output=False,
+)
+def video_url_analyze(video_url: str) -> str:
+    try:
+        platform, canonical, video_id, _ = canonical_video_url(video_url)
+    except ValueError as exc:
+        return as_text({"ok": False, "error": str(exc)})
+    return as_text(jobs.start("video_url_analyze", {
+        "video_url": canonical, "source_platform": platform, "source_id": video_id,
+    }))
 
 
 @mcp.tool(

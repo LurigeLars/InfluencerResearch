@@ -48,7 +48,7 @@ At a high level the system can:
 - preserve analysis evidence and research artifacts.
 - expose job status/cancellation to MCP clients.
 
-The current MCP surface is intentionally limited to seventeen tools:
+The current MCP surface is intentionally limited to nineteen tools:
 
 - `creator_list`
 - `creator_get`
@@ -56,6 +56,7 @@ The current MCP surface is intentionally limited to seventeen tools:
 - `creator_update`
 - `creator_retire`
 - `creator_evaluate`
+- `video_url_analyze`
 - `creator_monitor`
 - `creator_recent_check`
 - `analysis_queue_list`
@@ -145,7 +146,7 @@ Camofox itself remains internal and has no public MCP endpoint.
 The project is intentionally narrower than the browser/media components underneath it.
 
 - The MCP runtime, Camofox service and public gateway run non-root.
-- The public gateway exposes the same fixed seventeen-tool allowlist as the MCP server.
+- The public gateway exposes the same fixed nineteen-tool allowlist as the MCP server.
 - Long-running research accepts fixed research operations rather than arbitrary commands.
 - Instagram session material, Gemini credentials and Camofox service keys are protected
   on the Windows host with DPAPI and injected into tmpfs-backed runtime secret volumes.
@@ -263,6 +264,7 @@ The MCP v1 tool surface is deliberately small:
 - `creator_update`
 - `creator_retire`
 - `creator_evaluate`
+- `video_url_analyze`
 - `creator_monitor`
 - `creator_recent_check`
 - `creator_evaluation_item_list`

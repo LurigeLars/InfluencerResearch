@@ -31,6 +31,7 @@ class MCPContractTests(unittest.TestCase):
                 "creator_update",
                 "creator_retire",
                 "creator_evaluate",
+                "video_url_analyze",
                 "creator_monitor",
                 "creator_recent_check",
                 "creator_evaluation_item_list",

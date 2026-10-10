@@ -2108,6 +2108,9 @@ def main() -> int:
     ap.add_argument("--only-video-ids", default="", help=argparse.SUPPRESS)
     ap.add_argument("--seed-video-ids", default="", help=argparse.SUPPRESS)
     ap.add_argument("--required-attribution-term", default="", help=argparse.SUPPRESS)
+    ap.add_argument("--status-path", type=Path, default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--evaluation-mode", choices=["CREATOR_EVALUATION", "SINGLE_VIDEO_URL"],
+                    default="CREATOR_EVALUATION", help=argparse.SUPPRESS)
     args = ap.parse_args()
 
     root = args.root.resolve()
@@ -2115,14 +2118,14 @@ def main() -> int:
     sample_size = max(1, min(int(args.sample_size), 100))
     run_id = f"eval-{creator_key}-youtube-{compact_timestamp()}"
     started = utc_now()
-    status_path = root / "state" / "creator_evaluation_status.json"
+    status_path = args.status_path or root / "state" / "creator_evaluation_status.json"
     immutable_status_path = root / "state" / "evaluations" / f"{run_id}.json"
 
     base_status = {
         "schema_version": 1,
         "evaluation_version": YOUTUBE_EVAL_VERSION,
         "system_name": "InfluencerResearch",
-        "evaluation_mode": "CREATOR_EVALUATION",
+        "evaluation_mode": args.evaluation_mode,
         "evaluation_run_id": run_id,
         "creator": creator_key,
         "creator_name": args.creator_name,
@@ -2434,7 +2437,7 @@ def main() -> int:
             "visual_review_reason": (visual.get("agent_visual_bundle") or {}).get("visual_review_reason") or [],
             "research_status": old.get("research_status") or "PENDING",
             "source_class": "INFLUENCER_DISCOVERY_SECONDARY",
-            "evaluation_mode": "CREATOR_EVALUATION",
+            "evaluation_mode": args.evaluation_mode,
             "evaluation_run_id": run_id,
             "evaluation_source_profile": args.channel_url,
             "evaluation_sample_size": sample_size,
