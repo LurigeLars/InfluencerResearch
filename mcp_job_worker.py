@@ -17,6 +17,7 @@ ROOT = Path("/research")
 REQUEST_PATH = Path("/research/state/mcp_job_request.json")
 RECENT_CHECK_STATUS_PATH = Path("/research/state/creator_recent_check_status.json")
 EVALUATION_STATUS_PATH = Path("/research/state/creator_evaluation_status.json")
+VIDEO_URL_ANALYSIS_STATUS_PATH = Path("/research/state/video_url_analysis_status.json")
 
 
 def _now_iso() -> str:
@@ -128,8 +129,11 @@ def evaluation_no_progress_failure(
 
 
 def _arm_evaluation_watchdog(request: dict[str, Any]) -> threading.Event | None:
-    if request.get("kind") != "creator_evaluate":
+    if request.get("kind") not in {"creator_evaluate", "video_url_analyze"}:
         return None
+    status_path = (VIDEO_URL_ANALYSIS_STATUS_PATH
+                   if request.get("kind") == "video_url_analyze"
+                   else EVALUATION_STATUS_PATH)
 
     timeout_seconds = _bounded_env_int(
         "INFLUENCER_RESEARCH_EVALUATION_NO_PROGRESS_TIMEOUT_SECONDS",
@@ -147,7 +151,7 @@ def _arm_evaluation_watchdog(request: dict[str, Any]) -> threading.Event | None:
 
     def watchdog() -> None:
         while not stop.wait(poll_seconds):
-            status = _load_status(EVALUATION_STATUS_PATH)
+            status = _load_status(status_path)
             failed = evaluation_no_progress_failure(
                 status,
                 now=datetime.now(timezone.utc),
@@ -158,7 +162,7 @@ def _arm_evaluation_watchdog(request: dict[str, Any]) -> threading.Event | None:
                     return
                 continue
             try:
-                _atomic_json(EVALUATION_STATUS_PATH, failed)
+                _atomic_json(status_path, failed)
             finally:
                 _kill_worker_group()
 
@@ -258,6 +262,15 @@ def build_invocation(request: dict[str, Any]) -> tuple[Path, list[str]]:
         if source_platform:
             args.extend(["--source-platform", source_platform])
         return script, args
+
+    if kind == "video_url_analyze":
+        from single_video_analysis import canonical_video_url
+        platform, canonical, _, _ = canonical_video_url(str(params.get("video_url") or ""))
+        if params.get("source_platform") != platform:
+            raise RuntimeError("VIDEO_PLATFORM_MISMATCH")
+        return APP_DIR / "single_video_analysis.py", [
+            "--root", str(ROOT), "--video-url", canonical,
+        ]
 
     if kind == "creator_monitor":
         creator_key = str(params.get("creator_key") or "").strip()
