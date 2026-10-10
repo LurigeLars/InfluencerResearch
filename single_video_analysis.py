@@ -66,7 +66,7 @@ def canonical_video_url(value: str) -> tuple[str, str, str, str | None]:
 def _youtube(root: Path, url: str, video_id: str, status_path: Path) -> dict:
     import youtube_creator_evaluation as youtube
 
-    heartbeat(status_path, "METADATA", source_platform="YOUTUBE", source_id=video_id)
+    heartbeat(status_path, "DISCOVERY", source_platform="YOUTUBE", source_id=video_id)
     base_args, _ = youtube._yt_base_args()
     # Fixed executable/options; only the strict-canonical URL is passed after --.
     proc = subprocess.run(
@@ -202,7 +202,7 @@ def main() -> int:
         "updated_at": started, "source_platform": platform,
         "source_id": video_id, "video_url": url, "queue_id": f"{'yt' if platform == 'YOUTUBE' else 'tt'}_{video_id}",
     })
-    heartbeat(status_path, "METADATA", source_platform=platform, source_id=video_id)
+    heartbeat(status_path, "DISCOVERY", source_platform=platform, source_id=video_id)
     try:
         if platform == "YOUTUBE":
             result = _youtube(root, url, video_id, status_path)
