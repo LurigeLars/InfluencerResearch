@@ -163,7 +163,11 @@ class CamofoxContainerRuntimeTests(TestCase):
     def test_runtime_supervisor_recovers_secret_tmpfs_after_docker_restart(self) -> None:
         runtime = (BASE / "scripts" / "runtime.ps1").read_text(encoding="utf-8")
         self.assertIn('name = "influencerresearch"', runtime)
-        self.assertIn('arguments = @("-Action", "Recover")', runtime)
+        # The supervisor quotes each argument, so a parameter name would be
+        # bound as a value. Recover must be registered as a bare positional.
+        self.assertIn('arguments = @("Recover")', runtime)
+        self.assertNotIn('"-Action", "Recover"', runtime)
+        self.assertRegex(runtime, r'param\(\s*\[ValidateSet\([^)]*"Recover"[^)]*\)\]\s*\[string\]\$Action')
         self.assertIn("required_files = $holderRequired", runtime)
         self.assertIn("recovery_wait_seconds = 150", runtime)
         self.assertIn('Update-RuntimeSupervisorConfig -Enabled $false', runtime)

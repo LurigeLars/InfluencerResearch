@@ -94,7 +94,7 @@ class LocalRuntimeNamespaceTests(unittest.TestCase):
         self.assertIn("/run/camofox-secrets/access_key", compose)
         self.assertIn("/run/camofox-secrets/admin_key", compose)
         self.assertIn("Write-SecretHolderFile", runtime)
-        self.assertIn('arguments = @("-Action", "Recover")', runtime)
+        self.assertIn('arguments = @("Recover")', runtime)
         self.assertIn('"Recover" {', runtime)
         self.assertIn("Invoke-ComposeUp -Build $false", runtime)
 

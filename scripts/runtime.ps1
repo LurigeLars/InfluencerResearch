@@ -627,7 +627,9 @@ function Update-RuntimeSupervisorConfig([bool]$Enabled = $true) {
         }
         recovery = [pscustomobject]@{
             script = $RuntimeScriptPath
-            arguments = @("-Action", "Recover")
+            # Positional on purpose: the supervisor quotes every argument, so a
+            # quoted "-Action" binds as the value of $Action and fails validation.
+            arguments = @("Recover")
             working_directory = $Repo
         }
         cooldown_seconds = 30
