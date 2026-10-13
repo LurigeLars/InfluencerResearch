@@ -377,6 +377,40 @@ def _coverage_complete(*, discovered_count: int, requested_limit: int, known_tim
     """A window is proven complete when discovery exhausts or crosses the time cutoff."""
     return discovered_count < requested_limit or any(x < cutoff for x in known_times)
 
+def _flag_empty_discoveries(discoveries: list[dict], discovery_errors: list[dict]) -> list[dict]:
+    """Flag sources whose listing came back completely empty.
+
+    `_coverage_complete` reads "fewer items than requested" as an exhausted listing, so
+    a profile that cannot be listed at all (removed, unavailable, wrong handle) used to
+    count as a complete window. An empty listing proves nothing; say so instead.
+    """
+    already_failed = {
+        (str(error.get("creator_key") or ""), str(error.get("platform") or "").upper())
+        for error in discovery_errors
+        if isinstance(error, dict)
+    }
+    flagged: list[dict] = []
+    for discovery in discoveries:
+        if int(discovery.get("discovery_count") or 0) > 0:
+            continue
+        key = (
+            str(discovery.get("creator_key") or ""),
+            str(discovery.get("platform") or "").upper(),
+        )
+        if discovery.get("coverage_limited_reason") or key in already_failed:
+            continue
+        discovery["window_complete"] = False
+        discovery["coverage_limited_reason"] = "NO_ITEMS_DISCOVERED"
+        flagged.append({
+            "creator_key": key[0],
+            "platform": key[1],
+            "stage": "DISCOVERY",
+            "error": "NO_ITEMS_DISCOVERED",
+            "next_action": "VERIFY_SOURCE_OR_DISABLE",
+        })
+    return flagged
+
+
 def _eligible_evaluation_sources(profile: dict, *, include_registered_instagram: bool = False) -> list[dict]:
     return sorted(
         [
@@ -2830,6 +2864,7 @@ def _main_impl() -> int:
             transition_callback=emit_transition,
         )
         errors.extend(discovery_errors)
+        errors.extend(_flag_empty_discoveries(discoveries, discovery_errors))
         stage_timings.extend(discovery_timings)
 
         all_recent = [item for d in discoveries for item in d.get("items", [])]
