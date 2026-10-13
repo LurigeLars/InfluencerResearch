@@ -91,6 +91,7 @@ jobs:
           test_recent_discovery_parallelism
           test_mcp_status_summary
           test_recent_check_cap_deferral
+          test_recent_check_empty_discovery
           test_visual_review_evidence
           test_command_line_hardening
           test_creator_recent_visual_review_status
