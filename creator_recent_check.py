@@ -1912,6 +1912,33 @@ def _analysis_candidate_coverage(
     }
 
 
+def _split_unaccounted_candidates(
+    candidate_states: list[dict],
+    deferred: list[dict],
+) -> tuple[list[dict], list[dict]]:
+    """Separate items the ingestion cap postponed from items that are really unaccounted for.
+
+    Both end up without an analysis target, but only the second kind is a fault. A
+    cap deferral is expected and is resolved by running the same window again, so it
+    gets its own state and reason instead of being reported as a missing target.
+    """
+    deferred_keys = {str(item.get("item_key") or "") for item in deferred}
+    cap_deferred: list[dict] = []
+    missing: list[dict] = []
+    for item in candidate_states:
+        if item.get("analysis_state") != "MISSING":
+            continue
+        if str(item.get("item_key") or "") in deferred_keys:
+            item["analysis_state"] = "DEFERRED_DUE_TO_CAP"
+            cap_deferred.append({**item, "reason": "INGESTION_CAP_REACHED"})
+        else:
+            missing.append({
+                **item,
+                "reason": "NOT_QUEUED_NOT_NONREADY_NOT_FINALIZED_NOT_DUPLICATE",
+            })
+    return cap_deferred, missing
+
+
 def _queue_targets(root: Path, item_keys: set[str]) -> list[dict]:
     queue = load_json(root / "state" / "research_queue.json", {"items": []})
     out = []
@@ -3300,14 +3327,17 @@ def _main_impl() -> int:
             }
             for item_key in sorted(analysis_candidate_keys)
         ]
-        analysis_missing_items = [
-            {
-                **item,
-                "reason": "NOT_QUEUED_NOT_NONREADY_NOT_FINALIZED_NOT_DUPLICATE",
-            }
-            for item in analysis_candidate_states
-            if item["analysis_state"] == "MISSING"
-        ]
+        cap_deferred_items, analysis_missing_items = _split_unaccounted_candidates(
+            analysis_candidate_states,
+            deferred,
+        )
+        if cap_deferred_items:
+            errors.append({
+                "stage": "INGESTION_CAP",
+                "error": f"DEFERRED_DUE_TO_CAP:{len(cap_deferred_items)}",
+                "next_action": "RERUN_SAME_WINDOW",
+                "items": cap_deferred_items[:100],
+            })
         if analysis_missing_items:
             errors.append({
                 "stage": "ANALYSIS_QUEUE",
