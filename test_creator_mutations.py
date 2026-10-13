@@ -152,6 +152,131 @@ class CreatorMutationTests(unittest.TestCase):
             self.assertFalse(second["changed"])
             self.assertEqual(registry_path.read_bytes(), before_bytes)
 
+    def test_remove_deletes_source_and_records_what_was_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            before = deepcopy(self.register(root))
+
+            result = update_creator(
+                root,
+                {
+                    "creator_key": "creator",
+                    "issued_by": "unit-test",
+                    "sources": [{"platform": "TIKTOK", "remove": True}],
+                },
+            )
+
+            self.assertEqual(result["result"], "UPDATED")
+            self.assertEqual(
+                result["changed_sources"],
+                [{
+                    "platform": "TIKTOK",
+                    "removed": True,
+                    "profile_url": "https://www.tiktok.com/@creator",
+                }],
+            )
+            after = get_creator(root, "creator")
+            self.assertEqual([x["platform"] for x in after["sources"]], ["YOUTUBE"])
+            self.assertEqual(
+                after["sources"][0],
+                next(x for x in before["sources"] if x["platform"] == "YOUTUBE"),
+            )
+            # TikTok was the only monitored source, so the creator-level flag follows.
+            self.assertFalse(after["monitoring_enabled"])
+            self.assertEqual(crc.select_profiles_and_sources(root, "MONITORED", []), [])
+            removed = after["removed_sources"]
+            self.assertEqual(len(removed), 1)
+            self.assertEqual(removed[0]["platform"], "TIKTOK")
+            self.assertEqual(removed[0]["profile_url"], "https://www.tiktok.com/@creator")
+            self.assertEqual(removed[0]["issued_by"], "unit-test")
+            self.assertEqual(removed[0]["removed_at"], result["timestamp"])
+
+            # The source is gone, so asking again is an error rather than a silent no-op.
+            with self.assertRaisesRegex(ValueError, "SOURCE_NOT_FOUND:TIKTOK"):
+                update_creator(
+                    root,
+                    {
+                        "creator_key": "creator",
+                        "sources": [{"platform": "TIKTOK", "remove": True}],
+                    },
+                )
+
+    def test_remove_can_be_combined_with_a_flag_change_on_another_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.register(root)
+
+            result = update_creator(
+                root,
+                {
+                    "creator_key": "creator",
+                    "sources": [
+                        {"platform": "TIKTOK", "remove": True},
+                        {"platform": "YOUTUBE", "monitoring_enabled": True},
+                    ],
+                },
+            )
+
+            self.assertEqual(result["result"], "UPDATED")
+            after = get_creator(root, "creator")
+            self.assertEqual([x["platform"] for x in after["sources"]], ["YOUTUBE"])
+            self.assertTrue(after["monitoring_enabled"])
+            selected = crc.select_profiles_and_sources(root, "MONITORED", [])
+            self.assertEqual(len(selected), 1)
+
+    def test_remove_refuses_last_source_and_bad_patches_without_writing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.register(root)
+            registry_path = root / "control" / "creator_registry.json"
+            before_bytes = registry_path.read_bytes()
+
+            cases = [
+                (
+                    "LAST_SOURCE_CANNOT_BE_REMOVED",
+                    [
+                        {"platform": "TIKTOK", "remove": True},
+                        {"platform": "YOUTUBE", "remove": True},
+                    ],
+                ),
+                ("BAD_REMOVE", [{"platform": "TIKTOK", "remove": False}]),
+                ("BAD_REMOVE", [{"platform": "TIKTOK", "remove": "true"}]),
+                (
+                    "REMOVE_EXCLUDES_OTHER_FIELDS",
+                    [{"platform": "TIKTOK", "remove": True, "enabled": False}],
+                ),
+                ("SOURCE_NOT_FOUND:INSTAGRAM", [{"platform": "INSTAGRAM", "remove": True}]),
+            ]
+            for error, sources in cases:
+                with self.subTest(error=error, sources=sources):
+                    with self.assertRaisesRegex(ValueError, error):
+                        update_creator(root, {"creator_key": "creator", "sources": sources})
+                    self.assertEqual(registry_path.read_bytes(), before_bytes)
+
+    def test_removed_platform_can_be_registered_again(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.register(root)
+            update_creator(
+                root,
+                {
+                    "creator_key": "creator",
+                    "sources": [{"platform": "TIKTOK", "remove": True}],
+                },
+            )
+
+            request = base_request()
+            request["request_id"] = "register-creator-again"
+            result = register_creator(root, request)
+
+            self.assertEqual(result["result"], "EXTENDED")
+            after = get_creator(root, "creator")
+            self.assertEqual(
+                sorted(x["platform"] for x in after["sources"]),
+                ["TIKTOK", "YOUTUBE"],
+            )
+            self.assertEqual(len(after["removed_sources"]), 1)
+
     def test_retire_preserves_historical_creator_record_and_disables_sources(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

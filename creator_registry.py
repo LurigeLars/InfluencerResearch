@@ -764,7 +764,9 @@ def update_creator(root: Path, req: dict) -> dict:
     if str(profile.get("status", "ACTIVE")).upper() != "ACTIVE":
         raise ValueError(f"CREATOR_NOT_ACTIVE:{str(profile.get('status') or '').upper()}")
 
-    allowed_fields = {"platform", "enabled", "evaluation_enabled", "monitoring_enabled", "priority"}
+    allowed_fields = {
+        "platform", "enabled", "evaluation_enabled", "monitoring_enabled", "priority", "remove",
+    }
     source_by_platform = {
         str(source.get("platform") or "").upper(): dict(source)
         for source in profile.get("sources", [])
@@ -783,6 +785,16 @@ def update_creator(root: Path, req: dict) -> dict:
             raise ValueError("DUPLICATE_SOURCE_PLATFORM")
         if platform not in source_by_platform:
             raise ValueError(f"SOURCE_NOT_FOUND:{platform}")
+
+        if "remove" in patch:
+            # Removal is its own operation: it cannot be combined with flag changes on the
+            # same source, and "remove": false carries no meaning.
+            if patch["remove"] is not True:
+                raise ValueError("BAD_REMOVE")
+            if set(patch) != {"platform", "remove"}:
+                raise ValueError("REMOVE_EXCLUDES_OTHER_FIELDS")
+            patches_by_platform[platform] = {"platform": platform, "remove": True}
+            continue
 
         normalized = {"platform": platform}
         for field in ("enabled", "evaluation_enabled", "monitoring_enabled"):
@@ -806,11 +818,23 @@ def update_creator(root: Path, req: dict) -> dict:
     previous_state = _creator_state_snapshot(profile)
     changed_sources: list[dict] = []
     updated_sources: list[dict] = []
+    removed_sources: list[dict] = []
     for source in profile.get("sources", []):
         platform = str(source.get("platform") or "").upper()
         patch = patches_by_platform.get(platform)
         if patch is None:
             updated_sources.append(dict(source))
+            continue
+        if patch.get("remove"):
+            removed_sources.append({
+                "platform": platform,
+                "profile_url": source.get("profile_url"),
+            })
+            changed_sources.append({
+                "platform": platform,
+                "removed": True,
+                "profile_url": source.get("profile_url"),
+            })
             continue
         updated = dict(source)
         changes: dict[str, dict] = {}
@@ -836,7 +860,12 @@ def update_creator(root: Path, req: dict) -> dict:
             "timestamp": now_iso(),
         }
 
+    if not updated_sources:
+        # A creator without sources is not a valid registry entry; retire it instead.
+        raise ValueError("LAST_SOURCE_CANNOT_BE_REMOVED")
+
     changed_at = now_iso()
+    issued_by = str(req.get("issued_by") or "UNKNOWN")[:100]
     updated_profile = {
         **profile,
         "sources": updated_sources,
@@ -844,10 +873,20 @@ def update_creator(root: Path, req: dict) -> dict:
         "last_mutation": {
             "operation": "creator_update",
             "at": changed_at,
-            "issued_by": str(req.get("issued_by") or "UNKNOWN")[:100],
+            "issued_by": issued_by,
             "changed_sources": [item["platform"] for item in changed_sources],
         },
     }
+    if removed_sources:
+        # The source leaves the registry, but what was removed, when and by whom stays on
+        # record. Research and evidence already collected from it are not touched.
+        updated_profile["removed_sources"] = [
+            *(profile.get("removed_sources") or []),
+            *(
+                {**item, "removed_at": changed_at, "issued_by": issued_by}
+                for item in removed_sources
+            ),
+        ]
     merged = validate_registry({
         **registry,
         "updated_at": changed_at,
