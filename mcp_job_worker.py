@@ -286,7 +286,7 @@ def build_invocation(request: dict[str, Any]) -> tuple[Path, list[str]]:
         window = params.get("window")
         if scope not in ("MONITORED", "ALL_REGISTERED"):
             raise RuntimeError("BAD_SCOPE")
-        if window not in ("TODAY", "LAST_7_DAYS", "LAST_N_DAYS"):
+        if window not in ("TODAY", "LAST_7_DAYS", "LAST_N_DAYS", "SINCE_LAST_RUN"):
             raise RuntimeError("BAD_WINDOW")
         creator_keys = params.get("creator_keys") or []
         if not isinstance(creator_keys, list) or len(creator_keys) > 50:

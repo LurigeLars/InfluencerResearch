@@ -809,14 +809,19 @@ def creator_monitor(creator_key: str = "", max_new: int = 10) -> str:
 
 
 @mcp.tool(
-    description="Start bounded recent-window discovery and ingestion.",
+    description=(
+        "Start bounded recent-window discovery and ingestion. Window SINCE_LAST_RUN resumes "
+        "from where the last full MONITORED run finished with nothing left unlisted, capped or "
+        "unfetched (at most 30 days back); the result's `watermark` says whether this run moved "
+        "that point and, if not, what blocked it."
+    ),
     annotations=RUN,
     structured_output=False,
 )
 def creator_recent_check(
     scope: Literal["MONITORED", "ALL_REGISTERED"] = "MONITORED",
     creator_keys: list[str] | None = None,
-    window: Literal["TODAY", "LAST_7_DAYS", "LAST_N_DAYS"] = "TODAY",
+    window: Literal["TODAY", "LAST_7_DAYS", "LAST_N_DAYS", "SINCE_LAST_RUN"] = "TODAY",
     lookback_days: int | None = None,
     max_items: int = 10,
 ) -> str:

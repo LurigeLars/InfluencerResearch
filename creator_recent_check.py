@@ -44,7 +44,7 @@ def _bounded_env_int(
     return max(minimum, min(maximum, value))
 
 
-RECENT_CHECK_VERSION = "0.3.11"
+RECENT_CHECK_VERSION = "0.3.12"
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 MAX_DISCOVERY_PER_SOURCE = 200
 # Backward-compatible total-budget knob from PR #227. Recent-window discovery
@@ -101,6 +101,12 @@ INSTAGRAM_TRANSIENT_DISCOVERY_RETRIES = 2
 INSTAGRAM_TRANSIENT_DISCOVERY_RETRY_BASE_SECONDS = 0.5
 MAX_ANALYSIS_EVIDENCE_CHARS = 6000
 STOCKHOLM_TZ = ZoneInfo("Europe/Stockholm")
+# SINCE_LAST_RUN never reaches further back than this, the same ceiling as LAST_N_DAYS.
+MAX_CATCH_UP_DAYS = 30
+# Errors that rerunning the same window cannot repair: Stories expire, and insufficient
+# content stays insufficient. Every other error holds the catch-up watermark back.
+WATERMARK_NONBLOCKING_STAGES = frozenset({"STORY_PREFETCH", "STORY_INGESTION"})
+WATERMARK_NONBLOCKING_ERROR_PREFIX = "INSUFFICIENT_CONTENT:"
 
 
 def now_utc() -> datetime:
@@ -331,7 +337,75 @@ def parse_iso_utc(value: str) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
-def resolve_window(window: str, lookback_days: int | None) -> tuple[datetime, datetime, dict]:
+def load_watermark(root: Path) -> datetime | None:
+    """Time up to which full MONITORED runs have looked at everything; None if unknown."""
+    try:
+        return parse_iso_utc(load_json(_watermark_path(root), {})["covered_until"])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _watermark_path(root: Path) -> Path:
+    return root / "state" / "creator_recent_check_watermark.json"
+
+
+def _watermark_decision(
+    *,
+    scope: str,
+    creator_keys: list[str],
+    window: str,
+    cutoff: datetime,
+    end: datetime,
+    previous: datetime | None,
+    errors: list,
+    extraction_errors: list,
+    pending_extraction: list,
+) -> dict:
+    """Decide whether this run proves that everything published before `end` was looked at.
+
+    SINCE_LAST_RUN resumes from the watermark, so it may only move when nothing in the
+    window can still be unseen or unfetched: no source left unlisted or truncated, no item
+    held back by the cap, no failed or unfinished fetch. Any recorded error holds it back,
+    known or not, except the two kinds a rerun of the same window cannot repair: expired
+    Stories and content with nothing to analyse. Those are reported by the run itself.
+    """
+    # ponytail: one watermark for all sources, so a source that keeps failing holds it
+    # back for everyone until MAX_CATCH_UP_DAYS. Per-source watermarks if that bites.
+    if scope != "MONITORED" or creator_keys:
+        blocked_by = ["NOT_A_FULL_MONITORED_RUN"]
+    elif previous is not None and cutoff > previous and window != "SINCE_LAST_RUN":
+        blocked_by = ["WINDOW_STARTS_AFTER_WATERMARK"]
+    else:
+        blocking = set()
+        for error in errors:
+            if not isinstance(error, dict):
+                blocking.add("UNKNOWN")
+                continue
+            stage = str(error.get("stage") or "UNKNOWN")
+            if stage in WATERMARK_NONBLOCKING_STAGES or str(error.get("error") or "").startswith(
+                WATERMARK_NONBLOCKING_ERROR_PREFIX
+            ):
+                continue
+            blocking.add(stage)
+        if extraction_errors:
+            blocking.add("EXTRACTION_ERROR")
+        if pending_extraction:
+            blocking.add("PENDING_EXTRACTION")
+        blocked_by = sorted(blocking)
+    covered_until = previous if blocked_by else end
+    return {
+        "previous": previous.isoformat() if previous else None,
+        "advanced": not blocked_by,
+        "covered_until": covered_until.isoformat() if covered_until else None,
+        "blocked_by": blocked_by,
+    }
+
+
+def resolve_window(
+    window: str,
+    lookback_days: int | None,
+    watermark: datetime | None = None,
+) -> tuple[datetime, datetime, dict]:
     end = now_utc()
     w = str(window or "TODAY").upper()
     if w == "TODAY":
@@ -356,6 +430,22 @@ def resolve_window(window: str, lookback_days: int | None) -> tuple[datetime, da
             raise ValueError("BAD_LOOKBACK_DAYS")
         start = end - timedelta(days=days)
         meta = {"window": "LAST_N_DAYS", "timezone": "UTC", "lookback_days": days}
+    elif w == "SINCE_LAST_RUN":
+        floor = end - timedelta(days=MAX_CATCH_UP_DAYS)
+        if watermark is None:
+            # Nothing to resume from yet: look one day back and say so.
+            start, basis = end - timedelta(days=1), "NO_WATERMARK_LAST_24H"
+        elif watermark < floor:
+            start, basis = floor, "WATERMARK_OLDER_THAN_MAX_CATCH_UP"
+        else:
+            start, basis = min(watermark, end), "WATERMARK"
+        meta = {
+            "window": "SINCE_LAST_RUN",
+            "timezone": "UTC",
+            "basis": basis,
+            "watermark": watermark.isoformat() if watermark else None,
+            "max_catch_up_days": MAX_CATCH_UP_DAYS,
+        }
     else:
         raise ValueError("BAD_WINDOW")
     return start, end, meta
@@ -2766,7 +2856,11 @@ def _main_impl() -> int:
     ap.add_argument("--root", type=Path, required=True)
     ap.add_argument("--scope", choices=["MONITORED", "ALL_REGISTERED"], default="MONITORED")
     ap.add_argument("--creator-keys", default="")
-    ap.add_argument("--window", choices=["TODAY", "LAST_7_DAYS", "LAST_N_DAYS"], default="TODAY")
+    ap.add_argument(
+        "--window",
+        choices=["TODAY", "LAST_7_DAYS", "LAST_N_DAYS", "SINCE_LAST_RUN"],
+        default="TODAY",
+    )
     ap.add_argument("--lookback-days", type=int, default=None)
     ap.add_argument("--max-items", type=int, default=10)
     args = ap.parse_args()
@@ -2774,7 +2868,8 @@ def _main_impl() -> int:
     root = args.root.resolve()
     max_items = max(1, min(int(args.max_items), 20))
     creator_keys = [x.strip().lower() for x in str(args.creator_keys or "").split(",") if x.strip()]
-    cutoff, end, window_meta = resolve_window(args.window, args.lookback_days)
+    previous_watermark = load_watermark(root)
+    cutoff, end, window_meta = resolve_window(args.window, args.lookback_days, previous_watermark)
     discovery_limit = min(MAX_DISCOVERY_PER_SOURCE, max(MIN_DISCOVERY_PER_SOURCE, max_items + 5))
     started = now_iso()
     run_clock = time.perf_counter()
@@ -3459,6 +3554,24 @@ def _main_impl() -> int:
             extraction_errors=extraction_error_recent,
             pending_extraction=pending_extraction_recent,
         )
+        watermark = _watermark_decision(
+            scope=args.scope,
+            creator_keys=creator_keys,
+            window=args.window,
+            cutoff=cutoff,
+            end=end,
+            previous=previous_watermark,
+            errors=errors,
+            extraction_errors=extraction_error_recent,
+            pending_extraction=pending_extraction_recent,
+        )
+        if watermark["advanced"]:
+            atomic_json(_watermark_path(root), {
+                "schema_version": 1,
+                "scope": "MONITORED",
+                "covered_until": watermark["covered_until"],
+                "updated_at": now_iso(),
+            })
         emit_transition(
             "JOB_FINALIZED",
             stage="FINALIZE",
@@ -3607,6 +3720,7 @@ def _main_impl() -> int:
             "window": window_meta,
             "cutoff_at": cutoff.isoformat(),
             "checked_until": end.isoformat(),
+            "watermark": watermark,
             "max_items": max_items,
             "discovery_limit_per_source": discovery_limit,
             "max_discovery_per_source": MAX_DISCOVERY_PER_SOURCE,
