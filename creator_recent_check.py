@@ -447,12 +447,14 @@ def select_profiles_and_sources(root: Path, scope: str, creator_keys: list[str])
     out: list[tuple[dict, list[dict]]] = []
     if mode == "MONITORED":
         for profile in profiles:
-            sources = select_monitor_sources(profile)
+            # One monitored source on any supported platform is enough; it does not have
+            # to be YouTube or TikTok.
+            sources = select_monitor_sources(profile, SUPPORTED_PLATFORMS)
             if sources:
                 # Instagram Stories are an ephemeral companion source for a monitored
-                # creator even though the persistent creator_monitor adapter currently
-                # supports only YouTube/TikTok. Include any verified registered
-                # Instagram profile in recent-check runs so Stories are captured.
+                # creator. Include any verified registered Instagram profile in
+                # recent-check runs so Stories are captured, even when that profile is
+                # not itself flagged for monitoring.
                 seen_platforms = {str(source.get("platform", "")).upper() for source in sources}
                 for source in _eligible_evaluation_sources(profile, include_registered_instagram=True):
                     platform = str(source.get("platform", "")).upper()
