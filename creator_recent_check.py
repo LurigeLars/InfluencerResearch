@@ -1800,6 +1800,16 @@ def _ingest_instagram_stories(
             gemini_circuit=gemini_circuit,
             ollama_budget_state=ollama_budget_state,
         )
+    elif run.get("capture_only"):
+        # The prefetch only took screenshots. Stories get the same download, visual
+        # evidence and transcription as ordinary Instagram posts before they are
+        # promoted and queued.
+        run = ephemeral.finish_story_capture(
+            root,
+            run,
+            gemini_circuit=gemini_circuit,
+            ollama_budget_state=ollama_budget_state,
+        )
     bridge = _promote_story_items(root, profile, handle, cutoff, max_new)
     promoted = list(bridge.get("promoted") or [])
     available = list(bridge.get("available") or [])
