@@ -317,6 +317,7 @@ class CreatorSourceUpdate(BaseModel):
     evaluation_enabled: bool | None = None
     monitoring_enabled: bool | None = None
     priority: int | None = Field(default=None, ge=1, le=1000)
+    remove: Literal[True] | None = None
 
 
 class AnalysisDecisionInput(BaseModel):
@@ -723,8 +724,9 @@ def creator_register(
 
 
 @mcp.tool(
-    description="Partially update source-level creator controls. Unspecified fields are preserved and no research job is started.",
-    annotations=UPDATE,
+    description="Partially update source-level creator controls. Unspecified fields are preserved and no research job is started. A source patch of only `platform` and `remove: true` deletes that source from the creator; the last remaining source cannot be removed (retire the creator instead), and research already collected is kept.",
+    # Not UPDATE: a `remove` patch deletes a source, so the tool is declared destructive.
+    annotations=RETIRE,
     structured_output=False,
 )
 def creator_update(creator_key: str, sources: list[CreatorSourceUpdate]) -> str:
