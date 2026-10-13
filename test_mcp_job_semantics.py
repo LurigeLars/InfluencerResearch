@@ -549,9 +549,9 @@ class MCPJobSemanticsTests(unittest.TestCase):
             "FAILED",
         )
 
-    def test_other_jobs_keep_exit_code_semantics(self) -> None:
-        self.assertEqual(irm.resolve_job_state("creator_monitor", 0, {"state": "PARTIAL"}), "COMPLETE")
-        self.assertEqual(irm.resolve_job_state("creator_monitor", 1, {"state": "PARTIAL"}), "FAILED")
+    def test_unknown_job_kind_keeps_exit_code_semantics(self) -> None:
+        self.assertEqual(irm.resolve_job_state("some_other_job", 0, {"state": "PARTIAL"}), "COMPLETE")
+        self.assertEqual(irm.resolve_job_state("some_other_job", 1, {"state": "PARTIAL"}), "FAILED")
 
 
 if __name__ == "__main__":

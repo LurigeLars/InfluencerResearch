@@ -18,15 +18,11 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from creator_registry import get_creator, load_registry, select_monitor_sources
-from creator_monitor import (
-    manifest_done_ids,
-    _tiktok_published_at,
-    _classify_ingestion_result,
-)
 import youtube_creator_evaluation as yte
 import tiktok_camofox_sync as tts
 import instagram_ingest as instagram
 import ephemeral_ingest as ephemeral
+from video_visual_evidence import VISUAL_REVIEW_POLICY_VERSION
 
 def _bounded_env_int(
     name: str,
@@ -337,6 +333,54 @@ def parse_iso_utc(value: str) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
+def _classify_ingestion_result(
+    selected: list[str], completed_ids: set[str] | list[str], had_failure: bool
+) -> tuple[str, set[str], list[str]]:
+    """Return a fail-closed adapter result for the current selected IDs."""
+    selected_set = set(str(x) for x in selected)
+    completed_set = set(str(x) for x in completed_ids) & selected_set
+    failed_ids = [str(x) for x in selected if str(x) not in completed_set]
+    if had_failure or failed_ids:
+        return ("PARTIAL" if completed_set else "FAILED"), completed_set, failed_ids
+    return "INGESTED", completed_set, []
+
+
+def manifest_done_ids(root: Path, platform: str) -> set[str]:
+    manifest = load_json(root / "state" / "manifest.json", {"items": {}})
+    platform = str(platform or "").upper()
+    out = set()
+    if platform == "INSTAGRAM":
+        for key, item in (manifest.get("items") or {}).items():
+            if not isinstance(item, dict) or str(item.get("source_platform") or "").upper() != "INSTAGRAM":
+                continue
+            if (
+                item.get("download_status") == "DONE"
+                and item.get("transcription_status") == "DONE"
+                and int(item.get("visual_review_policy_version") or 0) >= VISUAL_REVIEW_POLICY_VERSION
+            ):
+                out.add(str(item.get("source_id") or key))
+        return out
+
+    prefix = "yt_" if platform == "YOUTUBE" else "tt_"
+    for key, item in (manifest.get("items") or {}).items():
+        if not str(key).startswith(prefix) or not isinstance(item, dict):
+            continue
+        if platform == "TIKTOK":
+            if tts._manifest_item_extraction_complete(item):
+                out.add(str(key)[3:])
+            continue
+        if item.get("download_status") == "DONE" and item.get("transcription_status") == "DONE":
+            if item.get("visual_evidence_status") == "DONE":
+                out.add(str(key)[3:])
+    return out
+
+
+def _tiktok_published_at(video_id: str) -> datetime:
+    # TikTok video IDs are 64-bit IDs whose high 32 bits encode Unix creation time.
+    value = int(str(video_id))
+    return datetime.fromtimestamp(value >> 32, tz=timezone.utc)
+
+
 def load_watermark(root: Path) -> datetime | None:
     """Time up to which full MONITORED runs have looked at everything; None if unknown."""
     try:
@@ -539,7 +583,7 @@ def select_profiles_and_sources(root: Path, scope: str, creator_keys: list[str])
         for profile in profiles:
             # One monitored source on any supported platform is enough; it does not have
             # to be YouTube or TikTok.
-            sources = select_monitor_sources(profile, SUPPORTED_PLATFORMS)
+            sources = select_monitor_sources(profile)
             if sources:
                 # Instagram Stories are an ephemeral companion source for a monitored
                 # creator. Include any verified registered Instagram profile in

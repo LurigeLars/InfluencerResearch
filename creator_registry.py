@@ -11,9 +11,6 @@ REGISTRY_SCHEMA_VERSION = 1
 CREATOR_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,79}$")
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 EVALUATION_PLATFORMS = {"YOUTUBE", "TIKTOK"}
-# Platforms the persistent creator_monitor adapter can process. Any supported platform
-# may be flagged monitoring_enabled; recent-check runs honour Instagram as well.
-MONITOR_PLATFORMS = {"YOUTUBE", "TIKTOK"}
 ALLOWED_HOST_SUFFIXES = {
     "YOUTUBE": ("youtube.com", "youtu.be"),
     "TIKTOK": ("tiktok.com",),
@@ -1024,19 +1021,15 @@ def select_evaluation_source(profile: dict, platform: str | None = None) -> dict
     return sorted(sources, key=lambda s: (int(s.get("priority", 100)), s.get("platform")))[0]
 
 
-def select_monitor_sources(
-    profile: dict,
-    platforms: set[str] | frozenset[str] = frozenset(MONITOR_PLATFORMS),
-) -> list[dict]:
-    """Enabled sources flagged for monitoring, limited to what the caller can process.
+def select_monitor_sources(profile: dict) -> list[dict]:
+    """Enabled sources flagged for monitoring, on any platform.
 
-    The default is what the persistent creator_monitor adapter supports. Recent-check
-    runs pass every supported platform, so one monitored source of any kind, Instagram
-    included, is enough for a creator to take part.
+    One monitored source of any kind, Instagram included, is enough for a creator to take
+    part in MONITORED recent-check runs.
     """
     if not profile.get("monitoring_enabled"):
         return []
     return sorted([
         s for s in profile.get("sources", [])
-        if s.get("enabled") and s.get("monitoring_enabled") and s.get("platform") in platforms
+        if s.get("enabled") and s.get("monitoring_enabled")
     ], key=lambda s: (int(s.get("priority", 100)), s.get("platform")))

@@ -53,7 +53,6 @@ jobs:
           evaluation_progress.py
           mcp_job_worker.py
           single_video_analysis.py
-          creator_monitor.py
           creator_registry.py
           creator_recent_check.py
           ephemeral_ingest.py
@@ -79,7 +78,6 @@ jobs:
           test_tiktok_content_fallback
           test_tiktok_camofox_retries
           test_transcription_backend
-          test_creator_monitor
           test_creator_recent_lifecycle
           test_mcp_job_semantics
           test_creator_recent_analysis_targets
