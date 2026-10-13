@@ -11,6 +11,8 @@ REGISTRY_SCHEMA_VERSION = 1
 CREATOR_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,79}$")
 SUPPORTED_PLATFORMS = {"YOUTUBE", "TIKTOK", "INSTAGRAM"}
 EVALUATION_PLATFORMS = {"YOUTUBE", "TIKTOK"}
+# Platforms the persistent creator_monitor adapter can process. Any supported platform
+# may be flagged monitoring_enabled; recent-check runs honour Instagram as well.
 MONITOR_PLATFORMS = {"YOUTUBE", "TIKTOK"}
 ALLOWED_HOST_SUFFIXES = {
     "YOUTUBE": ("youtube.com", "youtu.be"),
@@ -354,8 +356,6 @@ def normalize_registration_request(req: dict) -> dict:
         monitoring_enabled = bool(source.get("monitoring_enabled", False))
         if evaluation_enabled and platform not in EVALUATION_PLATFORMS:
             raise ValueError("EVALUATION_PLATFORM_NOT_SUPPORTED")
-        if monitoring_enabled and platform not in MONITOR_PLATFORMS:
-            raise ValueError("MONITOR_PLATFORM_NOT_SUPPORTED")
         priority = source.get("priority", 100)
         if isinstance(priority, bool) or not isinstance(priority, int) or not 1 <= priority <= 1000:
             raise ValueError("BAD_SOURCE_PRIORITY")
@@ -793,8 +793,6 @@ def update_creator(root: Path, req: dict) -> dict:
                 raise ValueError(f"BAD_{field.upper()}")
             if field == "evaluation_enabled" and value and platform not in EVALUATION_PLATFORMS:
                 raise ValueError("EVALUATION_PLATFORM_NOT_SUPPORTED")
-            if field == "monitoring_enabled" and value and platform not in MONITOR_PLATFORMS:
-                raise ValueError("MONITOR_PLATFORM_NOT_SUPPORTED")
             normalized[field] = value
         if "priority" in patch:
             priority = patch["priority"]
@@ -987,10 +985,19 @@ def select_evaluation_source(profile: dict, platform: str | None = None) -> dict
     return sorted(sources, key=lambda s: (int(s.get("priority", 100)), s.get("platform")))[0]
 
 
-def select_monitor_sources(profile: dict) -> list[dict]:
+def select_monitor_sources(
+    profile: dict,
+    platforms: set[str] | frozenset[str] = frozenset(MONITOR_PLATFORMS),
+) -> list[dict]:
+    """Enabled sources flagged for monitoring, limited to what the caller can process.
+
+    The default is what the persistent creator_monitor adapter supports. Recent-check
+    runs pass every supported platform, so one monitored source of any kind, Instagram
+    included, is enough for a creator to take part.
+    """
     if not profile.get("monitoring_enabled"):
         return []
     return sorted([
         s for s in profile.get("sources", [])
-        if s.get("enabled") and s.get("monitoring_enabled") and s.get("platform") in MONITOR_PLATFORMS
+        if s.get("enabled") and s.get("monitoring_enabled") and s.get("platform") in platforms
     ], key=lambda s: (int(s.get("priority", 100)), s.get("platform")))
