@@ -272,15 +272,6 @@ def build_invocation(request: dict[str, Any]) -> tuple[Path, list[str]]:
             "--root", str(ROOT), "--video-url", canonical,
         ]
 
-    if kind == "creator_monitor":
-        creator_key = str(params.get("creator_key") or "").strip()
-        max_new = int_in_range(params.get("max_new"), 1, 20, "max_new")
-        script = APP_DIR / "creator_monitor.py"
-        args = ["--root", str(ROOT), "--max-new", str(max_new)]
-        if creator_key:
-            args.extend(["--creator-key", creator_key])
-        return script, args
-
     if kind == "creator_recent_check":
         scope = params.get("scope")
         window = params.get("window")

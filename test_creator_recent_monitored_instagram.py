@@ -135,18 +135,14 @@ class MonitoredInstagramSourceTests(unittest.TestCase):
             self.assertFalse(get_creator(root, "creator")["monitoring_enabled"])
             self.assertEqual(_selected_platforms(root), [])
 
-    def test_persistent_monitor_adapter_still_gets_only_youtube_and_tiktok(self) -> None:
+    def test_monitored_sources_are_selected_on_every_platform(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _register(root, tiktok_monitored=True, instagram_monitored=True)
             profile = get_creator(root, "creator")
 
             self.assertEqual(
-                [source["platform"] for source in select_monitor_sources(profile)],
-                ["TIKTOK"],
-            )
-            self.assertEqual(
-                {source["platform"] for source in select_monitor_sources(profile, crc.SUPPORTED_PLATFORMS)},
+                {source["platform"] for source in select_monitor_sources(profile)},
                 {"TIKTOK", "INSTAGRAM"},
             )
 

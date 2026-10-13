@@ -8,7 +8,6 @@ export const ALLOWED_TOOLS = new Set([
   'creator_retire',
   'creator_evaluate',
   'video_url_analyze',
-  'creator_monitor',
   'creator_recent_check',
   'creator_evaluation_item_list',
   'analysis_queue_list',

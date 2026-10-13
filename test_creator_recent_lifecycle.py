@@ -10,7 +10,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-import creator_monitor as cm
 import creator_recent_check as crc
 from video_visual_evidence import VISUAL_REVIEW_POLICY_VERSION
 
@@ -517,9 +516,62 @@ class CreatorRecentLifecycleTests(unittest.TestCase):
             self.assertIn(FRATERNITY_IDS[0], summary["error_detail"])
             self.assertEqual(summary["skipped_already_ingested_count"], 1)
 
-    def test_recent_group_semantics_match_creator_monitor_classifier(self) -> None:
+    def test_ingestion_classifier_is_fail_closed(self) -> None:
+        self.assertEqual(
+            crc._classify_ingestion_result(
+                ["completed", "retryable"], {"completed", "stale"}, had_failure=True
+            ),
+            ("PARTIAL", {"completed"}, ["retryable"]),
+        )
+        self.assertEqual(
+            crc._classify_ingestion_result(["retryable"], set(), had_failure=True),
+            ("FAILED", set(), ["retryable"]),
+        )
+        # Every ID completed, but the run reported a failure: not INGESTED.
+        self.assertEqual(
+            crc._classify_ingestion_result(["a"], {"a"}, had_failure=True)[0],
+            "PARTIAL",
+        )
+        self.assertEqual(
+            crc._classify_ingestion_result(["a"], {"a"}, had_failure=False),
+            ("INGESTED", {"a"}, []),
+        )
+
+    def test_instagram_item_is_done_only_under_the_current_visual_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            done = {
+                "source_platform": "INSTAGRAM",
+                "download_status": "DONE",
+                "transcription_status": "DONE",
+            }
+            (root / "state").mkdir()
+            (root / "state" / "manifest.json").write_text(json.dumps({"items": {
+                "current": {
+                    **done,
+                    "source_id": "current",
+                    "visual_review_policy_version": VISUAL_REVIEW_POLICY_VERSION,
+                },
+                "stale": {
+                    **done,
+                    "source_id": "stale",
+                    "visual_review_policy_version": VISUAL_REVIEW_POLICY_VERSION - 1,
+                },
+            }}), encoding="utf-8")
+
+            self.assertEqual(crc.manifest_done_ids(root, "INSTAGRAM"), {"current"})
+
+    def test_tiktok_publish_time_comes_from_the_video_id(self) -> None:
+        published = datetime(2026, 10, 12, 8, 30, tzinfo=timezone.utc)
+        video_id = str((int(published.timestamp()) << 32) | 1)
+
+        self.assertEqual(crc._tiktok_published_at(video_id), published)
+        with self.assertRaises(ValueError):
+            crc._tiktok_published_at("not-a-tiktok-id")
+
+    def test_recent_group_semantics_match_the_ingestion_classifier(self) -> None:
         selected = ["A", "B"]
-        monitor_result = cm._classify_ingestion_result(
+        monitor_result = crc._classify_ingestion_result(
             selected,
             {"A"},
             had_failure=False,

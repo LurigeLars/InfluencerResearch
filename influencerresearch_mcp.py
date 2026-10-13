@@ -368,7 +368,6 @@ class JobManager:
     STATUS_FILES = {
         "creator_evaluate": Path("/research/state/creator_evaluation_status.json"),
         "video_url_analyze": Path("/research/state/video_url_analysis_status.json"),
-        "creator_monitor": Path("/research/state/creator_monitor_status.json"),
         "creator_recent_check": Path("/research/state/creator_recent_check_status.json"),
     }
 
@@ -785,27 +784,6 @@ def video_url_analyze(video_url: str) -> str:
     return as_text(jobs.start("video_url_analyze", {
         "video_url": canonical, "source_platform": platform, "source_id": video_id,
     }))
-
-
-@mcp.tool(
-    description="Start monitored-creator discovery and ingestion.",
-    annotations=RUN,
-    structured_output=False,
-)
-def creator_monitor(creator_key: str = "", max_new: int = 10) -> str:
-    cap = max(1, min(int(max_new), 20))
-    normalized = ""
-    if creator_key.strip():
-        try:
-            normalized = str(get_creator(ROOT, creator_key)["creator_key"])
-        except Exception as exc:
-            return as_text({"ok": False, "error": f"{type(exc).__name__}:{exc}"})
-    return as_text(
-        jobs.start(
-            "creator_monitor",
-            {"creator_key": normalized, "max_new": cap},
-        )
-    )
 
 
 @mcp.tool(
