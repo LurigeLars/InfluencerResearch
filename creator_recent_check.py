@@ -391,7 +391,8 @@ def _flag_empty_discoveries(discoveries: list[dict], discovery_errors: list[dict
     }
     flagged: list[dict] = []
     for discovery in discoveries:
-        if int(discovery.get("discovery_count") or 0) > 0:
+        # An absent count is unknown, not zero.
+        if discovery.get("discovery_count") is None or int(discovery["discovery_count"]) > 0:
             continue
         key = (
             str(discovery.get("creator_key") or ""),

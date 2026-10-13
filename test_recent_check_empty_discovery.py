@@ -52,6 +52,14 @@ class EmptyDiscoveryTests(unittest.TestCase):
         self.assertTrue(errored["window_complete"])
         self.assertEqual(limited["coverage_limited_reason"], "DISCOVERY_ERROR")
 
+    def test_an_unknown_count_is_not_treated_as_zero(self) -> None:
+        unknown = _discovery("creator", "YOUTUBE", 0)
+        del unknown["discovery_count"]
+
+        self.assertEqual(crc._flag_empty_discoveries([unknown], []), [])
+        self.assertTrue(unknown["window_complete"])
+        self.assertIsNone(unknown["coverage_limited_reason"])
+
     def test_main_run_reports_empty_sources_as_errors(self) -> None:
         source = (BASE / "creator_recent_check.py").read_text(encoding="utf-8")
         self.assertIn(
