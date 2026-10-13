@@ -749,6 +749,76 @@ class RecentInstagramTests(unittest.TestCase):
         self.assertEqual(result["state"], "DONE")
         self.assertEqual(result["pipeline_timings"]["total_ms"], 123.0)
 
+    def test_story_finalize_completes_a_capture_only_prefetch(self) -> None:
+        prefetched = {
+            "creator": "example",
+            "capture": {"reason": "OK", "visited_frames": 1},
+            "visual_enrichment": {"deferred": 1, "prefetch_capture_only": True},
+            "capture_only": True,
+            "timings": {"total_ms": 123.0},
+            "state": "DONE",
+            "errors": [],
+        }
+        finished = {
+            **prefetched,
+            "capture_only": False,
+            "visual_enrichment": {"completed": 1, "errors": []},
+            "video_download": {"ok": True, "files": ["v.mp4"]},
+            "timings": {"total_ms": 123.0, "transcription_ms": 5.0},
+        }
+        bridge = {
+            "promoted": [],
+            "available": [],
+            "reused_existing_count": 0,
+            "reattributed_count": 0,
+            "identity_aliases_retired_count": 0,
+            "conflicts": [],
+            "manifest_changed": False,
+        }
+        circuit = {"reason": None}
+        budget = {"attempted": 0}
+        calls: list[str] = []
+
+        with tempfile.TemporaryDirectory() as td:
+            with (
+                unittest.mock.patch.object(crc, "_capture_instagram_story_run") as capture,
+                unittest.mock.patch.object(
+                    crc.ephemeral,
+                    "finish_story_capture",
+                    side_effect=lambda *a, **k: calls.append("finish") or finished,
+                ) as finish,
+                unittest.mock.patch.object(
+                    crc,
+                    "_promote_story_items",
+                    side_effect=lambda *a, **k: calls.append("promote") or bridge,
+                ),
+                unittest.mock.patch.object(crc.tts, "run_research_queue"),
+            ):
+                result = crc._ingest_instagram_stories(
+                    Path(td),
+                    {"creator_key": "creator"},
+                    {
+                        "platform": "INSTAGRAM",
+                        "profile_url": "https://www.instagram.com/example/",
+                    },
+                    datetime(2026, 9, 29, tzinfo=timezone.utc),
+                    5,
+                    gemini_circuit=circuit,
+                    ollama_budget_state=budget,
+                    precomputed_run=prefetched,
+                )
+
+        # The Story page is not captured again; the skipped work is done before promotion.
+        capture.assert_not_called()
+        finish.assert_called_once()
+        self.assertIs(finish.call_args.args[1], prefetched)
+        self.assertIs(finish.call_args.kwargs["gemini_circuit"], circuit)
+        self.assertIs(finish.call_args.kwargs["ollama_budget_state"], budget)
+        self.assertEqual(calls, ["finish", "promote"])
+        self.assertEqual(result["visual_enrichment"], {"completed": 1, "errors": []})
+        self.assertEqual(result["video_download"], {"ok": True, "files": ["v.mp4"]})
+        self.assertEqual(result["pipeline_timings"]["transcription_ms"], 5.0)
+
     def test_instagram_ingest_is_bounded_to_selected_shortcodes(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

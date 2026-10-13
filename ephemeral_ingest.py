@@ -1970,6 +1970,133 @@ def mark_highlight_done(root: Path, creator: str, label: str, source_url: str, c
     atomic_write_json(path, state)
 
 
+def _story_visual_keys(manifest: dict, creator: str, capture: dict) -> list[str]:
+    """Stories of one creator that still need visual evidence, newest capture first.
+
+    Besides the frames just visited this backfills previously captured stable Story
+    screenshots. That matters after upgrades: an older Story may no longer be active
+    in the viewer but its retained screenshot is still within the evidence window.
+    """
+    keys = list(capture.get("visited_item_keys") or [])
+    for key, item in (manifest.get("items") or {}).items():
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("source_type") or "").upper() != "STORY":
+            continue
+        if str(item.get("creator") or "").casefold() != creator.casefold():
+            continue
+        if str(item.get("research_status") or "").upper() == "INVALID":
+            continue
+        if not _story_visual_needs_enrichment(item):
+            continue
+        if key not in keys:
+            keys.append(key)
+    return keys
+
+
+def finish_story_capture(
+    root: Path,
+    run: dict,
+    *,
+    gemini_circuit: dict | None = None,
+    ollama_budget_state: dict | None = None,
+) -> dict:
+    """Do what a capture-only Story run skipped: download, visual evidence, transcription.
+
+    The prefetch worker only takes screenshots so that it can overlap discovery. Unless
+    this runs afterwards, a Story reaches analysis with neither its video nor any
+    extracted text, unlike an ordinary Instagram post. No Story page is opened again:
+    the browser is started only to hand the logged-in cookies to yt-dlp, and only when
+    the media set is not already downloaded.
+    """
+    if not run.get("capture_only"):
+        return run
+
+    creator = str(run.get("creator") or "")
+    capture = run.get("capture") or {}
+    manifest_path = root / "state" / "ephemeral" / "manifest.json"
+    manifest = load_json(
+        manifest_path,
+        {"schema_version": 1, "app_version": APP_VERSION, "items": {}},
+    )
+    manifest.setdefault("items", {})
+
+    ytdlp_clock = time.perf_counter()
+    if (
+        str(capture.get("reason") or "") == "NO_ACTIVE_STORY_OR_STORY_VIEW_REDIRECTED"
+        and int(capture.get("visited_frames") or 0) == 0
+    ):
+        ytdlp = {
+            "ok": True,
+            "returncode": 0,
+            "files": [],
+            "error": None,
+            "skipped": True,
+            "reason": "NO_ACTIVE_STORY",
+        }
+    else:
+        ytdlp = _story_ytdlp_cached_result(root, creator, manifest, capture)
+        if ytdlp is None:
+            with sync_playwright() as p:
+                context = launch_instagram_context(p)
+                try:
+                    ytdlp = run_ytdlp(
+                        context=context,
+                        root=root,
+                        creator=creator,
+                        source_type="STORY",
+                        source_url=str(run.get("source_url") or ""),
+                    )
+                finally:
+                    context.close()
+            if ytdlp.get("ok"):
+                _record_story_ytdlp_success(root, creator, manifest, capture, ytdlp)
+    ytdlp_duration_ms = (time.perf_counter() - ytdlp_clock) * 1000
+
+    visual_enrichment_clock = time.perf_counter()
+    visual_enrichment = enrich_story_visual_evidence(
+        root,
+        manifest,
+        _story_visual_keys(manifest, creator, capture),
+        max_attempts=MAX_STORY_VISUAL_ENRICHMENTS_PER_RUN,
+        circuit_state=gemini_circuit,
+        ollama_budget_state=ollama_budget_state,
+    )
+    visual_enrichment_duration_ms = (
+        time.perf_counter() - visual_enrichment_clock
+    ) * 1000
+    if visual_enrichment.get("changed"):
+        atomic_write_json(manifest_path, manifest)
+
+    transcription_clock = time.perf_counter()
+    transcription = transcribe_downloaded_videos(root, creator, "STORY")
+    transcription_duration_ms = (time.perf_counter() - transcription_clock) * 1000
+
+    errors = []
+    if not ytdlp.get("ok"):
+        # Story can contain image-only frames, so failed yt-dlp is not fatal if screenshots exist.
+        errors.append(f"yt-dlp: {ytdlp.get('error')}")
+    errors.extend(visual_enrichment.get("errors", []))
+    errors.extend(transcription.get("errors", []))
+
+    return {
+        **run,
+        "visual_enrichment": visual_enrichment,
+        "ollama_budget_state": dict(ollama_budget_state or {}),
+        "video_download": ytdlp,
+        "transcription": transcription,
+        "capture_only": False,
+        "timings": {
+            **(run.get("timings") or {}),
+            "ytdlp_ms": round(ytdlp_duration_ms, 1),
+            "visual_enrichment_ms": round(visual_enrichment_duration_ms, 1),
+            "transcription_ms": round(transcription_duration_ms, 1),
+        },
+        "state": "DONE" if not errors else "DONE_WITH_ERRORS",
+        "errors": errors,
+    }
+
+
 def run_one(
     root: Path,
     mode: str,
@@ -2102,22 +2229,7 @@ def run_one(
 
     story_visual_keys = list(capture.get("visited_item_keys") or [])
     if source_type == "STORY":
-        # Also backfill previously captured stable Story screenshots. This matters
-        # after upgrades: an older Story may no longer be active in the viewer but
-        # its retained screenshot is still within the recent-check evidence window.
-        for key, item in (manifest.get("items") or {}).items():
-            if not isinstance(item, dict):
-                continue
-            if str(item.get("source_type") or "").upper() != "STORY":
-                continue
-            if str(item.get("creator") or "").casefold() != creator.casefold():
-                continue
-            if str(item.get("research_status") or "").upper() == "INVALID":
-                continue
-            if not _story_visual_needs_enrichment(item):
-                continue
-            if key not in story_visual_keys:
-                story_visual_keys.append(key)
+        story_visual_keys = _story_visual_keys(manifest, creator, capture)
 
     visual_enrichment_clock = time.perf_counter()
     if source_type == "STORY" and capture_only:
