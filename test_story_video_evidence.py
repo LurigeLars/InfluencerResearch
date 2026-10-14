@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import ephemeral_ingest as ingest
@@ -183,6 +184,77 @@ class StoryVideoEvidenceTests(unittest.TestCase):
             self.assertEqual(
                 queue["pending_extraction_items"][0]["reason"],
                 "STORY_VIDEO_MEDIA_MISSING",
+            )
+
+    def test_reel_named_download_is_attributed_to_single_story(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            folder = root / "output" / "nicholascrown" / "stories" / "videos"
+            folder.mkdir(parents=True)
+            source = folder / "Deev1yFgaVm.mp4"
+            source.write_bytes(b"original-video")
+            result = ingest._associate_targeted_story_video(
+                root, folder,
+                "https://www.instagram.com/stories/nicholascrown/4007851122504082790/",
+                [source, source],
+            )
+            self.assertTrue(result["mapped"])
+            self.assertEqual(result["source_id"], "Deev1yFgaVm")
+            target = folder / "4007851122504082790.mp4"
+            self.assertEqual(target.read_bytes(), b"original-video")
+            self.assertEqual(result["story_id"], "4007851122504082790")
+
+    def test_reel_attribution_fails_closed_for_multiple_distinct_downloads(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            folder = root / "output" / "creator" / "stories" / "videos"
+            folder.mkdir(parents=True)
+            video_a = folder / "ReelA.mp4"
+            video_b = folder / "ReelB.mp4"
+            video_a.write_bytes(b"A")
+            video_b.write_bytes(b"B")
+            result = ingest._associate_targeted_story_video(
+                root, folder, "https://www.instagram.com/stories/creator/123/",
+                [video_a, video_b],
+            )
+            self.assertFalse(result["mapped"])
+            self.assertEqual(result["reason"], "AMBIGUOUS_MEDIA")
+            self.assertFalse((folder / "123.mp4").exists())
+
+    def test_yt_dlp_maps_each_numeric_story_url_independently(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            folder = root / "output" / "creator" / "stories" / "videos"
+            folder.mkdir(parents=True)
+            urls = [
+                "https://www.instagram.com/stories/creator/123/",
+                "https://www.instagram.com/stories/creator/456/",
+            ]
+            invoked = []
+            def fake_run(cmd, **kwargs):
+                invoked.append(cmd[-1])
+                reel = "ReelA" if cmd[-1] == urls[0] else "ReelB"
+                filename = folder / f"{reel}.mp4"
+                filename.write_bytes(reel.encode())
+                return SimpleNamespace(
+                    returncode=0, stdout=str(filename) + "\\n", stderr="",
+                )
+            with (
+                mock.patch.object(ingest, "write_netscape_cookiefile"),
+                mock.patch.object(ingest.subprocess, "run", side_effect=fake_run),
+            ):
+                result = ingest.run_ytdlp(
+                    mock.Mock(), root, "creator", "STORY",
+                    "https://www.instagram.com/stories/creator/",
+                    story_urls=urls,
+                )
+            self.assertEqual(invoked, urls)
+            self.assertTrue(result["ok"])
+            self.assertEqual(
+                (folder / "123.mp4").read_bytes(), b"ReelA",
+            )
+            self.assertEqual(
+                (folder / "456.mp4").read_bytes(), b"ReelB",
             )
 
     def test_undetermined_story_type_must_not_claim_video_complete(self) -> None:
