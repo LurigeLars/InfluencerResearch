@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -1697,6 +1698,53 @@ def enrich_story_visual_evidence(
     }
 
 
+def _associate_targeted_story_video(
+    root: Path, video_dir: Path, story_url: str, output_paths: list[Path],
+) -> dict:
+    """Attribute yt-dlp's Reel-named download to one numeric Story URL.
+
+    The extractor can name a reshared Story video with its source Reel shortcode.
+    Only associate an unambiguous single source media ID from ONE targeted URL.
+    """
+    match = re.fullmatch(
+        r"https://www\.instagram\.com/stories/[A-Za-z0-9_.]+/([0-9]+)/?",
+        story_url,
+    )
+    if match is None:
+        return {"mapped": False, "reason": "NON_NUMERIC_STORY_URL"}
+    numeric_id = match.group(1)
+    base = video_dir.resolve()
+    media = sorted({
+        path.resolve() for path in output_paths
+        if path.is_file()
+        and path.suffix.casefold() in {".mp4", ".webm", ".mkv", ".mov"}
+        and path.resolve().is_relative_to(base)
+    })
+    source_ids = {path.stem for path in media}
+    if len(source_ids) != 1:
+        return {
+            "mapped": False,
+            "reason": "AMBIGUOUS_MEDIA" if source_ids else "NO_VIDEO_MEDIA",
+            "story_id": numeric_id,
+            "source_count": len(source_ids),
+        }
+    source = sorted(media, key=lambda path: (
+        path.suffix.casefold() != ".mp4", str(path),
+    ))[0]
+    dest = video_dir / f"{numeric_id}{source.suffix.lower()}"
+    if source != dest.resolve():
+        temp = video_dir / f"{numeric_id}{source.suffix.lower()}.tmp"
+        shutil.copyfile(source, temp)
+        os.replace(temp, dest)
+    return {
+        "mapped": True,
+        "reason": "STORY_MEDIA_ATTRIBUTED",
+        "story_id": numeric_id,
+        "source_id": source.stem,
+        "path": str(dest.relative_to(root)),
+    }
+
+
 def run_ytdlp(
     context, root: Path, creator: str, source_type: str, source_url: str,
     story_urls: list[str] | None = None,
@@ -1704,7 +1752,6 @@ def run_ytdlp(
     source_url = canonical_instagram_ephemeral_url(source_url)
     targets = [canonical_instagram_ephemeral_url(url) for url in story_urls] if story_urls else [source_url]
     if story_urls:
-        # Numeric Story IDs are observed in the authenticated Instagram viewer.
         for url in targets:
             if not re.fullmatch(r"https://www\.instagram\.com/stories/[A-Za-z0-9_.]+/[0-9]+/?", url):
                 raise ValueError("Invalid numeric Story URL for targeted video download")
@@ -1716,51 +1763,65 @@ def run_ytdlp(
     os.close(fd)
     cookie_path = Path(cookie_path_raw)
     write_netscape_cookiefile(context, cookie_path)
-
-    cmd = [
+    common = [
         sys.executable, "-m", "yt_dlp",
         "--ignore-config",
         "--cookies", str(cookie_path),
-        "--no-progress",
-        "--no-warnings",
+        "--no-progress", "--no-warnings",
         "--write-info-json",
         "--format", "b[ext=mp4]/b",
         "--output", str(video_dir / "%(id)s.%(ext)s"),
         "--print", "after_move:filepath",
         "--",
-        *targets,
     ]
+    files: list[str] = []
+    errors: list[str] = []
+    mappings: list[dict] = []
     try:
-        # URL is strict-canonical Instagram and '--' terminates yt-dlp option parsing.
-
-        # lgtm[py/command-line-injection]
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=300,
-            shell=False,
-        )
+        # Each numeric Story is a separate yt-dlp invocation: its returned Reel
+        # media cannot be attributed safely if several Story URLs are batched.
+        for target in targets:
+            # URLs are strictly canonicalized and '--' ends option parsing.
+            # lgtm[py/command-line-injection]
+            result = subprocess.run(
+                [*common, target],
+                capture_output=True,
+                text=True,
+                timeout=180 if story_urls else 300,
+                shell=False,
+            )
+            target_paths: list[Path] = []
+            for line in (result.stdout or "").splitlines():
+                path = Path(line.strip())
+                if path.is_file() and path.resolve().is_relative_to(root.resolve()):
+                    target_paths.append(path)
+                    files.append(str(path.relative_to(root)))
+            if story_urls:
+                mapping = _associate_targeted_story_video(
+                    root, video_dir, target, target_paths,
+                )
+                mappings.append(mapping)
+                if mapping.get("mapped"):
+                    files.append(str(mapping["path"]))
+                elif result.returncode == 0:
+                    errors.append(
+                        str(mapping.get("reason") or "STORY_ASSOCIATION_FAILED")
+                        + ":" + str(mapping.get("story_id") or "")
+                    )
+            if result.returncode != 0:
+                # Keep extractor failures bounded; avoid returning signed media URLs.
+                errors.append("YT_DLP_EXIT_" + str(result.returncode))
     finally:
         with contextlib.suppress(OSError):
             cookie_path.unlink(missing_ok=True)
 
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()
-        return {
-            "ok": False,
-            "returncode": result.returncode,
-            "error": detail[-2000:],
-            "files": [],
-        }
-
-    files = []
-    for line in (result.stdout or "").splitlines():
-        p = Path(line.strip())
-        if p.exists():
-            files.append(str(p.relative_to(root)))
-
-    return {"ok": True, "returncode": 0, "files": files, "error": None}
+    return {
+        "ok": not errors,
+        "returncode": 0 if not errors else 1,
+        "files": list(dict.fromkeys(files)),
+        "error": ";".join(errors) or None,
+        "mappings": mappings,
+    }
 
 
 def transcribe_downloaded_videos(root: Path, creator: str, source_type: str) -> dict:
