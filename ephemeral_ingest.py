@@ -1787,7 +1787,7 @@ def run_ytdlp(
                 [*common, target],
                 capture_output=True,
                 text=True,
-                timeout=180 if story_urls else 300,
+                timeout=45 if story_urls else 180,
                 shell=False,
             )
             target_paths: list[Path] = []
@@ -1984,13 +1984,25 @@ def _record_video_story_from_browser(
                             ? Math.min(Math.max(v.duration * 1000 + 350, 3500), 28000)
                             : 18000;
                         recorder.start(500);
-                        await v.play();
+                        // Chromium may leave HTMLMediaElement.play() pending forever
+                        // when Story autoplay is blocked. Bound it explicitly.
+                        await Promise.race([
+                            v.play(),
+                            new Promise((_, reject) => setTimeout(
+                                () => reject(new Error("PLAY_START_TIMEOUT")), 4000
+                            )),
+                        ]);
                         await Promise.race([
                             new Promise(resolve => v.addEventListener("ended", resolve, {once:true})),
                             new Promise(resolve => setTimeout(resolve, duration)),
                         ]);
                         if (!stopped && recorder.state !== "inactive") recorder.stop();
-                        const blob = await done;
+                        const blob = await Promise.race([
+                            done,
+                            new Promise((_, reject) => setTimeout(
+                                () => reject(new Error("RECORDER_STOP_TIMEOUT")), 5000
+                            )),
+                        ]);
                         stream.getTracks().forEach(t => t.stop());
                         if (blob.size < 8000)
                             return {ok:false,reason:"EMPTY_RECORDED_MEDIA"};
@@ -2004,7 +2016,9 @@ def _record_video_story_from_browser(
                         setTimeout(() => URL.revokeObjectURL(url), 5000);
                         return {ok:true,bytes:blob.size,format:"webm",audio_tracks:1};
                     } catch (error) {
-                        return {ok:false,reason:"BROWSER_RECORDING_FAILED"};
+                        const known = ["PLAY_START_TIMEOUT", "RECORDER_STOP_TIMEOUT"];
+                        return {ok:false,reason:known.includes(error.message)
+                            ? error.message : "BROWSER_RECORDING_FAILED"};
                     }
                 }""",
                 story_id,
