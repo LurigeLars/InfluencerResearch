@@ -237,7 +237,7 @@ class StoryVideoEvidenceTests(unittest.TestCase):
                 filename = folder / f"{reel}.mp4"
                 filename.write_bytes(reel.encode())
                 return SimpleNamespace(
-                    returncode=0, stdout=str(filename) + "\\n", stderr="",
+                    returncode=0, stdout=f"{filename}{chr(10)}", stderr="",
                 )
             with (
                 mock.patch.object(ingest, "write_netscape_cookiefile"),
