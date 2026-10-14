@@ -2009,11 +2009,10 @@ def _record_video_story_from_browser(
                 }""",
                 story_id,
             )
-        if not result.get("ok"):
-            rejection_reason = str(result.get("reason") or "BROWSER_RECORDING_FAILED")
-            # The pending-download context has to exit via an exception when
-            # no download is expected; otherwise Playwright waits 45 seconds.
-            raise RuntimeError("BROWSER_RECORDER_REJECTED")
+            if not result.get("ok"):
+                rejection_reason = str(result.get("reason") or "BROWSER_RECORDING_FAILED")
+                # Do not wait for a download that never began.
+                raise RuntimeError("BROWSER_RECORDER_REJECTED")
         video_dir = root / "output" / creator / "stories" / "videos"
         video_dir.mkdir(parents=True, exist_ok=True)
         dest = video_dir / f"{story_id}.webm"
