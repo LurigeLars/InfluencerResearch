@@ -54,7 +54,10 @@ def _visible_candidates(page) -> list[dict[str, Any]]:
                 })
             except Exception:
                 continue
-    rows.sort(key=lambda row: float(row.get("area") or 0), reverse=True)
+    rows.sort(
+        key=lambda row: (float(row.get("area") or 0), row.get("kind") == "video"),
+        reverse=True,
+    )
     return rows
 
 

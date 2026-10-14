@@ -175,7 +175,19 @@ def assess_analysis_content(
         )
     )
 
-    if transcript_words >= MIN_TRANSCRIPT_WORDS or len(transcript) >= MIN_TRANSCRIPT_CHARS:
+    is_story = str(item.get("source_subtype") or "").upper() == "STORY"
+    media_kind = str(item.get("media_kind") or "UNKNOWN").upper()
+    is_video_story = is_story and media_kind == "VIDEO"
+    if is_story and media_kind not in {"VIDEO", "IMAGE"}:
+        status = "PENDING_EXTRACTION"
+        reason = "STORY_MEDIA_TYPE_UNKNOWN"
+    elif is_video_story and not str(item.get("video_file") or "").strip():
+        status = "PENDING_EXTRACTION"
+        reason = "STORY_VIDEO_MEDIA_MISSING"
+    elif is_video_story and not transcript and str(item.get("transcription_status") or "").upper() != "NO_SPEECH":
+        status = "PENDING_EXTRACTION"
+        reason = "STORY_VIDEO_TRANSCRIPT_MISSING"
+    elif transcript_words >= MIN_TRANSCRIPT_WORDS or len(transcript) >= MIN_TRANSCRIPT_CHARS:
         status = "READY"
         reason = "TRANSCRIPT"
     elif visual_description_words >= MIN_TRANSCRIPT_WORDS or len(visual_description) >= MIN_TRANSCRIPT_CHARS:
@@ -297,6 +309,7 @@ def build_packet(
         "creator": item.get("creator"),
         "source_platform": item.get("source_platform"),
         "source_subtype": item.get("source_subtype"),
+        "media_kind": item.get("media_kind"),
         "source_id": item.get("source_id"),
         "source_url": item.get("url"),
         "published_at": item.get("published_at"),
@@ -329,6 +342,7 @@ def build_packet(
         ),
         "transcript_text": transcript,
         "transcript_source": item.get("transcript_source"),
+        "transcription_status": item.get("transcription_status"),
         "browser_text": browser_text,
         "visible_text": visible_text,
         "visual_description": visual_description,
