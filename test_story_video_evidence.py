@@ -116,6 +116,84 @@ class StoryVideoEvidenceTests(unittest.TestCase):
             ctx.request.get.assert_called_once()
             self.assertEqual(ctx.request.get.call_args.kwargs["max_redirects"], 0)
 
+    def test_browser_recorder_saves_audio_video_download_with_numeric_id(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            page = mock.Mock()
+            page.evaluate.side_effect = [
+                {"ok": True, "source_scheme": "blob"},
+                {"ok": True, "bytes": 12000, "format": "webm", "audio_tracks": 1},
+            ]
+            download = mock.Mock()
+            download.save_as.side_effect = lambda path: Path(path).write_bytes(b"V" * 12000)
+            page.expect_download.return_value.__enter__.return_value.value = download
+            result = ingest._record_video_story_from_browser(
+                page, root, "nicholascrown", "4007851122504082790",
+            )
+            self.assertTrue(result["ok"], result)
+            target = (root / "output" / "nicholascrown" / "stories"
+                      / "videos" / "4007851122504082790.webm")
+            self.assertEqual(target.stat().st_size, 12000)
+            download.save_as.assert_called_once()
+
+    def test_browser_recorder_rejects_no_audio_track_quickly(self) -> None:
+        page = mock.Mock()
+        page.evaluate.side_effect = [
+            {"ok": True, "source_scheme": "blob"},
+            {"ok": False, "reason": "AUDIO_TRACK_UNAVAILABLE"},
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            result = ingest._record_video_story_from_browser(
+                page, Path(td), "nicholascrown", "123",
+            )
+        self.assertEqual(result["reason"], "AUDIO_TRACK_UNAVAILABLE")
+
+    def test_blob_story_uses_audio_recorder_without_untrusted_network_request(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            story_id = "4007851122504082790"
+            key = "STORY:nicholascrown:" + story_id
+            manifest = {"items": {key: {
+                "media_kind": "VIDEO", "story_id": story_id,
+            }}}
+            page = mock.Mock()
+            page.url = "https://www.instagram.com/stories/nicholascrown/" + story_id + "/"
+            ctx = mock.Mock()
+            ctx.new_page.return_value = page
+            with (
+                mock.patch.object(ingest, "dismiss_story_view_confirmation"),
+                mock.patch.object(ingest, "wait_for_story_media_ready", return_value={
+                    "ready": True, "media": {"kind": "video", "url": "blob:https://www.instagram.com/video123"},
+                }),
+                mock.patch.object(ingest, "_record_video_story_from_browser",
+                                  return_value={"ok": True, "reason": "BROWSER_MEDIARECORDER"}) as record,
+            ):
+                result = ingest._recover_missing_story_videos(
+                    ctx, root, "nicholascrown", manifest,
+                    {"visited_item_keys": [key]},
+                )
+            self.assertEqual(result["recovered"], [story_id])
+            self.assertFalse(result["failures"])
+            record.assert_called_once()
+            ctx.request.get.assert_not_called()
+
+    def test_story_redirect_is_not_recorded_as_original_story(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            key = "STORY:nicholascrown:123"
+            manifest = {"items": {key: {"media_kind": "VIDEO", "story_id": "123"}}}
+            page = mock.Mock()
+            page.url = "https://www.instagram.com/stories/nicholascrown/456/"
+            ctx = mock.Mock()
+            ctx.new_page.return_value = page
+            with mock.patch.object(ingest, "dismiss_story_view_confirmation"):
+                result = ingest._recover_missing_story_videos(
+                    ctx, root, "nicholascrown", manifest,
+                    {"visited_item_keys": [key]},
+                )
+            self.assertEqual(result["failures"]["123"], "STORY_ID_NOT_CONFIRMED")
+            ctx.request.get.assert_not_called()
+
     def test_browser_fallback_rejects_non_meta_media_origin(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
