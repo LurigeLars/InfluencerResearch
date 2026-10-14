@@ -2214,9 +2214,8 @@ def finish_story_capture(
     transcription_duration_ms = (time.perf_counter() - transcription_clock) * 1000
 
     errors = []
-    if not ytdlp.get("ok") and _story_missing_video_ids(root, creator, manifest, capture):
-        # A failed yt-dlp attempt is recovered when the authenticated browser
-        # supplied the requested video; image-only Stories need no video.
+    if not ytdlp.get("ok") and not media_fallback.get("recovered"):
+        # Report fetch errors unless the authenticated fallback recovered the video.
         errors.append(f"yt-dlp: {ytdlp.get('error')}")
     missing_video_ids = _story_missing_video_ids(root, creator, manifest, capture)
     if missing_video_ids:
@@ -2454,9 +2453,8 @@ def run_one(
     transcription_duration_ms = (time.perf_counter() - transcription_clock) * 1000
 
     errors = []
-    if not ytdlp.get("ok") and _story_missing_video_ids(root, creator, manifest, capture):
-        # A failed yt-dlp attempt is recovered when the authenticated browser
-        # supplied the requested video; image-only Stories need no video.
+    if not ytdlp.get("ok") and not media_fallback.get("recovered"):
+        # Report fetch errors unless the authenticated fallback recovered the video.
         errors.append(f"yt-dlp: {ytdlp.get('error')}")
     if source_type == "STORY" and not capture_only:
         missing_video_ids = _story_missing_video_ids(root, creator, manifest, capture)
