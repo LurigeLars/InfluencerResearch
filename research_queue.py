@@ -541,13 +541,15 @@ def main() -> int:
                 manifest_changed = True
                 continue
 
-        if item.get("download_status") != "DONE":
-            continue
         is_visual_story = (
             str(item.get("source_platform") or "").upper() == "INSTAGRAM"
             and str(item.get("source_subtype") or "").upper() == "STORY"
             and bool(item.get("screenshot_file") or item.get("video_file"))
         )
+        # A Story with retained screenshot but a failed video download must
+        # enter the pending-extraction ledger, not vanish from accounting.
+        if item.get("download_status") != "DONE" and not is_visual_story:
+            continue
         if item.get("transcription_status") != "DONE" and not is_visual_story:
             continue
         creator = str(item.get("creator") or "").lower()

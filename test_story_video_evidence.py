@@ -138,6 +138,53 @@ class StoryVideoEvidenceTests(unittest.TestCase):
             )
             ctx.request.get.assert_not_called()
 
+    def test_missing_video_is_counted_as_pending_not_dropped(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            state = root / "state"
+            control = root / "control"
+            state.mkdir()
+            control.mkdir()
+            screenshot = root / "output" / "nicholascrown" / "stories" / "screenshots" / "4007851122504082790.png"
+            screenshot.parent.mkdir(parents=True)
+            screenshot.write_bytes(b"retained-screenshot")
+            manifest = {"schema_version": 1, "items": {
+                "ig_story_4007851122504082790": {
+                    "creator": "nicholascrown",
+                    "source_platform": "INSTAGRAM",
+                    "source_subtype": "STORY",
+                    "media_kind": "VIDEO",
+                    "source_id": "story:4007851122504082790",
+                    "url": "https://www.instagram.com/stories/nicholascrown/4007851122504082790/",
+                    "published_at": "2026-10-14T20:16:35+00:00",
+                    "download_status": "MISSING_MEDIA",
+                    "transcription_status": "MISSING_TRANSCRIPT",
+                    "screenshot_file": str(screenshot.relative_to(root)),
+                    "visual_description": "SOXX meltdown",
+                    "visual_description_status": "DONE",
+                    "research_status": "PENDING",
+                    "permanent_source": True,
+                }
+            }}
+            (state / "manifest.json").write_text(json.dumps(manifest))
+            (state / "research_decisions.json").write_text(json.dumps({"items": {}}))
+            (control / "research_screening.json").write_text(
+                json.dumps({"max_queue_items": 100, "creators": []})
+            )
+            with mock.patch("sys.argv", ["research_queue.py", "--root", str(root)]):
+                self.assertEqual(research_queue.main(), 0)
+            queue = json.loads((state / "research_queue.json").read_text())
+            self.assertEqual(queue["count"], 0)
+            self.assertEqual(queue["pending_extraction_count"], 1)
+            self.assertEqual(
+                queue["pending_extraction_items"][0]["queue_id"],
+                "ig_story_4007851122504082790",
+            )
+            self.assertEqual(
+                queue["pending_extraction_items"][0]["reason"],
+                "STORY_VIDEO_MEDIA_MISSING",
+            )
+
     def test_undetermined_story_type_must_not_claim_video_complete(self) -> None:
         item = {
             "source_platform": "INSTAGRAM", "source_subtype": "STORY",
