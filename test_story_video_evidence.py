@@ -5,6 +5,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import ephemeral_ingest as ingest
 import research_queue
@@ -79,6 +80,63 @@ class StoryVideoEvidenceTests(unittest.TestCase):
         verdict = research_queue.assess_analysis_content(story, "")
         self.assertEqual(verdict["status"], "READY")
         self.assertEqual(verdict["reason"], "VISUAL_DESCRIPTION")
+
+    def test_authenticated_viewer_recovers_numeric_video_with_allowlisted_cdn(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            key = "STORY:creator:123"
+            manifest = {"items": {key: {
+                "media_kind": "VIDEO", "story_id": "123",
+            }}}
+            capture = {"visited_item_keys": [key]}
+            page = mock.Mock()
+            response = mock.Mock()
+            response.status = 200
+            response.headers = {"content-type": "video/mp4", "content-length": "1024"}
+            response.body.return_value = b"\\x00\\x00\\x00\\x18ftyp" + b"x" * 512
+            ctx = mock.Mock()
+            ctx.new_page.return_value = page
+            ctx.request.get.return_value = response
+            with (
+                mock.patch.object(ingest, "dismiss_story_view_confirmation"),
+                mock.patch.object(ingest, "wait_for_story_media_ready", return_value={
+                    "ready": True,
+                    "media": {"kind": "video", "url": "https://scontent.cdninstagram.com/v/t50/story.mp4?token=x"},
+                }),
+            ):
+                result = ingest._recover_missing_story_videos(
+                    ctx, root, "creator", manifest, capture,
+                )
+            self.assertEqual(result["recovered"], ["123"])
+            self.assertEqual(result["failures"], {})
+            self.assertTrue(
+                (root / "output" / "creator" / "stories" / "videos" / "123.mp4").is_file()
+            )
+            ctx.request.get.assert_called_once()
+            self.assertEqual(ctx.request.get.call_args.kwargs["max_redirects"], 0)
+
+    def test_browser_fallback_rejects_non_meta_media_origin(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            key = "STORY:creator:123"
+            manifest = {"items": {key: {"media_kind": "VIDEO", "story_id": "123"}}}
+            page = mock.Mock()
+            ctx = mock.Mock()
+            ctx.new_page.return_value = page
+            with (
+                mock.patch.object(ingest, "dismiss_story_view_confirmation"),
+                mock.patch.object(ingest, "wait_for_story_media_ready", return_value={
+                    "ready": True,
+                    "media": {"kind": "video", "url": "https://example.org/exfil.mp4"},
+                }),
+            ):
+                result = ingest._recover_missing_story_videos(
+                    ctx, root, "creator", manifest, {"visited_item_keys": [key]},
+                )
+            self.assertEqual(
+                result["failures"]["123"], "MEDIA_SOURCE_NOT_ALLOWLISTED"
+            )
+            ctx.request.get.assert_not_called()
 
     def test_undetermined_story_type_must_not_claim_video_complete(self) -> None:
         item = {
