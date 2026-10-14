@@ -1738,11 +1738,15 @@ def _promote_story_items(
         media_kind = str(item.get("media_kind") or "UNKNOWN").upper()
         is_video_story = media_kind == "VIDEO"
         transcription_status = (
-            "DONE" if has_transcript else "MISSING_TRANSCRIPT"
-        ) if is_video_story else "NOT_APPLICABLE"
+            ("DONE" if has_transcript else "MISSING_TRANSCRIPT")
+            if is_video_story else
+            ("NOT_APPLICABLE" if media_kind == "IMAGE" else "MEDIA_TYPE_UNKNOWN")
+        )
         download_status = (
-            "DONE" if has_video else "MISSING_MEDIA"
-        ) if is_video_story else "DONE"
+            ("DONE" if has_video else "MISSING_MEDIA")
+            if is_video_story else
+            ("DONE" if media_kind == "IMAGE" else "MEDIA_TYPE_UNKNOWN")
+        )
         if not has_screenshot and not has_transcript and not has_video:
             continue
 
