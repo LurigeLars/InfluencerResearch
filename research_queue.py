@@ -175,11 +175,13 @@ def assess_analysis_content(
         )
     )
 
-    is_video_story = (
-        str(item.get("source_subtype") or "").upper() == "STORY"
-        and str(item.get("media_kind") or "").upper() == "VIDEO"
-    )
-    if is_video_story and not str(item.get("video_file") or "").strip():
+    is_story = str(item.get("source_subtype") or "").upper() == "STORY"
+    media_kind = str(item.get("media_kind") or "UNKNOWN").upper()
+    is_video_story = is_story and media_kind == "VIDEO"
+    if is_story and media_kind not in {"VIDEO", "IMAGE"}:
+        status = "PENDING_EXTRACTION"
+        reason = "STORY_MEDIA_TYPE_UNKNOWN"
+    elif is_video_story and not str(item.get("video_file") or "").strip():
         status = "PENDING_EXTRACTION"
         reason = "STORY_VIDEO_MEDIA_MISSING"
     elif is_video_story and not transcript and str(item.get("transcription_status") or "").upper() != "NO_SPEECH":
