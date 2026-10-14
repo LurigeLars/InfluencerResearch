@@ -1735,6 +1735,14 @@ def _promote_story_items(
         has_screenshot = bool(screenshot_path and screenshot_path.exists())
         has_transcript = transcript_path is not None
         has_video = video_path is not None
+        media_kind = str(item.get("media_kind") or "UNKNOWN").upper()
+        is_video_story = media_kind == "VIDEO"
+        transcription_status = (
+            "DONE" if has_transcript else "MISSING_TRANSCRIPT"
+        ) if is_video_story else "NOT_APPLICABLE"
+        download_status = (
+            "DONE" if has_video else "MISSING_MEDIA"
+        ) if is_video_story else "DONE"
         if not has_screenshot and not has_transcript and not has_video:
             continue
 
@@ -1794,7 +1802,11 @@ def _promote_story_items(
 
             evidence_updates = {
                 "story_identity_basis": item.get("story_identity_basis"),
+                "media_kind": media_kind,
                 "media_identity_path": item.get("media_identity_path"),
+                "download_status": download_status,
+                "transcription_status": transcription_status,
+                "transcript_txt": (str(transcript_path.relative_to(root)) if has_transcript else None),
                 "browser_text": str(item.get("browser_text") or ""),
                 "visual_description": str(item.get("visual_description") or ""),
                 "visual_description_status": item.get("visual_description_status"),
@@ -1833,10 +1845,11 @@ def _promote_story_items(
             "observed_at": str(alias_source.get("observed_at") or observed.isoformat()),
             "identity_migrated_from": [alias_key for alias_key, _ in matching_aliases],
             "story_identity_basis": item.get("story_identity_basis"),
+            "media_kind": media_kind,
             "media_identity_path": item.get("media_identity_path"),
-            "download_status": "DONE",
+            "download_status": download_status,
             "downloaded_at": observed.isoformat(),
-            "transcription_status": "DONE" if has_transcript else "NOT_APPLICABLE",
+            "transcription_status": transcription_status,
             "transcript_txt": (
                 str(transcript_path.relative_to(root)) if transcript_path is not None else None
             ),
@@ -1959,7 +1972,8 @@ def _ingest_instagram_stories(
         "ENDED_OR_EXITED_STORY_VIEW",
         "NO_ACTIVE_STORY_OR_STORY_VIEW_REDIRECTED",
     }
-    if run.get("state") == "DONE_WITH_ERRORS" and reason not in benign_reasons:
+    if run.get("state") == "DONE_WITH_ERRORS":
+        # Missing video is material even when the browser captured valid screenshots.
         warnings.extend(str(x) for x in (run.get("errors") or []))
     visual_errors = list((run.get("visual_enrichment") or {}).get("errors") or [])
     if visual_errors:
