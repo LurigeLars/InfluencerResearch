@@ -148,6 +148,20 @@ class StoryVideoEvidenceTests(unittest.TestCase):
             )
         self.assertEqual(result["reason"], "AUDIO_TRACK_UNAVAILABLE")
 
+    def test_browser_recorder_playback_timeout_is_a_bounded_failure(self) -> None:
+        page = mock.Mock()
+        page.evaluate.side_effect = [
+            {"ok": True, "source_scheme": "blob"},
+            {"ok": False, "reason": "PLAY_START_TIMEOUT"},
+        ]
+        with tempfile.TemporaryDirectory() as td:
+            result = ingest._record_video_story_from_browser(
+                page, Path(td), "nicholascrown", "4007851122504082790",
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["reason"], "PLAY_START_TIMEOUT")
+        page.expect_download.assert_called_once_with(timeout=45000)
+
     def test_blob_story_uses_audio_recorder_without_untrusted_network_request(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
