@@ -87,8 +87,8 @@ class StoryVideoEvidenceTests(unittest.TestCase):
             "visual_description_status": "ERROR",
         }
         verdict = research_queue.assess_analysis_content(item, "")
-        self.assertNotEqual(verdict["reason"], "TRANSCRIPT")
-        self.assertNotEqual(verdict["reason"], "VISUAL_DESCRIPTION")
+        self.assertEqual(verdict["status"], "PENDING_EXTRACTION")
+        self.assertEqual(verdict["reason"], "STORY_MEDIA_TYPE_UNKNOWN")
 
 
 if __name__ == "__main__":
