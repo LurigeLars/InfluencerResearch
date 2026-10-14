@@ -1769,6 +1769,8 @@ def transcribe_downloaded_videos(root: Path, creator: str, source_type: str) -> 
     transcript_dir = root / "output" / creator / source_dir / "transcripts"
     transcript_dir.mkdir(parents=True, exist_ok=True)
 
+    if not video_dir.is_dir():
+        return {"attempted": 0, "completed": 0, "errors": []}
     video_files = sorted(
         p for p in video_dir.iterdir()
         if p.is_file() and p.suffix.casefold() in {".mp4", ".webm", ".mov", ".mkv"}
