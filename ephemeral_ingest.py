@@ -1854,6 +1854,80 @@ def _story_missing_video_urls(
     ]
 
 
+def _recover_missing_story_videos(
+    context, root: Path, creator: str, manifest: dict, capture: dict,
+) -> dict:
+    """Bounded authenticated-browser fallback for numeric Instagram video Stories.
+
+    Never persist signed media URLs; only fetch HTTPS Instagram/Meta CDN hosts.
+    Successful download must be an actual MP4, not a screenshot or web page.
+    """
+    missing = _story_missing_video_ids(root, creator, manifest, capture)
+    result = {"attempted": len(missing), "recovered": [], "failures": {}}
+    if not missing:
+        return result
+
+    for story_id in missing:
+        page = None
+        try:
+            page = context.new_page()
+            page.goto(
+                f"https://www.instagram.com/stories/{creator}/{story_id}/",
+                wait_until="domcontentloaded",
+                timeout=20000,
+            )
+            dismiss_story_view_confirmation(page)
+            ready = wait_for_story_media_ready(page, max_wait_ms=5000)
+            media = ready.get("media") or {}
+            if not ready.get("ready") or media.get("kind") != "video":
+                result["failures"][story_id] = "VIDEO_NOT_READY"
+                continue
+            media_url = str(media.get("url") or "")
+            parsed = urlsplit(media_url)
+            hostname = str(parsed.hostname or "").casefold().rstrip(".")
+            allowed_hosts = ("fbcdn.net", "cdninstagram.com", "instagram.com")
+            if parsed.scheme != "https" or not any(
+                hostname == domain or hostname.endswith("." + domain)
+                for domain in allowed_hosts
+            ):
+                result["failures"][story_id] = "MEDIA_SOURCE_NOT_ALLOWLISTED"
+                continue
+            response = context.request.get(
+                media_url, timeout=12000, max_redirects=0,
+            )
+            if response.status != 200:
+                result["failures"][story_id] = f"MEDIA_HTTP_{response.status}"
+                continue
+            size_hint = int(response.headers.get("content-length") or "0")
+            max_bytes = 30 * 1024 * 1024
+            if size_hint > max_bytes:
+                result["failures"][story_id] = "MEDIA_TOO_LARGE"
+                continue
+            data = response.body()
+            if len(data) > max_bytes or len(data) < 256:
+                result["failures"][story_id] = "INVALID_MEDIA_SIZE"
+                continue
+            media_type = str(response.headers.get("content-type") or "").lower()
+            if not media_type.startswith("video/") and b"ftyp" not in data[4:20]:
+                result["failures"][story_id] = "NOT_MP4_VIDEO"
+                continue
+            video_dir = root / "output" / creator / "stories" / "videos"
+            video_dir.mkdir(parents=True, exist_ok=True)
+            dest = video_dir / f"{story_id}.mp4"
+            temp = video_dir / f"{story_id}.mp4.tmp"
+            temp.write_bytes(data)
+            os.replace(temp, dest)
+            result["recovered"].append(story_id)
+        except Exception as exc:
+            # Do not leak signed URLs, cookies or response contents into logs.
+            result["failures"][story_id] = type(exc).__name__
+        finally:
+            if page is not None:
+                with contextlib.suppress(Exception):
+                    page.close()
+    return result
+
+
 def _story_media_download_state_path(root: Path) -> Path:
     return root / "state" / "ephemeral" / "story_media_download_state.json"
 
@@ -2108,6 +2182,17 @@ def finish_story_capture(
             if ytdlp.get("ok"):
                 _record_story_ytdlp_success(root, creator, manifest, capture, ytdlp)
     ytdlp_duration_ms = (time.perf_counter() - ytdlp_clock) * 1000
+    media_fallback = {"attempted": 0, "recovered": [], "failures": {}}
+    if _story_missing_video_ids(root, creator, manifest, capture):
+        with sync_playwright() as p:
+            context = launch_instagram_context(p)
+            try:
+                verify_logged_in(context)
+                media_fallback = _recover_missing_story_videos(
+                    context, root, creator, manifest, capture,
+                )
+            finally:
+                context.close()
 
     visual_enrichment_clock = time.perf_counter()
     visual_enrichment = enrich_story_visual_evidence(
@@ -2142,6 +2227,7 @@ def finish_story_capture(
         "visual_enrichment": visual_enrichment,
         "ollama_budget_state": dict(ollama_budget_state or {}),
         "video_download": ytdlp,
+        "media_fallback": media_fallback,
         "transcription": transcription,
         "capture_only": False,
         "timings": {
@@ -2284,6 +2370,11 @@ def run_one(
                     source_url=source_url,
                 )
             ytdlp_duration_ms = (time.perf_counter() - ytdlp_clock) * 1000
+            media_fallback = {"attempted": 0, "recovered": [], "failures": {}}
+            if source_type == "STORY" and not capture_only:
+                media_fallback = _recover_missing_story_videos(
+                    context, root, creator, manifest, capture,
+                )
         finally:
             context.close()
     browser_total_ms = (time.perf_counter() - browser_clock) * 1000
@@ -2388,6 +2479,7 @@ def run_one(
         "visual_enrichment": visual_enrichment,
         "ollama_budget_state": dict(ollama_budget_state or {}),
         "video_download": ytdlp,
+        "media_fallback": media_fallback,
         "transcription": transcription,
         "capture_only": bool(capture_only),
         "timings": {
