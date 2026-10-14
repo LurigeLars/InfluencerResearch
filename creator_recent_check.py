@@ -2000,6 +2000,7 @@ def _ingest_instagram_stories(
         "conflicts": list(bridge.get("conflicts") or []),
         "capture": capture,
         "video_download": run.get("video_download") or {},
+        "media_fallback": run.get("media_fallback") or {},
         "visual_enrichment": run.get("visual_enrichment") or {},
         "pipeline_timings": run.get("timings") or {},
         "queue": queue,
