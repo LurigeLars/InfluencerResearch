@@ -1707,7 +1707,7 @@ def _associate_targeted_story_video(
     Only associate an unambiguous single source media ID from ONE targeted URL.
     """
     match = re.fullmatch(
-        r"https://www\\.instagram\\.com/stories/[A-Za-z0-9_.]+/([0-9]+)/?",
+        r"https://www\.instagram\.com/stories/[A-Za-z0-9_.]+/([0-9]+)/?",
         story_url,
     )
     if match is None:
@@ -1753,7 +1753,7 @@ def run_ytdlp(
     targets = [canonical_instagram_ephemeral_url(url) for url in story_urls] if story_urls else [source_url]
     if story_urls:
         for url in targets:
-            if not re.fullmatch(r"https://www\\.instagram\\.com/stories/[A-Za-z0-9_.]+/[0-9]+/?", url):
+            if not re.fullmatch(r"https://www\.instagram\.com/stories/[A-Za-z0-9_.]+/[0-9]+/?", url):
                 raise ValueError("Invalid numeric Story URL for targeted video download")
     source_dir = "stories" if source_type == "STORY" else "highlights"
     video_dir = root / "output" / creator / source_dir / "videos"
