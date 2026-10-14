@@ -1940,6 +1940,7 @@ def _record_video_story_from_browser(
     }""")
     if not probe.get("ok"):
         return {"ok": False, "reason": probe.get("reason") or "BROWSER_PROBE_FAILED"}
+    rejection_reason = ""
     try:
         with page.expect_download(timeout=45000) as download_event:
             result = page.evaluate(
@@ -2009,7 +2010,10 @@ def _record_video_story_from_browser(
                 story_id,
             )
         if not result.get("ok"):
-            return {"ok": False, "reason": result.get("reason") or "BROWSER_RECORDING_FAILED"}
+            rejection_reason = str(result.get("reason") or "BROWSER_RECORDING_FAILED")
+            # The pending-download context has to exit via an exception when
+            # no download is expected; otherwise Playwright waits 45 seconds.
+            raise RuntimeError("BROWSER_RECORDER_REJECTED")
         video_dir = root / "output" / creator / "stories" / "videos"
         video_dir.mkdir(parents=True, exist_ok=True)
         dest = video_dir / f"{story_id}.webm"
@@ -2023,7 +2027,10 @@ def _record_video_story_from_browser(
         return {"ok": True, "reason": "BROWSER_MEDIARECORDER", "bytes": size}
     except Exception as exc:
         # Do not expose browser page URLs, cookies or signed media addresses.
-        return {"ok": False, "reason": "BROWSER_RECORDING_" + type(exc).__name__}
+        return {
+            "ok": False,
+            "reason": rejection_reason or ("BROWSER_RECORDING_" + type(exc).__name__),
+        }
 
 
 def _recover_missing_story_videos(
