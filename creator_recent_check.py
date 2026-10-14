@@ -3704,8 +3704,25 @@ def _main_impl() -> int:
             visual = story_result.get("visual_enrichment") or {}
             vt = visual.get("timings") or {}
             pt = story_result.get("pipeline_timings") or {}
+            download = story_result.get("video_download") or {}
+            fallback = story_result.get("media_fallback") or {}
+            capture = story_result.get("capture") or {}
             row = {
                 "creator_key": story_result.get("creator_key"),
+                "story_media": {
+                    "download_ok": bool(download.get("ok")),
+                    "download_reason": download.get("reason"),
+                    "downloaded_file_ids": sorted(
+                        Path(str(value)).stem for value in (download.get("files") or [])
+                    ),
+                    "captured_story_ids": sorted(
+                        str(key).rsplit(":", 1)[-1]
+                        for key in (capture.get("visited_item_keys") or [])
+                    ),
+                    "fallback_attempted": int(fallback.get("attempted") or 0),
+                    "fallback_recovered": list(fallback.get("recovered") or []),
+                    "fallback_failures": dict(fallback.get("failures") or {}),
+                },
                 "ocr_attempted": int(visual.get("ocr_attempted") or 0),
                 "ocr_completed": int(visual.get("ocr_completed") or 0),
                 "ocr_cached_insufficient": int(
