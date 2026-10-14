@@ -1915,6 +1915,123 @@ def _story_missing_video_urls(
     ]
 
 
+def _record_video_story_from_browser(
+    page, root: Path, creator: str, story_id: str,
+) -> dict:
+    """Record a visible video Story and its audio track without moving bytes via MCP.
+
+    Uses the authenticated Chromium session's MediaRecorder and Playwright's
+    binary download API. Fail closed if the video has no recordable audio track.
+    """
+    probe = page.evaluate("""() => {
+        const videos = Array.from(document.querySelectorAll("video"));
+        const video = videos.find(v => {
+            const rect = v.getBoundingClientRect();
+            return rect.width >= 180 && rect.height >= 180
+                && v.readyState >= 2 && v.videoWidth >= 180;
+        });
+        if (!video) return {ok: false, reason: "VISIBLE_VIDEO_MISSING"};
+        if (typeof video.captureStream !== "function" || typeof MediaRecorder === "undefined")
+            return {ok: false, reason: "MEDIA_RECORDER_UNAVAILABLE"};
+        if (!MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus")
+            && !MediaRecorder.isTypeSupported("video/webm"))
+            return {ok: false, reason: "WEBM_RECORDER_UNAVAILABLE"};
+        return {ok: true, source_scheme: (video.currentSrc || "").split(":")[0]};
+    }""")
+    if not probe.get("ok"):
+        return {"ok": False, "reason": probe.get("reason") or "BROWSER_PROBE_FAILED"}
+    rejection_reason = ""
+    try:
+        with page.expect_download(timeout=45000) as download_event:
+            result = page.evaluate(
+                r"""async (storyId) => {
+                    const videos = Array.from(document.querySelectorAll("video"));
+                    const v = videos.find(el => {
+                        const r = el.getBoundingClientRect();
+                        return r.width >= 180 && r.height >= 180
+                            && el.readyState >= 2 && el.videoWidth >= 180;
+                    });
+                    if (!v) return {ok:false,reason:"VIDEO_DISAPPEARED"};
+                    try {
+                        v.pause();
+                        v.muted = false;
+                        v.volume = 1;
+                        if (Number.isFinite(v.duration) && v.duration > 0 && v.seekable.length)
+                            v.currentTime = 0;
+                        const stream = v.captureStream();
+                        if (stream.getAudioTracks().length === 0)
+                            return {ok:false,reason:"AUDIO_TRACK_UNAVAILABLE"};
+                        if (stream.getVideoTracks().length === 0)
+                            return {ok:false,reason:"VIDEO_TRACK_UNAVAILABLE"};
+                        const mime = MediaRecorder.isTypeSupported("video/webm;codecs=vp8,opus")
+                            ? "video/webm;codecs=vp8,opus" : "video/webm";
+                        const recorder = new MediaRecorder(stream, {
+                            mimeType:mime, videoBitsPerSecond:1200000,
+                        });
+                        const chunks = [];
+                        let stopped = false;
+                        const done = new Promise((resolve, reject) => {
+                            recorder.ondataavailable = event => {
+                                if (event.data && event.data.size) chunks.push(event.data);
+                            };
+                            recorder.onerror = () => reject(new Error("RECORDER_ERROR"));
+                            recorder.onstop = () => {
+                                stopped = true;
+                                resolve(new Blob(chunks, {type:"video/webm"}));
+                            };
+                        });
+                        const duration = Number.isFinite(v.duration) && v.duration > 0
+                            ? Math.min(Math.max(v.duration * 1000 + 350, 3500), 28000)
+                            : 18000;
+                        recorder.start(500);
+                        await v.play();
+                        await Promise.race([
+                            new Promise(resolve => v.addEventListener("ended", resolve, {once:true})),
+                            new Promise(resolve => setTimeout(resolve, duration)),
+                        ]);
+                        if (!stopped && recorder.state !== "inactive") recorder.stop();
+                        const blob = await done;
+                        stream.getTracks().forEach(t => t.stop());
+                        if (blob.size < 8000)
+                            return {ok:false,reason:"EMPTY_RECORDED_MEDIA"};
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement("a");
+                        a.href = url;
+                        a.download = "ir-story-" + storyId + ".webm";
+                        document.body.appendChild(a);
+                        a.click();
+                        a.remove();
+                        setTimeout(() => URL.revokeObjectURL(url), 5000);
+                        return {ok:true,bytes:blob.size,format:"webm",audio_tracks:1};
+                    } catch (error) {
+                        return {ok:false,reason:"BROWSER_RECORDING_FAILED"};
+                    }
+                }""",
+                story_id,
+            )
+            if not result.get("ok"):
+                rejection_reason = str(result.get("reason") or "BROWSER_RECORDING_FAILED")
+                # Do not wait for a download that never began.
+                raise RuntimeError("BROWSER_RECORDER_REJECTED")
+        video_dir = root / "output" / creator / "stories" / "videos"
+        video_dir.mkdir(parents=True, exist_ok=True)
+        dest = video_dir / f"{story_id}.webm"
+        temp = video_dir / f"{story_id}.webm.tmp"
+        download_event.value.save_as(temp)
+        size = temp.stat().st_size
+        if size < 8000 or size > 30 * 1024 * 1024:
+            temp.unlink(missing_ok=True)
+            return {"ok": False, "reason": "RECORDED_MEDIA_SIZE_INVALID"}
+        os.replace(temp, dest)
+        return {"ok": True, "reason": "BROWSER_MEDIARECORDER", "bytes": size}
+    except Exception as exc:
+        # Do not expose browser page URLs, cookies or signed media addresses.
+        return {
+            "ok": False,
+            "reason": rejection_reason or ("BROWSER_RECORDING_" + type(exc).__name__),
+        }
+
+
 def _recover_missing_story_videos(
     context, root: Path, creator: str, manifest: dict, capture: dict,
 ) -> dict:
@@ -1938,6 +2055,10 @@ def _recover_missing_story_videos(
                 timeout=20000,
             )
             dismiss_story_view_confirmation(page)
+            current_story = STORY_URL_RE.search(str(page.url))
+            if current_story is None or current_story.group("id") != story_id:
+                result["failures"][story_id] = "STORY_ID_NOT_CONFIRMED"
+                continue
             ready = wait_for_story_media_ready(page, max_wait_ms=5000)
             media = ready.get("media") or {}
             if not ready.get("ready") or media.get("kind") != "video":
@@ -1951,7 +2072,16 @@ def _recover_missing_story_videos(
                 hostname == domain or hostname.endswith("." + domain)
                 for domain in allowed_hosts
             ):
-                result["failures"][story_id] = "MEDIA_SOURCE_NOT_ALLOWLISTED"
+                # Instagram uses blob: URLs for MediaSource playback. Record
+                # the current authenticated Story with its audio track instead
+                # of requesting an unrelated or untrusted URL.
+                recorded = _record_video_story_from_browser(
+                    page, root, creator, story_id,
+                )
+                if recorded.get("ok"):
+                    result["recovered"].append(story_id)
+                else:
+                    result["failures"][story_id] = str(recorded.get("reason"))
                 continue
             response = context.request.get(
                 media_url, timeout=12000, max_redirects=0,
