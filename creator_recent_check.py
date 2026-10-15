@@ -2783,6 +2783,80 @@ def _run_discovery_batch(
     return discoveries, errors, source_map, stage_timings, meta
 
 
+def _reattribute_monitored_youtube_evidence(
+    root: Path, discovered_items: list[dict],
+) -> dict:
+    """Promote existing verified YouTube evidence to its registered creator.
+
+    An ad-hoc single-video retrieval can populate the correct yt_<id> row while
+    retaining the temporary creator name. Only fresh, verified registered-channel
+    discovery may reattribute that row; never guess ownership from a title.
+    """
+    manifest_path = root / "state" / "manifest.json"
+    manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
+    items = manifest.get("items") or {}
+    if not isinstance(items, dict):
+        return {"updated": [], "conflicts": []}
+    updated: list[str] = []
+    conflicts: list[str] = []
+    for discovered in discovered_items:
+        if str(discovered.get("platform") or "").upper() != "YOUTUBE":
+            continue
+        video_id = str(discovered.get("source_id") or "")
+        if not video_id or not yte.VIDEO_ID_RE.fullmatch(video_id):
+            continue
+        key = f"yt_{video_id}"
+        item = items.get(key)
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("source_platform") or "").upper() != "YOUTUBE":
+            conflicts.append(key)
+            continue
+        if (
+            item.get("download_status") != "DONE"
+            or item.get("transcription_status") != "DONE"
+        ):
+            continue
+        text_path = str(item.get("transcript_txt") or "")
+        transcript_path = (root / text_path).resolve() if text_path else None
+        if (
+            transcript_path is None
+            or not transcript_path.is_relative_to(root.resolve())
+            or not transcript_path.is_file()
+        ):
+            continue
+        creator_key = str(discovered.get("creator_key") or "").lower()
+        prior_creator = str(item.get("creator") or "").lower()
+        temporary_source = (
+            prior_creator.startswith("adhoc")
+            and str(item.get("evaluation_mode") or "").upper()
+            in {"SINGLE_VIDEO_URL", "CREATOR_EVALUATION"}
+            and item.get("permanent_source") is False
+        )
+        if prior_creator not in {"", creator_key} and not temporary_source:
+            conflicts.append(key)
+            continue
+        desired = {
+            "creator": creator_key,
+            "source_platform": "YOUTUBE",
+            "source_id": video_id,
+            "permanent_source": True,
+            "evaluation_mode": "RECENT_MONITORING",
+        }
+        if not item.get("published_at") and discovered.get("published_at"):
+            desired["published_at"] = str(discovered["published_at"])
+        changed = False
+        for field, value in desired.items():
+            if item.get(field) != value:
+                item[field] = value
+                changed = True
+        if changed:
+            updated.append(key)
+    if updated:
+        atomic_json(manifest_path, manifest)
+    return {"updated": updated, "conflicts": conflicts}
+
+
 def _plan_recent_items(all_recent: list[dict], max_items: int) -> dict:
     pending = [item for item in all_recent if not item.get("already_ingested")]
     selected_pending = pending[:max_items]
@@ -3157,6 +3231,15 @@ def _main_impl() -> int:
 
         all_recent = [item for d in discoveries for item in d.get("items", [])]
         all_recent.sort(key=lambda x: x["published_at"], reverse=True)
+        youtube_reattribution = _reattribute_monitored_youtube_evidence(
+            root, all_recent,
+        )
+        if youtube_reattribution["conflicts"]:
+            errors.append({
+                "stage": "YOUTUBE_ATTRIBUTION",
+                "error": "MONITORED_YOUTUBE_OWNER_CONFLICT",
+                "ids": youtube_reattribution["conflicts"][:30],
+            })
         done_by_platform = {p: manifest_done_ids(root, p) for p in SUPPORTED_PLATFORMS}
         for item in all_recent:
             item["already_ingested"] = item["source_id"] in done_by_platform[item["platform"]]
