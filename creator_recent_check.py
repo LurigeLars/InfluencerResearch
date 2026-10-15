@@ -2285,23 +2285,12 @@ def _run_discovery_with_story_prefetch(
     progress_callback=None,
     transition_callback=None,
 ) -> tuple[tuple[list[dict], list[dict], dict, list[dict], dict], dict]:
-    """Overlap Story capture with discovery without an unbounded thread join."""
-    story_targets = _story_capture_targets(selected)
-    story_handle = None
-    if story_targets:
-        story_handle = _launch_recent_worker(
-            root,
-            {
-                "operation": "STORY_PREFETCH",
-                "selected": selected,
-                "max_items": max_items,
-                "gemini_circuit": dict(gemini_circuit),
-                "ollama_budget_state": dict(ollama_budget_state),
-            },
-            label="story-prefetch",
-            timeout_seconds=STORY_PREFETCH_TIMEOUT_SECONDS,
-        )
+    """Run discovery before Story browsers to stay within Chromium PID limits.
 
+    Instagram discovery and Story capture both spawn Chromium processes. Running
+    them concurrently exhausted the container's thread/PID budget on 2026-10-15.
+    """
+    story_targets = _story_capture_targets(selected)
     discovery_clock = time.perf_counter()
     discovery_result = _run_discovery_batch(
         root,
@@ -2322,6 +2311,26 @@ def _run_discovery_with_story_prefetch(
             source_count=len(discovery_result[0]),
             error_count=len(discovery_result[1]),
             duration_ms=discovery_duration_ms,
+        )
+
+    # Start browser capture only after discovery has CLOSED its browser pool.
+    story_handle = None
+    story_timeout_seconds = min(
+        900,
+        STORY_PREFETCH_TIMEOUT_SECONDS * max(1, len(story_targets)),
+    )
+    if story_targets:
+        story_handle = _launch_recent_worker(
+            root,
+            {
+                "operation": "STORY_PREFETCH",
+                "selected": selected,
+                "max_items": max_items,
+                "gemini_circuit": dict(gemini_circuit),
+                "ollama_budget_state": dict(ollama_budget_state),
+            },
+            label="story-prefetch",
+            timeout_seconds=story_timeout_seconds,
         )
 
     join_clock = time.perf_counter()
@@ -2384,13 +2393,8 @@ def _run_discovery_with_story_prefetch(
     join_wait_ms = round((time.perf_counter() - join_clock) * 1000, 1)
     story_result["discovery_duration_ms"] = discovery_duration_ms
     story_result["join_wait_ms"] = join_wait_ms
-    story_result["overlap_saved_estimate_ms"] = round(
-        min(
-            float(discovery_duration_ms),
-            float(story_result.get("wall_duration_ms") or 0.0),
-        ),
-        1,
-    )
+    # Sequential browser phases intentionally have no overlap savings.
+    story_result["overlap_saved_estimate_ms"] = 0.0
     return discovery_result, story_result
 
 def _run_discovery_batch(
