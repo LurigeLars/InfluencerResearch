@@ -12,6 +12,62 @@ import creator_recent_check as crc
 
 
 class RecentInstagramTests(unittest.TestCase):
+    def test_signup_gate_is_reported_as_media_auth_limitation(self):
+        end = datetime(2026, 10, 15, 0, 0, tzinfo=timezone.utc)
+        primary = {
+            "ok": False, "authenticated": True, "reel_items": [],
+            "blocked": False, "media_auth_gated": False,
+            "error": "INSTAGRAM_REELS_NOT_FOUND_AFTER_PROFILE_FALLBACK",
+        }
+        public = {
+            "ok": True, "media_auth_gated": False, "reel_items": [],
+            "rounds": [
+                {"auth_prompt_hits": ["sign up"], "media_auth_gate_seen": True}
+            ],
+        }
+        with (
+            unittest.mock.patch.object(crc.instagram,
+                "discover_reels_authenticated", return_value=primary),
+            unittest.mock.patch.object(crc.instagram_public,
+                "probe_public_session", return_value=public),
+        ):
+            result = crc.discover_instagram(
+                {"creator_key": "nicholascrown"},
+                {"profile_url": "https://www.instagram.com/nicholascrown/"},
+                end - timedelta(days=2), end, 15,
+            )
+        self.assertFalse(result["window_complete"])
+        self.assertEqual(result["coverage_limited_reason"], "MEDIA_AUTH_GATE")
+        self.assertEqual(
+            result["discovery"]["error"],
+            "INSTAGRAM_REEL_LINKS_HIDDEN_BY_SIGNUP_GATE",
+        )
+
+    def test_plain_empty_public_results_remain_discovery_error(self):
+        end = datetime(2026, 10, 15, 0, 0, tzinfo=timezone.utc)
+        primary = {
+            "ok": False, "authenticated": True, "reel_items": [],
+            "blocked": False, "media_auth_gated": False,
+            "error": "INSTAGRAM_REELS_NOT_FOUND_AFTER_PROFILE_FALLBACK",
+        }
+        public = {
+            "ok": True, "reel_items": [], "rounds": [
+                {"auth_prompt_hits": [], "media_auth_gate_seen": False}
+            ],
+        }
+        with (
+            unittest.mock.patch.object(crc.instagram,
+                "discover_reels_authenticated", return_value=primary),
+            unittest.mock.patch.object(crc.instagram_public,
+                "probe_public_session", return_value=public),
+        ):
+            result = crc.discover_instagram(
+                {"creator_key": "example"},
+                {"profile_url": "https://www.instagram.com/example/"},
+                end - timedelta(days=2), end, 15,
+            )
+        self.assertFalse(result["window_complete"])
+        self.assertEqual(result["coverage_limited_reason"], "DISCOVERY_ERROR")
     def test_authenticated_empty_grid_uses_public_camofox_reels_with_timestamps(self):
         end = datetime(2026, 10, 15, 0, 0, tzinfo=timezone.utc)
         cutoff = end - timedelta(days=2)
