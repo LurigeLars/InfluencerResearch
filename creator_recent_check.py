@@ -1380,7 +1380,7 @@ def discover_instagram(
             or blocked
             or media_auth_gated
             or not discovery_ok
-            or (bool(probe.get("public_fallback")) and len(entries) >= public_fallback_limit)
+            or bool(probe.get("public_fallback"))
             or target >= MAX_DISCOVERY_PER_SOURCE
         ):
             break
