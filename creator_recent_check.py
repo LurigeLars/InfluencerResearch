@@ -21,6 +21,7 @@ from creator_registry import get_creator, load_registry, select_monitor_sources
 import youtube_creator_evaluation as yte
 import tiktok_camofox_sync as tts
 import instagram_ingest as instagram
+import instagram_camofox_public_smoke as instagram_public
 import ephemeral_ingest as ephemeral
 from video_visual_evidence import VISUAL_REVIEW_POLICY_VERSION
 
@@ -1242,6 +1243,8 @@ def discover_instagram(
     media_auth_gated = False
     transient_retry_count = 0
     transient_retry_total = 0
+    public_fallback_attempted = False
+    public_fallback_limit = 20  # bounded by probe_public_session
 
     while True:
         try:
@@ -1261,6 +1264,44 @@ def discover_instagram(
                 "error": f"{type(exc).__name__}: {exc}",
                 "timings": {},
             }
+        # An authenticated browser can load a profile shell with no Reel grid.
+        # Reuse IR's existing PUBLIC CamoFox parser rather than inventing an
+        # undocumented Instagram API or silently treating zero as full coverage.
+        if (
+            not public_fallback_attempted
+            and not bool(probe.get("blocked"))
+            and not bool(probe.get("media_auth_gated"))
+            and not probe.get("reel_items")
+            and str(probe.get("error") or "").startswith("INSTAGRAM_REELS_NOT_FOUND")
+        ):
+            public_fallback_attempted = True
+            try:
+                public = instagram_public.probe_public_session(
+                    str(source["profile_url"]),
+                    handle,
+                    run_index,
+                    inspect_reel_times=True,
+                    known_reel_times=cached_times,
+                )
+                if public.get("reel_items"):
+                    probe = {
+                        "ok": bool(public.get("ok")) and not bool(public.get("blocked")),
+                        "authenticated": False,
+                        "public_fallback": True,
+                        "blocked": bool(public.get("blocked")),
+                        "media_auth_gated": bool(public.get("media_auth_gated")),
+                        "reel_count": len(public["reel_items"]),
+                        "reel_items": list(public["reel_items"]),
+                        "error": None if public.get("ok") else "CAMOFOX_PUBLIC_PROFILE_UNAVAILABLE",
+                        "timings": dict(public.get("timings") or {}),
+                    }
+                else:
+                    probe["error"] = "CAMOFOX_PUBLIC_REELS_NOT_FOUND"
+            except Exception as exc:
+                # Never leak authenticated browser URLs or response bodies.
+                probe["error"] = (
+                    "CAMOFOX_PUBLIC_DISCOVERY_" + type(exc).__name__
+                )
         entries = list(probe.get("reel_items") or [])
         timestamp_cache_size = _update_instagram_discovery_catalog(
             root,
@@ -1293,6 +1334,10 @@ def discover_instagram(
             known_times=known_times,
             cutoff=cutoff,
         )
+        if probe.get("public_fallback"):
+            # The public scanner truncates at 20 items even when more exist.
+            # Only observing an item older than the cutoff proves coverage.
+            natural_window_complete = any(stamp < cutoff for stamp in known_times)
         discovery_ok = bool(probe.get("ok"))
         blocked = bool(probe.get("blocked"))
         media_auth_gated = bool(probe.get("media_auth_gated"))
@@ -1323,6 +1368,7 @@ def discover_instagram(
             not discovery_ok
             and not blocked
             and not media_auth_gated
+            and not public_fallback_attempted
             and transient_retry_count < INSTAGRAM_TRANSIENT_DISCOVERY_RETRIES
         ):
             delay = INSTAGRAM_TRANSIENT_DISCOVERY_RETRY_BASE_SECONDS * (
@@ -1338,6 +1384,7 @@ def discover_instagram(
             or blocked
             or media_auth_gated
             or not discovery_ok
+            or bool(probe.get("public_fallback"))
             or target >= MAX_DISCOVERY_PER_SOURCE
         ):
             break
@@ -1378,6 +1425,12 @@ def discover_instagram(
         coverage_limited_reason = "MEDIA_AUTH_GATE"
     elif not discovery_ok:
         coverage_limited_reason = "DISCOVERY_ERROR"
+    elif (
+        bool(probe.get("public_fallback"))
+        and not natural_window_complete
+        and len(entries) >= public_fallback_limit
+    ):
+        coverage_limited_reason = "PUBLIC_FALLBACK_CAPPED_BEFORE_CUTOFF"
     elif not natural_window_complete and target >= MAX_DISCOVERY_PER_SOURCE:
         coverage_limited_reason = "DISCOVERY_LIMIT_REACHED_BEFORE_CUTOFF"
     elif not natural_window_complete:
@@ -1403,6 +1456,8 @@ def discover_instagram(
         "discovery": {
             "ok": discovery_ok,
             "authenticated": bool(probe.get("authenticated")),
+            "public_fallback": bool(probe.get("public_fallback")),
+            "public_fallback_attempted": public_fallback_attempted,
             "reel_count": int(probe.get("reel_count") or 0),
             "blocked": blocked,
             "media_auth_gated": media_auth_gated,
