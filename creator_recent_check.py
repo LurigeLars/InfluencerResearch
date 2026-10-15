@@ -1521,15 +1521,60 @@ def _ingest_youtube(root: Path, creator_key: str, ids: list[str]) -> dict:
     ]
     p = subprocess.run(cmd, cwd=str(root / "app"))
     status = load_json(root / "state" / "creator_evaluation_status.json", {})
-    completed = [str(x)[3:] for x in status.get("completed", []) if str(x).startswith("yt_")]
+    completed = [
+        str(x)[3:] for x in status.get("completed", [])
+        if str(x).startswith("yt_") and str(x)[3:] in set(ids)
+    ]
+    # The evaluator is reused by recent monitoring, but it normally labels its
+    # evidence CREATOR_EVALUATION/permanent_source=False. Those semantics are
+    # incorrect for already-registered monitored creators and make queue audits
+    # ambiguous. Promote exact completed IDs to their canonical monitored source.
+    manifest_path = root / "state" / "manifest.json"
+    manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
+    changed = False
+    retained = []
+    for video_id in completed:
+        item = (manifest.get("items") or {}).get(f"yt_{video_id}")
+        if not isinstance(item, dict):
+            continue
+        if item.get("download_status") != "DONE" or item.get("transcription_status") != "DONE":
+            continue
+        for field, value in {
+            "creator": creator_key,
+            "source_platform": "YOUTUBE",
+            "source_id": video_id,
+            "permanent_source": True,
+            "evaluation_mode": "RECENT_MONITORING",
+        }.items():
+            if item.get(field) != value:
+                item[field] = value
+                changed = True
+        retained.append(video_id)
+    if changed:
+        atomic_json(manifest_path, manifest)
+    queue_result = tts.run_research_queue(
+        root, must_include=[f"yt_{video_id}" for video_id in retained],
+    )
+    queue_snapshot = load_json(root / "state" / "research_queue.json", {"items": []})
+    coverage = _analysis_candidate_coverage(
+        root, queue_snapshot, {f"yt_{video_id}" for video_id in retained},
+    )
     failures = status.get("failures") if isinstance(status.get("failures"), list) else []
+    errors = []
+    if not queue_result.get("ok"):
+        errors.append("YOUTUBE_RESEARCH_QUEUE_WRITE_FAILED")
+    if coverage.get("missing"):
+        errors.append("YOUTUBE_ANALYSIS_TARGET_MISSING:" + ",".join(coverage["missing"]))
     return {
         "requested": len(ids),
-        "completed_ids": completed,
+        "completed_ids": retained,
         "returncode": int(p.returncode),
         "evaluation_state": status.get("state"),
         "failure_count": int(status.get("failure_count") or len(failures)),
         "failures": failures[:10],
+        "queue": queue_result,
+        "analysis_coverage": coverage,
+        "errors": errors,
     }
 
 
