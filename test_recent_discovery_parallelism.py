@@ -259,7 +259,7 @@ class RecentDiscoveryParallelismTests(unittest.TestCase):
         self.assertEqual(timing["browser_source"], "readiness_dom")
         self.assertEqual(timing["links_endpoint_errors"], 0)
 
-    def test_story_capture_overlaps_discovery(self):
+    def test_story_capture_follows_discovery_to_limit_chromium_processes(self):
         story_started = threading.Event()
         discovery_started = threading.Event()
 
@@ -276,13 +276,14 @@ class RecentDiscoveryParallelismTests(unittest.TestCase):
 
         def fake_discovery(*args, **kwargs):
             discovery_started.set()
-            self.assertTrue(story_started.wait(timeout=1.0))
+            self.assertFalse(story_started.is_set())
             time.sleep(0.02)
             return ([], [], {}, [], {"wall_duration_ms": 20.0})
 
         def fake_wait(handle, **kwargs):
             self.assertEqual(handle, {"fixture": "story-worker"})
             self.assertTrue(discovery_started.is_set())
+            self.assertTrue(story_started.is_set())
             return {
                 "ok": True,
                 "elapsed_ms": 20.0,
@@ -314,7 +315,7 @@ class RecentDiscoveryParallelismTests(unittest.TestCase):
 
         self.assertEqual(discovery[0], [])
         self.assertEqual(story["creator_count"], 1)
-        self.assertGreaterEqual(story["overlap_saved_estimate_ms"], 10.0)
+        self.assertEqual(story["overlap_saved_estimate_ms"], 0.0)
         self.assertLess(story["join_wait_ms"], 50.0)
 
     def test_browser_bootstrap_failure_does_not_block_youtube(self):
