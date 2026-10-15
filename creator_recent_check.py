@@ -1334,6 +1334,10 @@ def discover_instagram(
             known_times=known_times,
             cutoff=cutoff,
         )
+        if probe.get("public_fallback"):
+            # The public scanner truncates at 20 items even when more exist.
+            # Only observing an item older than the cutoff proves coverage.
+            natural_window_complete = any(stamp < cutoff for stamp in known_times)
         discovery_ok = bool(probe.get("ok"))
         blocked = bool(probe.get("blocked"))
         media_auth_gated = bool(probe.get("media_auth_gated"))
