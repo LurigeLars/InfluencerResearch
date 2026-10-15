@@ -1296,7 +1296,20 @@ def discover_instagram(
                         "timings": dict(public.get("timings") or {}),
                     }
                 else:
-                    probe["error"] = "CAMOFOX_PUBLIC_REELS_NOT_FOUND"
+                    # Instagram can return public profile thumbnails while hiding
+                    # individual Reel links behind its signup overlay. Record this
+                    # as an access limitation rather than a generic empty listing.
+                    auth_gate_visible = bool(public.get("media_auth_gated")) or any(
+                        bool((round_info or {}).get("auth_prompt_hits"))
+                        or bool((round_info or {}).get("media_auth_gate_seen"))
+                        for round_info in (public.get("rounds") or [])
+                        if isinstance(round_info, dict)
+                    )
+                    if auth_gate_visible:
+                        probe["media_auth_gated"] = True
+                        probe["error"] = "INSTAGRAM_REEL_LINKS_HIDDEN_BY_SIGNUP_GATE"
+                    else:
+                        probe["error"] = "CAMOFOX_PUBLIC_REELS_NOT_FOUND"
             except Exception as exc:
                 # Never leak authenticated browser URLs or response bodies.
                 probe["error"] = (
