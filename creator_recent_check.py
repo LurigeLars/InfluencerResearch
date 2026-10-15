@@ -1592,7 +1592,10 @@ def discover_tiktok(root: Path, profile: dict, source: dict, cutoff: datetime, e
     }
 
 
-def _ingest_youtube(root: Path, creator_key: str, ids: list[str]) -> dict:
+def _ingest_youtube(
+    root: Path, creator_key: str, ids: list[str],
+    published_by_id: dict[str, str] | None = None,
+) -> dict:
     if not ids:
         return {"requested": 0, "completed_ids": [], "returncode": 0}
     cmd = [
@@ -1631,6 +1634,13 @@ def _ingest_youtube(root: Path, creator_key: str, ids: list[str]) -> dict:
             if item.get(field) != value:
                 item[field] = value
                 changed = True
+        # Evaluator-created records can have published_at=null even when the
+        # discovery source already verified the video timestamp. Preserve that
+        # timestamp so recency ordering and later analysis remain reproducible.
+        discovered_at = str((published_by_id or {}).get(video_id) or "").strip()
+        if discovered_at and not item.get("published_at"):
+            item["published_at"] = parse_iso_utc(discovered_at).isoformat()
+            changed = True
         retained.append(video_id)
     if changed:
         atomic_json(manifest_path, manifest)
@@ -3072,7 +3082,10 @@ def _internal_worker_main(request_path: Path) -> int:
             profile = dict(request.get("profile") or {})
             source = dict(request.get("source") or {})
             if platform == "YOUTUBE":
-                ingestion = _ingest_youtube(root, creator_key, ids)
+                ingestion = _ingest_youtube(
+                    root, creator_key, ids,
+                    dict(request.get("published_by_id") or {}),
+                )
             elif platform == "TIKTOK":
                 ingestion = _ingest_tiktok(
                     root,

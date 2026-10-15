@@ -12,6 +12,39 @@ import creator_recent_check as recent
 
 
 class YouTubeIngestionDiagnosticsTests(unittest.TestCase):
+    def test_recent_youtube_ingestion_persists_verified_discovery_date(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = recent.Path(td)
+            state = root / "state"
+            state.mkdir()
+            (state / "creator_evaluation_status.json").write_text(json.dumps({
+                "completed": ["yt_41YtnjofKvw"], "failure_count": 0,
+                "failures": [],
+            }))
+            (state / "manifest.json").write_text(json.dumps({
+                "schema_version": 1, "items": {
+                    "yt_41YtnjofKvw": {
+                        "download_status": "DONE",
+                        "transcription_status": "DONE",
+                        "published_at": None,
+                    }
+                },
+            }))
+            with (
+                patch.object(recent.subprocess, "run",
+                             return_value=SimpleNamespace(returncode=0)),
+                patch.object(recent.tts, "run_research_queue",
+                             return_value={"ok": True}),
+            ):
+                recent._ingest_youtube(
+                    root, "matfinog", ["41YtnjofKvw"],
+                    {"41YtnjofKvw": "2026-10-14T19:00:00Z"},
+                )
+            item = json.loads((state / "manifest.json").read_text())["items"]["yt_41YtnjofKvw"]
+            self.assertEqual(item["published_at"], "2026-10-14T19:00:00+00:00")
+            self.assertEqual(item["creator"], "matfinog")
+            self.assertEqual(item["evaluation_mode"], "RECENT_MONITORING")
+
     def test_ingest_youtube_returns_failure_stage_and_detail(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = recent.Path(td)
