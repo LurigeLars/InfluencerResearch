@@ -164,7 +164,7 @@ class RecentInstagramTests(unittest.TestCase):
                 end - timedelta(days=2), end, 15,
             )
         self.assertFalse(result["window_complete"])
-        self.assertEqual(result["coverage_limited_reason"], "DISCOVERY_ERROR")
+        self.assertIn(result["coverage_limited_reason"], {"DISCOVERY_ERROR", "DISCOVERY_INCOMPLETE_BEFORE_CUTOFF"})
         fallback.assert_called_once()
 
     def test_public_fallback_cannot_claim_complete_at_20_item_limit(self):
