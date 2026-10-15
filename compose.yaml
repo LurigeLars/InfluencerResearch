@@ -32,7 +32,7 @@ services:
       INFLUENCER_RESEARCH_CAMOFOX_PROXY_BASE_URL: "http://camofox-public-proxy:9377"
       INFLUENCER_RESEARCH_CAMOFOX_PROXY_ATTEMPTS: "3"
       INFLUENCER_RESEARCH_CAMOFOX_PROXY_HOSTS: "tiktok.com,instagram.com"
-      INFLUENCER_RESEARCH_DISCOVERY_BROWSER_WORKERS: "2"
+      INFLUENCER_RESEARCH_DISCOVERY_BROWSER_WORKERS: "1"
       XDG_CACHE_HOME: /runtime/influencerresearch/cache
       HOME: /home/influencer
     ports:

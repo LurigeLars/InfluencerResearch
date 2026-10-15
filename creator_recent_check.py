@@ -73,7 +73,7 @@ YOUTUBE_METADATA_PROBE_WORKERS = 2
 # capacity experiments, but the reviewed Compose deployment currently uses 2.
 DISCOVERY_BROWSER_WORKERS = _bounded_env_int(
     "INFLUENCER_RESEARCH_DISCOVERY_BROWSER_WORKERS",
-    2,
+    1,
     1,
     4,
 )
@@ -1272,7 +1272,12 @@ def discover_instagram(
             and not bool(probe.get("blocked"))
             and not bool(probe.get("media_auth_gated"))
             and not probe.get("reel_items")
-            and str(probe.get("error") or "").startswith("INSTAGRAM_REELS_NOT_FOUND")
+            and (
+                bool(probe.get("ok"))
+                or str(probe.get("error") or "").startswith("INSTAGRAM_REELS_NOT_FOUND")
+            )
+            # Empty authenticated listings also require public verification;
+            # otherwise a blank grid silently becomes zero published reels.
         ):
             public_fallback_attempted = True
             try:
@@ -1310,6 +1315,15 @@ def discover_instagram(
                         probe["error"] = "INSTAGRAM_REEL_LINKS_HIDDEN_BY_SIGNUP_GATE"
                     else:
                         probe["error"] = "CAMOFOX_PUBLIC_REELS_NOT_FOUND"
+                        # Preserve the public probe's metadata so a zero-item
+                        # result is not mistaken for an exhaustive listing.
+                        probe["public_fallback"] = True
+                        probe["ok"] = False
+                        probe["public_fallback_diagnostics"] = {
+                            "ok": bool(public.get("ok")),
+                            "blocked": bool(public.get("blocked")),
+                            "media_auth_gated": bool(public.get("media_auth_gated")),
+                        }
             except Exception as exc:
                 # Never leak authenticated browser URLs or response bodies.
                 probe["error"] = (

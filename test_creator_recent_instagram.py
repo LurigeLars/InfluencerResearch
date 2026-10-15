@@ -110,6 +110,63 @@ class RecentInstagramTests(unittest.TestCase):
         self.assertEqual(auth.call_count, 1)
         self.assertEqual(camofox.call_count, 1)
 
+    def test_authenticated_empty_success_still_tries_public_reel_discovery(self):
+        end = datetime(2026, 10, 15, tzinfo=timezone.utc)
+        primary = {
+            "ok": True, "authenticated": True, "blocked": False,
+            "media_auth_gated": False, "reel_items": [], "error": None,
+        }
+        public = {
+            "ok": True, "blocked": False, "media_auth_gated": False,
+            "reel_items": [
+                {"url": "https://www.instagram.com/reel/RECENT123/",
+                 "published_at": "2026-10-14T12:00:00+00:00"},
+                {"url": "https://www.instagram.com/reel/OLD123/",
+                 "published_at": "2026-10-11T12:00:00+00:00"},
+            ],
+        }
+        with (
+            unittest.mock.patch.object(
+                crc.instagram, "discover_reels_authenticated", return_value=primary,
+            ) as auth,
+            unittest.mock.patch.object(
+                crc.instagram_public, "probe_public_session", return_value=public,
+            ) as fallback,
+        ):
+            result = crc.discover_instagram(
+                {"creator_key": "example"},
+                {"profile_url": "https://www.instagram.com/example/"},
+                end - timedelta(days=2), end, 15,
+            )
+        self.assertEqual([x["source_id"] for x in result["items"]], ["RECENT123"])
+        self.assertTrue(result["window_complete"])
+        self.assertEqual(auth.call_count, 1)
+        self.assertEqual(fallback.call_count, 1)
+
+    def test_authenticated_empty_and_public_empty_stays_incomplete(self):
+        end = datetime(2026, 10, 15, tzinfo=timezone.utc)
+        with (
+            unittest.mock.patch.object(
+                crc.instagram, "discover_reels_authenticated",
+                return_value={
+                    "ok": True, "authenticated": True, "blocked": False,
+                    "media_auth_gated": False, "reel_items": [], "error": None,
+                },
+            ),
+            unittest.mock.patch.object(
+                crc.instagram_public, "probe_public_session",
+                return_value={"ok": True, "blocked": False, "reel_items": [], "rounds": []},
+            ) as fallback,
+        ):
+            result = crc.discover_instagram(
+                {"creator_key": "example"},
+                {"profile_url": "https://www.instagram.com/example/"},
+                end - timedelta(days=2), end, 15,
+            )
+        self.assertFalse(result["window_complete"])
+        self.assertIn(result["coverage_limited_reason"], {"DISCOVERY_ERROR", "DISCOVERY_INCOMPLETE_BEFORE_CUTOFF"})
+        fallback.assert_called_once()
+
     def test_public_fallback_cannot_claim_complete_at_20_item_limit(self):
         end = datetime(2026, 10, 15, 0, 0, tzinfo=timezone.utc)
         primary = {

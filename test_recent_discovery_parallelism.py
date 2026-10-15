@@ -167,7 +167,7 @@ class RecentDiscoveryParallelismTests(unittest.TestCase):
             ],
         )
         self.assertEqual(meta["browser_task_count"], 4)
-        self.assertEqual(meta["browser_worker_limit"], 2)
+        self.assertEqual(meta["browser_worker_limit"], 1)
         self.assertEqual(meta["network_task_count"], 1)
         self.assertEqual(meta["network_worker_limit"], 1)
         self.assertEqual(len(source_map), 5)
