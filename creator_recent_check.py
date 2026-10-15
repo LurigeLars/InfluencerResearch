@@ -1272,6 +1272,10 @@ def discover_instagram(
             and not bool(probe.get("blocked"))
             and not bool(probe.get("media_auth_gated"))
             and not probe.get("reel_items")
+            and (
+                bool(probe.get("ok"))
+                or str(probe.get("error") or "").startswith("INSTAGRAM_REELS_NOT_FOUND")
+            )
             # Empty authenticated listings also require public verification;
             # otherwise a blank grid silently becomes zero published reels.
         ):
@@ -1314,6 +1318,7 @@ def discover_instagram(
                         # Preserve the public probe's metadata so a zero-item
                         # result is not mistaken for an exhaustive listing.
                         probe["public_fallback"] = True
+                        probe["ok"] = False
                         probe["public_fallback_diagnostics"] = {
                             "ok": bool(public.get("ok")),
                             "blocked": bool(public.get("blocked")),
