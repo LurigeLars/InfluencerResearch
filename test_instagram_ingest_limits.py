@@ -371,7 +371,9 @@ class InstagramIngestLimitTests(unittest.TestCase):
         ):
             result = ig.discover_reels_authenticated("example", max_scan=15)
 
-        self.assertTrue(result["ok"])
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "INSTAGRAM_REELS_NOT_FOUND_AFTER_PROFILE_FALLBACK")
+        self.assertTrue(result["timings"]["profile_fallback_attempted"])
         self.assertEqual(
             events,
             ["context_close", "browser_close", "playwright_exit"],
