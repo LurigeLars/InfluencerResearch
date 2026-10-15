@@ -1521,15 +1521,60 @@ def _ingest_youtube(root: Path, creator_key: str, ids: list[str]) -> dict:
     ]
     p = subprocess.run(cmd, cwd=str(root / "app"))
     status = load_json(root / "state" / "creator_evaluation_status.json", {})
-    completed = [str(x)[3:] for x in status.get("completed", []) if str(x).startswith("yt_")]
+    completed = [
+        str(x)[3:] for x in status.get("completed", [])
+        if str(x).startswith("yt_") and str(x)[3:] in set(ids)
+    ]
+    # The evaluator is reused by recent monitoring, but it normally labels its
+    # evidence CREATOR_EVALUATION/permanent_source=False. Those semantics are
+    # incorrect for already-registered monitored creators and make queue audits
+    # ambiguous. Promote exact completed IDs to their canonical monitored source.
+    manifest_path = root / "state" / "manifest.json"
+    manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
+    changed = False
+    retained = []
+    for video_id in completed:
+        item = (manifest.get("items") or {}).get(f"yt_{video_id}")
+        if not isinstance(item, dict):
+            continue
+        if item.get("download_status") != "DONE" or item.get("transcription_status") != "DONE":
+            continue
+        for field, value in {
+            "creator": creator_key,
+            "source_platform": "YOUTUBE",
+            "source_id": video_id,
+            "permanent_source": True,
+            "evaluation_mode": "RECENT_MONITORING",
+        }.items():
+            if item.get(field) != value:
+                item[field] = value
+                changed = True
+        retained.append(video_id)
+    if changed:
+        atomic_json(manifest_path, manifest)
+    queue_result = tts.run_research_queue(
+        root, must_include=[f"yt_{video_id}" for video_id in retained],
+    )
+    queue_snapshot = load_json(root / "state" / "research_queue.json", {"items": []})
+    coverage = _analysis_candidate_coverage(
+        root, queue_snapshot, {f"yt_{video_id}" for video_id in retained},
+    )
     failures = status.get("failures") if isinstance(status.get("failures"), list) else []
+    errors = []
+    if not queue_result.get("ok"):
+        errors.append("YOUTUBE_RESEARCH_QUEUE_WRITE_FAILED")
+    if coverage.get("missing"):
+        errors.append("YOUTUBE_ANALYSIS_TARGET_MISSING:" + ",".join(coverage["missing"]))
     return {
         "requested": len(ids),
-        "completed_ids": completed,
+        "completed_ids": retained,
         "returncode": int(p.returncode),
         "evaluation_state": status.get("state"),
         "failure_count": int(status.get("failure_count") or len(failures)),
         "failures": failures[:10],
+        "queue": queue_result,
+        "analysis_coverage": coverage,
+        "errors": errors,
     }
 
 
@@ -2285,23 +2330,12 @@ def _run_discovery_with_story_prefetch(
     progress_callback=None,
     transition_callback=None,
 ) -> tuple[tuple[list[dict], list[dict], dict, list[dict], dict], dict]:
-    """Overlap Story capture with discovery without an unbounded thread join."""
-    story_targets = _story_capture_targets(selected)
-    story_handle = None
-    if story_targets:
-        story_handle = _launch_recent_worker(
-            root,
-            {
-                "operation": "STORY_PREFETCH",
-                "selected": selected,
-                "max_items": max_items,
-                "gemini_circuit": dict(gemini_circuit),
-                "ollama_budget_state": dict(ollama_budget_state),
-            },
-            label="story-prefetch",
-            timeout_seconds=STORY_PREFETCH_TIMEOUT_SECONDS,
-        )
+    """Run discovery before Story browsers to stay within Chromium PID limits.
 
+    Instagram discovery and Story capture both spawn Chromium processes. Running
+    them concurrently exhausted the container's thread/PID budget on 2026-10-15.
+    """
+    story_targets = _story_capture_targets(selected)
     discovery_clock = time.perf_counter()
     discovery_result = _run_discovery_batch(
         root,
@@ -2322,6 +2356,26 @@ def _run_discovery_with_story_prefetch(
             source_count=len(discovery_result[0]),
             error_count=len(discovery_result[1]),
             duration_ms=discovery_duration_ms,
+        )
+
+    # Start browser capture only after discovery has CLOSED its browser pool.
+    story_handle = None
+    story_timeout_seconds = min(
+        900,
+        STORY_PREFETCH_TIMEOUT_SECONDS * max(1, len(story_targets)),
+    )
+    if story_targets:
+        story_handle = _launch_recent_worker(
+            root,
+            {
+                "operation": "STORY_PREFETCH",
+                "selected": selected,
+                "max_items": max_items,
+                "gemini_circuit": dict(gemini_circuit),
+                "ollama_budget_state": dict(ollama_budget_state),
+            },
+            label="story-prefetch",
+            timeout_seconds=story_timeout_seconds,
         )
 
     join_clock = time.perf_counter()
@@ -2384,13 +2438,8 @@ def _run_discovery_with_story_prefetch(
     join_wait_ms = round((time.perf_counter() - join_clock) * 1000, 1)
     story_result["discovery_duration_ms"] = discovery_duration_ms
     story_result["join_wait_ms"] = join_wait_ms
-    story_result["overlap_saved_estimate_ms"] = round(
-        min(
-            float(discovery_duration_ms),
-            float(story_result.get("wall_duration_ms") or 0.0),
-        ),
-        1,
-    )
+    # Sequential browser phases intentionally have no overlap savings.
+    story_result["overlap_saved_estimate_ms"] = 0.0
     return discovery_result, story_result
 
 def _run_discovery_batch(

@@ -186,7 +186,7 @@ def _wait_for_instagram_profile_ready(
     page,
     creator: str,
     *,
-    max_wait_ms: int = 5000,
+    max_wait_ms: int = 9000,
     poll_ms: int = 250,
 ) -> dict[str, Any]:
     started = time.perf_counter()
@@ -203,7 +203,6 @@ def _wait_for_instagram_profile_ready(
             or state.get("media_auth_gated")
             or state.get("blocked")
             or state.get("unavailable")
-            or int(state.get("body_text_length") or 0) > 300
         ):
             break
         elapsed_ms = (time.perf_counter() - started) * 1000
@@ -218,7 +217,6 @@ def _wait_for_instagram_profile_ready(
             or state.get("media_auth_gated")
             or state.get("blocked")
             or state.get("unavailable")
-            or int(state.get("body_text_length") or 0) > 300
         ),
         "reel_link_count": reel_count,
         "attempts": attempts,
@@ -358,11 +356,31 @@ def discover_reels_authenticated(
                 media_auth_gated = bool(readiness.get("media_auth_gated"))
                 unavailable = bool(readiness.get("unavailable"))
                 reel_urls: list[str] = []
+                fallback_profile_attempted = False
                 if not blocked and not media_auth_gated and not unavailable:
                     reel_urls, discovery_rounds = _collect_loaded_reel_urls(
                         page,
                         max_scan,
                     )
+                    if not reel_urls:
+                        # A valid Instagram session may show an empty /reels/ grid.
+                        # Retry through the main profile; never count zero links as coverage.
+                        fallback_profile_attempted = True
+                        page.goto(
+                            f"https://www.instagram.com/{creator}/",
+                            wait_until="domcontentloaded",
+                            timeout=30000,
+                        )
+                        profile_ready = _wait_for_instagram_profile_ready(
+                            page, creator, max_wait_ms=6000,
+                        )
+                        if not any(profile_ready.get(key) for key in (
+                            "blocked", "media_auth_gated", "unavailable",
+                        )):
+                            reel_urls, extra_rounds = _collect_loaded_reel_urls(
+                                page, max_scan,
+                            )
+                            discovery_rounds += extra_rounds
 
                 reel_items: list[dict[str, Any]] = []
                 for reel_url in reel_urls:
@@ -394,6 +412,7 @@ def discover_reels_authenticated(
                         and not blocked
                         and not media_auth_gated
                         and not unavailable
+                        and bool(reel_urls)
                     ),
                     "authenticated": authenticated,
                     "blocked": blocked,
@@ -406,7 +425,14 @@ def discover_reels_authenticated(
                         and not media_auth_gated
                         and not unavailable
                     ),
-                    "error": "INSTAGRAM_PROFILE_UNAVAILABLE" if unavailable else None,
+                    "error": (
+                        "INSTAGRAM_PROFILE_UNAVAILABLE" if unavailable
+                        else "INSTAGRAM_REELS_NOT_FOUND_AFTER_PROFILE_FALLBACK"
+                        if not reel_urls and fallback_profile_attempted
+                        else "INSTAGRAM_REELS_NOT_FOUND"
+                        if not reel_urls
+                        else None
+                    ),
                     "timings": {
                         "browser_launch_ms": browser_launch_ms,
                         "profile_load_ms": profile_load_ms,
@@ -419,6 +445,7 @@ def discover_reels_authenticated(
                         ),
                         "profile_ready": bool(readiness.get("ready")),
                         "discovery_rounds": discovery_rounds,
+                        "profile_fallback_attempted": fallback_profile_attempted,
                         "reel_time_cache_hits": reel_time_cache_hits,
                         "reel_time_network_probes": reel_time_network_probes,
                         "reel_time_probe_ms": round(reel_time_probe_ms, 1),
