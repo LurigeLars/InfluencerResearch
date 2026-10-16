@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from instagram_policy import require_instagram_access, instagram_source_allowed
+
 import argparse
 import contextlib
 import errno
@@ -552,6 +554,7 @@ def _eligible_evaluation_sources(profile: dict, *, include_registered_instagram:
         [
             s for s in profile.get("sources", [])
             if s.get("enabled")
+            and instagram_source_allowed(s)
             and str(s.get("platform", "")).upper() in SUPPORTED_PLATFORMS
             and (
                 s.get("evaluation_enabled")
@@ -584,7 +587,7 @@ def select_profiles_and_sources(root: Path, scope: str, creator_keys: list[str])
         for profile in profiles:
             # One monitored source on any supported platform is enough; it does not have
             # to be YouTube or TikTok.
-            sources = select_monitor_sources(profile)
+            sources = [s for s in select_monitor_sources(profile) if instagram_source_allowed(s)]
             if sources:
                 # Instagram Stories are an ephemeral companion source for a monitored
                 # creator. Include any verified registered Instagram profile in
@@ -1223,6 +1226,7 @@ def discover_instagram(
     run_index: int = 1,
     root: Path | None = None,
 ) -> dict:
+    require_instagram_access()
     target = min(
         MAX_DISCOVERY_PER_SOURCE,
         max(INSTAGRAM_INITIAL_DISCOVERY_LIMIT, int(discovery_limit)),
