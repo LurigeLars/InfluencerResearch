@@ -48,6 +48,18 @@ class InstagramPausePolicyTests(unittest.TestCase):
                     public.request_json("POST", "/tabs", {"url": "https://www.instagram.com/test/"})
                 mock_request.assert_not_called()
 
+    def test_manual_download_paths_are_blocked(self):
+        import instagram_ingest
+        import ephemeral_ingest
+        import instagram_camofox_public_smoke as public
+        with patch.dict(os.environ, {instagram_policy.PAUSE_ENV: "1"}, clear=True):
+            with self.assertRaisesRegex(RuntimeError, "INSTAGRAM_PAUSED_BY_OPERATOR"):
+                instagram_ingest.download_with_ytdlp(None, None, "test", "https://www.instagram.com/reel/example/")
+            with self.assertRaisesRegex(RuntimeError, "INSTAGRAM_PAUSED_BY_OPERATOR"):
+                ephemeral_ingest.run_ytdlp(None, None, "test", "STORY", "https://www.instagram.com/stories/test/")
+            with self.assertRaisesRegex(RuntimeError, "INSTAGRAM_PAUSED_BY_OPERATOR"):
+                public.ytdlp_probe("https://www.instagram.com/reel/example/")
+
 
 if __name__ == "__main__":
     unittest.main()
