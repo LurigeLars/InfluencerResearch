@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from instagram_policy import require_instagram_access
+
 import argparse
 import contextlib
 import json
@@ -30,6 +32,10 @@ HARD_BLOCK_PATTERNS = (
     "please wait a few minutes",
     "we restrict certain activity",
     "automated behavior",
+    "verify your account",
+    "enter your phone number",
+    "security check",
+    "captcha",
 )
 AUTH_PROMPT_PATTERNS = (
     "log in",
@@ -52,6 +58,7 @@ def utc_now() -> str:
 
 
 def request_json(method: str, path: str, body: dict | None = None, timeout: int = 30) -> Any:
+    require_instagram_access()
     return tts.request_json(method, path, body, timeout=timeout)
 
 
@@ -385,6 +392,7 @@ def probe_public_session(
     inspect_reel_times: bool = False,
     known_reel_times: dict[str, str] | None = None,
 ) -> dict[str, Any]:
+    require_instagram_access()
     probe_started = time.perf_counter()
     known_reel_times = {
         str(key): str(value)
@@ -816,6 +824,7 @@ def classify_story_probe(dom: dict[str, Any], handle: str) -> str:
 
 
 def probe_public_story(handle: str) -> dict[str, Any]:
+    require_instagram_access()
     user_id = "influencerresearch-instagram-public-story-smoke"
     session_key = f"public-story-{handle}-{int(time.time())}"
     story_url = f"https://www.instagram.com/stories/{handle}/"
