@@ -1752,6 +1752,7 @@ def run_ytdlp(
     context, root: Path, creator: str, source_type: str, source_url: str,
     story_urls: list[str] | None = None,
 ) -> dict:
+    require_instagram_access()
     source_url = canonical_instagram_ephemeral_url(source_url)
     targets = [canonical_instagram_ephemeral_url(url) for url in story_urls] if story_urls else [source_url]
     if story_urls:
