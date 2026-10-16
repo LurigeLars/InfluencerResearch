@@ -48,6 +48,28 @@ class InstagramPausePolicyTests(unittest.TestCase):
                     public.request_json("POST", "/tabs", {"url": "https://www.instagram.com/test/"})
                 mock_request.assert_not_called()
 
+    def test_registered_and_monitored_checks_exclude_instagram(self):
+        from pathlib import Path
+        import creator_recent_check as recent
+        profile = {
+            "creator_key": "testcreator",
+            "status": "ACTIVE",
+            "monitoring_enabled": True,
+            "sources": [
+                {"platform": "INSTAGRAM", "enabled": True, "evaluation_enabled": False, "monitoring_enabled": True, "priority": 1},
+                {"platform": "YOUTUBE", "enabled": True, "evaluation_enabled": True, "monitoring_enabled": True, "priority": 2},
+            ],
+        }
+        with patch.dict(os.environ, {instagram_policy.PAUSE_ENV: "1"}, clear=True):
+            with patch.object(recent, "load_registry", return_value={"creators": {"testcreator": profile}}):
+                for scope in ("MONITORED", "ALL_REGISTERED"):
+                    selected = recent.select_profiles_and_sources(Path("."), scope, [])
+                    self.assertEqual(
+                        [s["platform"] for _, sources in selected for s in sources], ["YOUTUBE"]
+                    )
+            with self.assertRaisesRegex(RuntimeError, "INSTAGRAM_PAUSED_BY_OPERATOR"):
+                recent.discover_instagram(profile, profile["sources"][0], None, None, 10)
+
     def test_manual_download_paths_are_blocked(self):
         import instagram_ingest
         import ephemeral_ingest
