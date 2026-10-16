@@ -619,6 +619,7 @@ def download_with_ytdlp(
     Use yt-dlp for the media extractor, but authenticate it with cookies exported
     from the isolated Playwright profile. The temporary cookie file never enters Drive.
     """
+    require_instagram_access()
     reel_url = canonical_reel_url(reel_url)
     shortcode = reel_shortcode(reel_url)
     raw_dir = root / "output" / creator / "raw"
