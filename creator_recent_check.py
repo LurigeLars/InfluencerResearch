@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from instagram_policy import require_instagram_access, instagram_source_allowed
+from instagram_policy import require_instagram_access, instagram_source_allowed, instagram_paused
 
 import argparse
 import contextlib
@@ -3182,6 +3182,7 @@ def _main_impl() -> int:
         "max_items": max_items,
         "auto_ingest": True,
         "auto_analysis_owner": "EKONOMI",
+        "paused_platforms": ["INSTAGRAM"] if instagram_paused() else [],
     }
 
     def write_progress(stage: str, **details) -> None:
@@ -4039,6 +4040,7 @@ def _main_impl() -> int:
                 [int(d.get("discovery_limit_used") or discovery_limit) for d in discoveries] or [discovery_limit]
             ),
             "source_count": len(discoveries),
+            "paused_platforms": ["INSTAGRAM"] if instagram_paused() else [],
             "discovery_coverage": [
                 _compact_discovery_coverage(discovery)
                 for discovery in discoveries
