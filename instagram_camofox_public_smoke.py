@@ -894,6 +894,7 @@ def probe_public_story(handle: str) -> dict[str, Any]:
 
 
 def ytdlp_probe(url: str) -> dict[str, Any]:
+    require_instagram_access()
     cmd = [
         sys.executable,
         "-m",
@@ -934,6 +935,7 @@ def ytdlp_probe(url: str) -> dict[str, Any]:
 
 
 def main() -> int:
+    require_instagram_access()
     parser = argparse.ArgumentParser(description="Public, login-free Instagram Camofox smoke")
     parser.add_argument("--profile-url", default="https://www.instagram.com/rikatillsammans/")
     parser.add_argument("--handle", default="rikatillsammans")
