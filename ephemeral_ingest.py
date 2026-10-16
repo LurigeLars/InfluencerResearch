@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from instagram_policy import require_instagram_access
+
 import argparse
 import contextlib
 import hashlib
@@ -265,6 +267,7 @@ def load_instagram_cookies(context) -> None:
 
 
 def launch_instagram_context(playwright):
+    require_instagram_access()
     container_mode = os.environ.get("INFLUENCER_RESEARCH_CONTAINER", "").strip() == "1"
     kwargs = {
         "user_data_dir": str(profile_dir()),
@@ -1749,6 +1752,7 @@ def run_ytdlp(
     context, root: Path, creator: str, source_type: str, source_url: str,
     story_urls: list[str] | None = None,
 ) -> dict:
+    require_instagram_access()
     source_url = canonical_instagram_ephemeral_url(source_url)
     targets = [canonical_instagram_ephemeral_url(url) for url in story_urls] if story_urls else [source_url]
     if story_urls:
@@ -2341,6 +2345,7 @@ def finish_story_capture(
     the browser is started only to hand the logged-in cookies to yt-dlp, and only when
     the media set is not already downloaded.
     """
+    require_instagram_access()
     if not run.get("capture_only"):
         return run
 
@@ -2741,6 +2746,7 @@ def main() -> int:
     args = parser.parse_args()
     root = args.root.resolve()
 
+    require_instagram_access()
     started = utc_now()
     status_path = root / "state" / "ephemeral" / "status.json"
 

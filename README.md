@@ -510,3 +510,20 @@ The repository intentionally contains no legacy `.bat` entrypoints.
 ## Project license
 
 No project-wide open-source license has been selected yet. Until a `LICENSE` file is added, normal copyright restrictions apply to this repository's own source code. Third-party dependencies retain their respective licenses.
+
+
+### Temporary Instagram ingestion pause
+
+Instagram ingestion is **paused by operator policy** in the production Compose service using
+`INFLUENCER_RESEARCH_INSTAGRAM_PAUSED: "1"`. This applies across registered creator
+checks, manual Reel/Story capture, authenticated Chromium, and public Camofox probes.
+The policy short-circuits before the browser/network request and returns
+`INSTAGRAM_PAUSED_BY_OPERATOR`; do not retry a paused or challenged Instagram session.
+YouTube and TikTok remain enabled. Historical research, pending analyses, and existing
+creator records are retained. The per-creator Instagram sources have also been disabled
+in the persistent registry; no authentication material needs changing.
+
+Reactivation is **manual only**, after the operator has independently confirmed that
+Instagram account access is normal: change the Compose flag to `"0"`, redeploy the
+IR service, and explicitly re-enable approved Instagram sources using `creator_update`.
+Do not automatically reactivate after a timeout, restart, scheduled job, or CI run.

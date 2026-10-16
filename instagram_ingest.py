@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from instagram_policy import require_instagram_access
+
 import argparse
 import contextlib
 import json
@@ -94,6 +96,7 @@ def load_instagram_cookies(context) -> None:
 
 
 def launch_instagram_context(playwright):
+    require_instagram_access()
     container_mode = os.environ.get("INFLUENCER_RESEARCH_CONTAINER", "").strip() == "1"
     kwargs = {
         "user_data_dir": str(profile_dir()),
@@ -130,6 +133,7 @@ def launch_instagram_ephemeral_context(playwright):
     user_data_dir would create profile-lock races. Cookies are loaded from the same
     tmpfs-backed secret used by the normal Instagram ingestion path.
     """
+    require_instagram_access()
     container_mode = os.environ.get("INFLUENCER_RESEARCH_CONTAINER", "").strip() == "1"
     browser = playwright.chromium.launch(headless=container_mode)
     context_kwargs: dict[str, Any] = {}
@@ -162,6 +166,10 @@ def _instagram_page_access_state(page, creator: str) -> dict[str, Any]:
         or "confirm it's you" in folded
         or "we restrict certain activity" in folded
         or "suspicious login attempt" in folded
+        or "verify your account" in folded
+        or "enter your phone number" in folded
+        or "security check" in folded
+        or "captcha" in folded
     )
     unavailable = (
         "sorry, this page isn't available" in folded
@@ -611,6 +619,7 @@ def download_with_ytdlp(
     Use yt-dlp for the media extractor, but authenticate it with cookies exported
     from the isolated Playwright profile. The temporary cookie file never enters Drive.
     """
+    require_instagram_access()
     reel_url = canonical_reel_url(reel_url)
     shortcode = reel_shortcode(reel_url)
     raw_dir = root / "output" / creator / "raw"
