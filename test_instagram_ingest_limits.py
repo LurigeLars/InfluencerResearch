@@ -220,7 +220,7 @@ class InstagramIngestLimitTests(unittest.TestCase):
         with (
             unittest.mock.patch.dict(
                 os.environ,
-                {"INFLUENCER_RESEARCH_CONTAINER": "1"},
+                {"INFLUENCER_RESEARCH_CONTAINER": "1", "INFLUENCER_RESEARCH_INSTAGRAM_PAUSED": "0"},
                 clear=False,
             ),
             unittest.mock.patch.object(ig, "load_instagram_cookies") as load_cookies,
