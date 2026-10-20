@@ -123,6 +123,101 @@ class ResearchQueueContentSufficiencyTests(unittest.TestCase):
                 "RETAINED_FRAME_IS_BLANK_LOADING_SCREEN",
             )
 
+
+    def test_youtube_retained_frames_route_short_transcript_to_required_visual_review(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            transcript = root / "output" / "matfinog" / "youtube" / "transcripts" / "MBhravgbxxk.txt"
+            transcript.parent.mkdir(parents=True)
+            transcript.write_text("wow", encoding="utf-8")
+            evidence = root / "output" / "matfinog" / "youtube" / "frames" / "MBhravgbxxk"
+            evidence.mkdir(parents=True)
+            index = evidence / "visual_index.json"
+            index.write_text(json.dumps({"frames": [{"timestamp_s": 3.5, "file": "frame.jpg"}], "version": 1, "note": "verified retained visual frames"}), encoding="utf-8")
+            frame = evidence / "frame.jpg"
+            frame.write_bytes(b"retained-frame-evidence" * 8)
+            manifest = {
+                "schema_version": 1,
+                "items": {
+                    "yt_MBhravgbxxk": {
+                        "creator": "matfinog",
+                        "source_platform": "YOUTUBE",
+                        "source_type": "VIDEO",
+                        "source_id": "MBhravgbxxk",
+                        "url": "https://www.youtube.com/watch?v=MBhravgbxxk",
+                        "caption": "Short clip",
+                        "published_at": "2026-10-17T14:22:22+00:00",
+                        "download_status": "DONE",
+                        "transcription_status": "DONE",
+                        "transcript_txt": str(transcript.relative_to(root)),
+                        "visual_evidence_status": "DONE",
+                        "visual_evidence_index": str(index.relative_to(root)),
+                        "visual_frame_count": 1,
+                        "analysis_mode_recommended": "TRANSCRIPT_ONLY",
+                        "agent_visual_bundle": {
+                            "representative_frames": [
+                                {"file": str(frame.relative_to(root)), "timestamp_s": 3.5}
+                            ]
+                        },
+                    }
+                },
+            }
+            self._write_common(root, manifest)
+            for attempt in range(2):
+                with unittest.mock.patch.object(
+                    sys, "argv", ["research_queue.py", "--root", str(root)]
+                ):
+                    self.assertEqual(research_queue.main(), 0)
+                queue = json.loads((root / "state" / "research_queue.json").read_text(encoding="utf-8"))
+                self.assertEqual(queue["count"], 1, "idempotent rebuild must not duplicate")
+                packet = queue["items"][0]
+                self.assertEqual(packet["queue_id"], "yt_MBhravgbxxk")
+                self.assertEqual(packet["analysis_content_reason"], "AGENT_VISUAL_FALLBACK")
+                self.assertEqual(packet["analysis_mode_recommended"], "VISUAL_REVIEW_REQUIRED")
+                self.assertTrue(packet["visual_review_recommended"])
+                self.assertEqual(packet["transcript_text"], "wow")
+                self.assertIn("VERIFIED_FRAMES_REQUIRE_AGENT_REVIEW", packet["visual_review_reason"])
+
+    def test_youtube_missing_frame_does_not_claim_visual_evidence_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            transcript = root / "output" / "matfinog" / "youtube" / "transcripts" / "MBhravgbxxk.txt"
+            transcript.parent.mkdir(parents=True)
+            transcript.write_text("wow", encoding="utf-8")
+            index = root / "output" / "matfinog" / "youtube" / "frames" / "MBhravgbxxk" / "visual_index.json"
+            index.parent.mkdir(parents=True)
+            index.write_text(json.dumps({"frames": [], "source": "retained"}), encoding="utf-8")
+            manifest = {
+                "schema_version": 1,
+                "items": {
+                    "yt_MBhravgbxxk": {
+                        "creator": "matfinog",
+                        "source_platform": "YOUTUBE",
+                        "source_id": "MBhravgbxxk",
+                        "url": "https://www.youtube.com/watch?v=MBhravgbxxk",
+                        "published_at": "2026-10-17T14:22:22+00:00",
+                        "download_status": "DONE",
+                        "transcription_status": "DONE",
+                        "transcript_txt": str(transcript.relative_to(root)),
+                        "visual_evidence_status": "DONE",
+                        "visual_evidence_index": str(index.relative_to(root)),
+                        "visual_frame_count": 3,
+                        "agent_visual_bundle": {
+                            "representative_frames": [
+                                {"file": "output/matfinog/youtube/frames/MBhravgbxxk/missing.jpg"}
+                            ]
+                        },
+                    }
+                },
+            }
+            self._write_common(root, manifest)
+            with unittest.mock.patch.object(sys, "argv", ["research_queue.py", "--root", str(root)]):
+                self.assertEqual(research_queue.main(), 0)
+            queue = json.loads((root / "state" / "research_queue.json").read_text(encoding="utf-8"))
+            self.assertEqual(queue["count"], 0)
+            self.assertEqual(queue["pending_extraction_count"], 1)
+            self.assertEqual(queue["pending_extraction_items"][0]["reason"], "VISUAL_EXTRACTION_PENDING")
+
     def test_real_transcript_remains_analysis_ready(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
