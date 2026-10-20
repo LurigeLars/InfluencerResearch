@@ -218,6 +218,87 @@ class ResearchQueueContentSufficiencyTests(unittest.TestCase):
             self.assertEqual(queue["pending_extraction_count"], 1)
             self.assertEqual(queue["pending_extraction_items"][0]["reason"], "VISUAL_EXTRACTION_PENDING")
 
+
+    def test_youtube_watch_canonicalization_preserves_video_identity(self) -> None:
+        first = research_queue.canonicalize_url(
+            "https://www.youtube.com/watch?v=MBhravgbxxk&t=35s&feature=share"
+        )
+        second = research_queue.canonicalize_url(
+            "https://m.youtube.com/watch?feature=share&v=qUyOFyzZpps"
+        )
+        same_first = research_queue.canonicalize_url(
+            "https://youtube.com/watch?feature=other&v=MBhravgbxxk"
+        )
+        self.assertEqual(first, "https://www.youtube.com/watch?v=MBhravgbxxk")
+        self.assertEqual(second, "https://www.youtube.com/watch?v=qUyOFyzZpps")
+        self.assertEqual(first, same_first)
+        self.assertNotEqual(first, second)
+        self.assertEqual(
+            research_queue.canonicalize_url("https://example.com/report?id=1&track=1"),
+            "https://example.com/report",
+        )
+
+    def test_false_exact_url_duplicate_is_repaired_without_changing_final_decisions(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            base = root / "output" / "matfinog" / "youtube" / "transcripts"
+            base.mkdir(parents=True)
+            phrase = (
+                "Prices moved in the opening range while traders evaluated "
+                "liquidity volatility catalysts and risk across major sectors."
+            )
+            records = {}
+            for video_id in ("MBhravgbxxk", "qUyOFyzZpps"):
+                transcript = base / f"{video_id}.txt"
+                transcript.write_text(phrase, encoding="utf-8")
+                records[f"yt_{video_id}"] = {
+                    "creator": "matfinog",
+                    "source_platform": "YOUTUBE",
+                    "source_type": "VIDEO",
+                    "source_id": video_id,
+                    "url": f"https://www.youtube.com/watch?v={video_id}",
+                    "published_at": "2026-10-17T14:22:22+00:00",
+                    "download_status": "DONE",
+                    "transcription_status": "DONE",
+                    "transcript_txt": str(transcript.relative_to(root)),
+                }
+            records["yt_MBhravgbxxk"].update({
+                "research_status": "DUPLICATE",
+                "duplicate_of": "yt_qUyOFyzZpps",
+                "duplicate_basis": "EXACT_SOURCE_URL",
+                "evidence_lineage_id": "EL-false-url-identity",
+            })
+            self._write_common(root, {"schema_version": 1, "items": records})
+            decision_file = root / "state" / "research_decisions.json"
+            decision_file.write_text(json.dumps({
+                "schema_version": 2,
+                "items": {
+                    "yt_qUyOFyzZpps": {
+                        "decision": "IGNORE",
+                        "evidence_lineage_id": "EL-analyst-owned",
+                    }
+                },
+            }), encoding="utf-8")
+
+            for _ in range(2):
+                with unittest.mock.patch.object(
+                    sys, "argv", ["research_queue.py", "--root", str(root)]
+                ):
+                    self.assertEqual(research_queue.main(), 0)
+                queue = json.loads((root / "state" / "research_queue.json").read_text(encoding="utf-8"))
+                self.assertEqual(queue["count"], 1)
+                self.assertEqual(queue["items"][0]["queue_id"], "yt_MBhravgbxxk")
+                self.assertIsNone(queue["items"][0]["duplicate_of"])
+                manifest = json.loads((root / "state" / "manifest.json").read_text(encoding="utf-8"))
+                fixed = manifest["items"]["yt_MBhravgbxxk"]
+                self.assertEqual(fixed["research_status"], "PENDING_ANALYSIS")
+                self.assertIsNone(fixed["duplicate_of"])
+                self.assertIsNone(fixed["duplicate_basis"])
+                self.assertNotEqual(fixed["evidence_lineage_id"], "EL-false-url-identity")
+                decisions = json.loads(decision_file.read_text(encoding="utf-8"))["items"]
+                self.assertEqual(decisions["yt_qUyOFyzZpps"]["decision"], "IGNORE")
+                self.assertEqual(decisions["yt_qUyOFyzZpps"]["evidence_lineage_id"], "EL-analyst-owned")
+
     def test_real_transcript_remains_analysis_ready(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
