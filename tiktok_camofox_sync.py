@@ -568,6 +568,54 @@ def flatten_video_links(obj: Any, handle: str) -> list[str]:
     return out
 
 
+def classify_empty_tiktok_profile(
+    snapshot: Any, *, readiness: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Classify a zero-link page without persisting page text or bypassing access checks.
+
+    This is diagnostic evidence, not permission to retry, rotate sessions, or
+    reinterpret zero items as successful coverage.
+    """
+    readiness = readiness if isinstance(readiness, dict) else {}
+    snippets: list[str] = []
+    def visit(value: Any, depth: int = 0) -> None:
+        if depth > 5 or len(snippets) >= 32:
+            return
+        if isinstance(value, str):
+            snippets.append(value[:1500])
+        elif isinstance(value, dict):
+            for key, child in list(value.items())[:32]:
+                if key in {"snapshot", "text", "content", "body", "html", "message", "error", "result"}:
+                    visit(child, depth + 1)
+        elif isinstance(value, list):
+            for child in value[:16]:
+                visit(child, depth + 1)
+    visit(snapshot)
+    sample = str(readiness.get("bodyTextSample") or "")[:1000]
+    text = " ".join([*snippets, sample]).casefold()[:5000]
+    href = str(readiness.get("href") or "")
+    if any(hint in text for hint in ("captcha", "verify you are human", "security check", "unusual traffic")):
+        code = "CHALLENGE_OR_SECURITY_CHECK"
+    elif any(hint in text for hint in ("log in to tiktok", "log in or sign up", "sign in to tiktok", "login to tiktok")):
+        code = "LOGIN_REQUIRED"
+    elif any(hint in text for hint in ("this account is private", "couldn't find this account", "account not found", "page isn't available")):
+        code = "PROFILE_UNAVAILABLE_OR_PRIVATE"
+    elif "/login" in href.lower():
+        code = "LOGIN_REDIRECT"
+    elif len(text.strip()) >= 300 or int(readiness.get("bodyTextLength") or 0) >= 300:
+        code = "RENDERED_PAGE_WITHOUT_VIDEO_LINKS"
+    else:
+        code = "EMPTY_PROFILE_UNCLASSIFIED"
+    return {
+        "classification": code,
+        "snapshot_text_chars_examined": len(text),
+        "readiness_body_text_length": int(readiness.get("bodyTextLength") or 0),
+        "readiness_video_link_count": int(readiness.get("videoLinkCount") or 0),
+        "page_host": urllib.parse.urlsplit(href).hostname if href else None,
+        "retry_automatically": False,
+    }
+
+
 def _wait_for_tiktok_profile_ready(
     tab_id: str,
     *,
@@ -588,6 +636,7 @@ def _wait_for_tiktok_profile_ready(
       return {
         readyState: document.readyState,
         bodyTextLength: (document.body?.innerText || '').length,
+        bodyTextSample: (document.body?.innerText || '').slice(0, 600),
         videoLinkCount: videoLinks.length,
         videoLinks,
         href: location.href
@@ -643,6 +692,7 @@ def collect_video_urls(
     target: int,
     max_scrolls: int = 120,
     initial_urls: list[str] | None = None,
+    initial_page_state: dict[str, Any] | None = None,
 ) -> tuple[list[str], dict]:
     found: list[str] = []
     seen: set[str] = set()
@@ -665,6 +715,8 @@ def collect_video_urls(
     links_ms = 0.0
     snapshot_ms = 0.0
     scroll_ms = 0.0
+    last_snapshot: Any = None
+    empty_page_diagnostic: dict[str, Any] | None = None
 
     if len(found) >= target:
         return found[:target], {
@@ -719,6 +771,7 @@ def collect_video_urls(
         )
         snapshot_ms += (time.perf_counter() - snapshot_started) * 1000
         snapshot_calls += 1
+        last_snapshot = snap
         candidates = flatten_video_links(snap, handle)
 
         for url in candidates:
@@ -728,6 +781,17 @@ def collect_video_urls(
                 found.append(clean)
 
         if len(found) >= target:
+            break
+
+        # Access challenges or required login must never trigger repeated
+        # scrolling, automatic retries, or alternate browser identities.
+        empty_page_diagnostic = classify_empty_tiktok_profile(
+            last_snapshot, readiness=initial_page_state
+        )
+        if empty_page_diagnostic["classification"] in {
+            "CHALLENGE_OR_SECURITY_CHECK", "LOGIN_REQUIRED", "LOGIN_REDIRECT",
+            "PROFILE_UNAVAILABLE_OR_PRIVATE",
+        }:
             break
 
         if len(found) == before:
@@ -761,6 +825,10 @@ def collect_video_urls(
         "scroll_ms": round(scroll_ms, 1),
         "initial_url_count": initial_url_count,
         "source": "browser_scan",
+        "empty_page_diagnostic": (
+            empty_page_diagnostic
+            or classify_empty_tiktok_profile(last_snapshot, readiness=initial_page_state)
+        ) if not found else None,
     }
 
 
@@ -2134,6 +2202,7 @@ def process_source(
                 handle=handle,
                 target=discovery_target,
                 initial_urls=readiness_urls,
+                initial_page_state=readiness_value,
             )
             discovery_diag["tab_create_ms"] = tab_create_ms
             discovery_diag["profile_ready_wait_ms"] = round(

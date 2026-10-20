@@ -32,12 +32,38 @@ class EmptyDiscoveryTests(unittest.TestCase):
             "platform": "TIKTOK",
             "stage": "DISCOVERY",
             "error": "NO_ITEMS_DISCOVERED",
+            "diagnostic_classification": None,
             "next_action": "VERIFY_SOURCE_OR_DISABLE",
         }])
         self.assertFalse(empty["window_complete"])
         self.assertEqual(empty["coverage_limited_reason"], "NO_ITEMS_DISCOVERED")
         self.assertTrue(busy["window_complete"])
         self.assertIsNone(busy["coverage_limited_reason"])
+
+
+    def test_tiktok_page_diagnosis_is_propagated_without_claiming_coverage(self) -> None:
+        empty = _discovery(
+            "stockrobber", "TIKTOK", 0,
+            discovery={"empty_page_diagnostic": {
+                "classification": "RENDERED_PAGE_WITHOUT_VIDEO_LINKS",
+                "snapshot_text_chars_examined": 410,
+                "retry_automatically": False,
+            }},
+        )
+        flagged = crc._flag_empty_discoveries([empty], [])
+        self.assertEqual(len(flagged), 1)
+        self.assertEqual(flagged[0]["diagnostic_classification"], "RENDERED_PAGE_WITHOUT_VIDEO_LINKS")
+        self.assertEqual(flagged[0]["next_action"], "REVIEW_PARSER_OR_SOURCE")
+        self.assertFalse(empty["window_complete"])
+
+    def test_tiktok_login_is_not_retried_or_marked_complete(self) -> None:
+        empty = _discovery(
+            "nicholascrown", "TIKTOK", 0,
+            discovery={"empty_page_diagnostic": {"classification": "LOGIN_REQUIRED"}},
+        )
+        flagged = crc._flag_empty_discoveries([empty], [])
+        self.assertEqual(flagged[0]["next_action"], "MANUAL_ACCESS_REVIEW_NO_BYPASS")
+        self.assertEqual(empty["coverage_limited_reason"], "NO_ITEMS_DISCOVERED")
 
     def test_a_source_that_already_failed_is_not_reported_twice(self) -> None:
         errored = _discovery("creator", "TIKTOK", 0)

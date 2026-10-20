@@ -539,12 +539,26 @@ def _flag_empty_discoveries(discoveries: list[dict], discovery_errors: list[dict
             continue
         discovery["window_complete"] = False
         discovery["coverage_limited_reason"] = "NO_ITEMS_DISCOVERED"
+        evidence = (
+            (discovery.get("discovery") or {}).get("empty_page_diagnostic") or {}
+        ) if key[1] == "TIKTOK" else {}
+        classification = str(evidence.get("classification") or "")
         flagged.append({
             "creator_key": key[0],
             "platform": key[1],
             "stage": "DISCOVERY",
             "error": "NO_ITEMS_DISCOVERED",
-            "next_action": "VERIFY_SOURCE_OR_DISABLE",
+            "diagnostic_classification": classification or None,
+            "next_action": (
+                "MANUAL_ACCESS_REVIEW_NO_BYPASS"
+                if classification in {
+                    "CHALLENGE_OR_SECURITY_CHECK", "LOGIN_REQUIRED",
+                    "LOGIN_REDIRECT", "PROFILE_UNAVAILABLE_OR_PRIVATE",
+                }
+                else "REVIEW_PARSER_OR_SOURCE"
+                if classification == "RENDERED_PAGE_WITHOUT_VIDEO_LINKS"
+                else "VERIFY_SOURCE_OR_DISABLE"
+            ),
         })
     return flagged
 

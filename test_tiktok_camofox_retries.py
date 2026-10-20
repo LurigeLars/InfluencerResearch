@@ -212,6 +212,79 @@ class CamoFoxRetryTests(unittest.TestCase):
         self.assertEqual(diag["rounds"], 1)
         self.assertEqual(diag["source"], "browser_scan")
 
+
+    def test_empty_tiktok_page_classifies_public_content_without_inventing_videos(self) -> None:
+        samples = [
+            ("The page shows a security check: verify you are human.", "CHALLENGE_OR_SECURITY_CHECK"),
+            ("Log in to TikTok to continue", "LOGIN_REQUIRED"),
+            ("This account is private", "PROFILE_UNAVAILABLE_OR_PRIVATE"),
+        ]
+        for text, expected in samples:
+            with self.subTest(expected=expected):
+                d = sync.classify_empty_tiktok_profile(
+                    {"snapshot": text},
+                    readiness={"bodyTextLength": len(text), "href": "https://www.tiktok.com/@stockrobber.com"},
+                )
+                self.assertEqual(d["classification"], expected)
+                self.assertFalse(d["retry_automatically"])
+                self.assertNotIn("snapshot", d)
+                self.assertNotIn("bodyTextSample", d)
+        rendered = sync.classify_empty_tiktok_profile(
+            {"snapshot": "User profile public videos likes followers " * 15},
+            readiness={"bodyTextLength": 1000, "href": "https://www.tiktok.com/@stockrobber.com"},
+        )
+        self.assertEqual(rendered["classification"], "RENDERED_PAGE_WITHOUT_VIDEO_LINKS")
+
+    def test_three_empty_profile_snapshots_fail_closed_without_scrolling_when_challenged(self) -> None:
+        for handle in ("stockrobber.com", "nicholas_crown", "defineyourrisk"):
+            with self.subTest(handle=handle):
+                calls = []
+                def fake_request(method: str, path: str, body=None, timeout=30):
+                    calls.append((method, path))
+                    if "/links?" in path:
+                        return {"links": []}
+                    if "/snapshot?" in path:
+                        return {"snapshot": "Security check: verify you are human."}
+                    raise AssertionError("Do not scroll or retry challenged page")
+                with unittest.mock.patch.object(sync, "request_json", side_effect=fake_request):
+                    videos, diag = sync.collect_video_urls(
+                        "tab-1",
+                        user_id="u",
+                        handle=handle,
+                        target=4,
+                        max_scrolls=4,
+                        initial_page_state={
+                            "bodyTextLength": 450,
+                            "href": f"https://www.tiktok.com/@{handle}",
+                        },
+                    )
+                self.assertEqual(videos, [])
+                self.assertEqual(diag["rounds"], 1)
+                self.assertEqual(diag["empty_page_diagnostic"]["classification"], "CHALLENGE_OR_SECURITY_CHECK")
+                self.assertFalse(diag["empty_page_diagnostic"]["retry_automatically"])
+                self.assertEqual(len(calls), 2)
+
+    def test_repeated_empty_tiktok_profile_runs_remain_unverified(self) -> None:
+        for _ in range(2):
+            with unittest.mock.patch.object(
+                sync, "request_json",
+                side_effect=[
+                    {"links": []},
+                    {"snapshot": "Public creator feed currently displays tiles but no usable video anchors " * 7},
+                    {"ok": True},
+                ],
+            ):
+                videos, diag = sync.collect_video_urls(
+                    "tab-a",
+                    user_id="u",
+                    handle="nicholas_crown",
+                    target=3,
+                    max_scrolls=0,
+                )
+            self.assertEqual(videos, [])
+            self.assertEqual(diag["empty_page_diagnostic"]["classification"], "RENDERED_PAGE_WITHOUT_VIDEO_LINKS")
+            self.assertEqual(diag["found"], 0)
+
     def test_exact_catalog_ids_skip_redundant_discovery(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
