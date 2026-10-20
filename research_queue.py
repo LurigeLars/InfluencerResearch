@@ -78,6 +78,52 @@ def normalize_manifest_path(root: Path, value: str | None) -> Path | None:
     return root / Path(value)
 
 
+
+def _verified_youtube_frames_available(root: Path, item: dict) -> bool:
+    """Permit agent visual review only with retained, in-root YouTube image evidence.
+
+    A manifest claim of DONE or frame_count alone is not proof that pixels are
+    accessible. The analyst must receive genuine representative frames through
+    analysis_evidence_get, otherwise the queue continues to fail closed.
+    """
+    if str(item.get("source_platform") or "").upper() != "YOUTUBE":
+        return False
+    if str(item.get("visual_evidence_status") or "").upper() != "DONE":
+        return False
+    if int(item.get("visual_frame_count") or 0) < 1:
+        return False
+    bundle = item.get("agent_visual_bundle")
+    if not isinstance(bundle, dict):
+        return False
+    frames = bundle.get("representative_frames")
+    if not isinstance(frames, list) or not frames:
+        return False
+
+    base = root.resolve()
+    def retained(relative: str | None, extensions: set[str]) -> bool:
+        if not isinstance(relative, str) or not relative:
+            return False
+        try:
+            candidate = (base / Path(relative)).resolve()
+            return (
+                candidate.is_relative_to(base)
+                and candidate.suffix.casefold() in extensions
+                and candidate.is_file()
+                and candidate.stat().st_size >= 64
+            )
+        except (OSError, ValueError):
+            return False
+
+    index = item.get("visual_evidence_index")
+    if not retained(index, {".json"}):
+        return False
+    return any(
+        retained(row.get("file"), {".jpg", ".jpeg", ".png"})
+        for row in frames[:12]
+        if isinstance(row, dict)
+    )
+
+
 def canonicalize_url(value: str | None) -> str:
     if not value:
         return ""
@@ -151,6 +197,7 @@ def assess_analysis_content(
     transcript: str,
     *,
     agent_visual_fallback_available: bool = False,
+    verified_video_frames_available: bool = False,
 ) -> dict:
     """Fail closed unless text evidence or a retained Story screenshot is analyzable."""
     transcript = str(transcript or "").strip()
@@ -208,6 +255,11 @@ def assess_analysis_content(
     elif caption_words >= MIN_FALLBACK_TEXT_WORDS or len(caption) >= MIN_FALLBACK_TEXT_CHARS:
         status = "READY"
         reason = "METADATA_TEXT"
+    elif verified_video_frames_available and visual_status != "INSUFFICIENT_CONTENT":
+        # A human/agent must actually review retained verified frames before an
+        # analysis decision. We are not inventing a transcript or visual text.
+        status = "READY"
+        reason = "AGENT_VISUAL_FALLBACK"
     else:
         if visual_status == "DEFERRED":
             status = "DEFERRED_EXTRACTION"
@@ -274,13 +326,13 @@ def build_packet(
         or item.get("visual_review_recommended")
         or visual_bundle.get("visual_review_recommended")
     )
-    analysis_mode_recommended = str(
-        item.get("analysis_mode_recommended")
-        or visual_bundle.get("analysis_mode_recommended")
-        or (
-            "VISUAL_REVIEW_REQUIRED"
-            if agent_visual_fallback
-            else (
+    analysis_mode_recommended = (
+        "VISUAL_REVIEW_REQUIRED"
+        if agent_visual_fallback
+        else str(
+            item.get("analysis_mode_recommended")
+            or visual_bundle.get("analysis_mode_recommended")
+            or (
                 "TRANSCRIPT_PLUS_VISUAL_REVIEW"
                 if visual_review_recommended
                 else "TRANSCRIPT_ONLY"
@@ -331,7 +383,11 @@ def build_packet(
         "agent_visual_fallback_available": item.get("agent_visual_fallback_available"),
         "analysis_mode_recommended": analysis_mode_recommended,
         "visual_review_recommended": visual_review_recommended,
-        "visual_review_reason": visual_review_reason,
+        "visual_review_reason": (
+            [*visual_review_reason, "VERIFIED_FRAMES_REQUIRE_AGENT_REVIEW"]
+            if agent_visual_fallback and "VERIFIED_FRAMES_REQUIRE_AGENT_REVIEW" not in visual_review_reason
+            else visual_review_reason
+        ),
         "agent_visual_bundle": visual_bundle or None,
         "evidence_lineage_id": evidence_lineage_id,
         "duplicate_of": duplicate_of,
@@ -417,7 +473,7 @@ def build_packet(
                 "Cross-platform reposts are one evidence lineage, not independent confirmations.",
                 "For YouTube items, use transcript plus retained timestamped visual evidence when available; visual frames are supporting evidence, not execution truth.",
                 "If visual_review_recommended=true, inspect representative visual evidence before concluding; TRANSCRIPT alone is not sufficient for that item.",
-                "If analysis_content_reason=AGENT_VISUAL_FALLBACK, call analysis_evidence_get and inspect the retained Story screenshot directly; provider extraction failure is not evidence of insufficient content.",
+                "If analysis_content_reason=AGENT_VISUAL_FALLBACK, call analysis_evidence_get and inspect the retained representative video frames or Story screenshot directly before deciding; do not infer image content from metadata.",
                 "If the Story screenshot is still inconclusive and raw_media_available=true, call analysis_evidence_get with mode=RAW_MEDIA and inspect the retained raw video before classifying the item as insufficient.",
                 "visual_review_recommended is decided per video. Creator history may bias priority but must never prevent an unflagged creator's chart-heavy video from escalating to visual review.",
                 "If semantic duplication is plausible but not deterministically provable, use duplicate_basis=POSSIBLE_SEMANTIC_DUPLICATE and let Ekonomi decide.",
@@ -600,6 +656,7 @@ def main() -> int:
             item,
             transcript,
             agent_visual_fallback_available=agent_visual_fallback_available,
+            verified_video_frames_available=_verified_youtube_frames_available(root, item),
         )
         if transcript_missing and readiness["status"] == "INSUFFICIENT_CONTENT":
             readiness["reason"] = "TRANSCRIPT_FILE_MISSING"
