@@ -8,7 +8,7 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import parse_qs, urlsplit, urlunsplit
 
 
 SCREEN_VERSION = "0.4.8"
@@ -131,6 +131,19 @@ def canonicalize_url(value: str | None) -> str:
         parts = urlsplit(str(value).strip())
         host = parts.netloc.lower()
         path = re.sub(r"/+$", "", parts.path)
+        # The "v" query parameter IS the YouTube video identity. Previous
+        # normalization discarded it and grouped unrelated watch URLs under
+        # https://www.youtube.com/watch as false exact-source duplicates.
+        if (
+            (parts.hostname or "").lower() in {
+                "youtube.com", "www.youtube.com", "m.youtube.com",
+                "music.youtube.com",
+            }
+            and path == "/watch"
+        ):
+            video_id = parse_qs(parts.query).get("v", [""])[0]
+            if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", video_id):
+                return f"https://www.youtube.com/watch?v={video_id}"
         return urlunsplit((parts.scheme.lower(), host, path, "", ""))
     except Exception:
         return str(value).strip().rstrip("/")
@@ -781,6 +794,26 @@ def main() -> int:
         existing_decision = decisions.get("items", {}).get(shortcode, {})
 
         lineage, duplicate_of, duplicate_basis = duplicate_meta[shortcode]
+
+        # Repair the specific historical URL-normalization collision without
+        # changing explicit analyst decisions. EXACT_SOURCE_URL is objectively
+        # false when the retained URL and the alleged source have distinct
+        # canonical identities; stale machine metadata must not win precedence
+        # over the freshly calculated grouping.
+        old_parent = str(item.get("duplicate_of") or "")
+        if (
+            old_parent
+            and str(item.get("duplicate_basis") or "") == "EXACT_SOURCE_URL"
+            and not existing_decision.get("duplicate_of")
+        ):
+            parent = (manifest.get("items") or {}).get(old_parent)
+            parent_url = canonicalize_url(parent.get("url")) if isinstance(parent, dict) else ""
+            current_url = canonicalize_url(item.get("url"))
+            if not parent_url or not current_url or parent_url != current_url:
+                for key in ("duplicate_of", "duplicate_basis", "evidence_lineage_id"):
+                    if item.get(key) is not None:
+                        item[key] = None
+                        manifest_changed = True
 
         # Preserve explicit human/Ekonomi duplicate metadata if it already exists.
         lineage = existing_decision.get("evidence_lineage_id") or item.get("evidence_lineage_id") or lineage
