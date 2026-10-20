@@ -12,7 +12,7 @@ BASE = Path(__file__).resolve().parent
 class CamofoxContainerRuntimeTests(TestCase):
     def test_dockerfile_pins_reviewed_runtime_and_skips_dynamic_postinstall(self) -> None:
         text = (BASE / "runtime" / "camofox" / "Dockerfile").read_text(encoding="utf-8")
-        self.assertIn("FROM node:26.10.0-trixie-slim", text)
+        self.assertIn("FROM node:26.12.0-trixie-slim", text)
         self.assertIn("CAMOUFOX_VERSION=152.0.4", text)
         self.assertIn("CAMOUFOX_RELEASE=beta.30", text)
         self.assertIn("CAMOUFOX_SHA256=5720d45b894ce1770543de024c6f10d514b38be560fa2dc3226b3d8586caf672", text)
@@ -60,17 +60,17 @@ class CamofoxContainerRuntimeTests(TestCase):
         lock = json.loads(
             (BASE / 'runtime' / 'camofox' / 'package-lock.json').read_text(encoding='utf-8')
         )
-        self.assertEqual(package['dependencies']['impit-linux-x64-gnu'], '0.14.5')
-        self.assertEqual(lock['packages']['']['dependencies']['impit-linux-x64-gnu'], '0.14.5')
+        self.assertEqual(package['dependencies']['impit-linux-x64-gnu'], '0.14.6')
+        self.assertEqual(lock['packages']['']['dependencies']['impit-linux-x64-gnu'], '0.14.6')
         binding = lock['packages']['node_modules/impit-linux-x64-gnu']
-        self.assertEqual(binding['version'], '0.14.5')
+        self.assertEqual(binding['version'], '0.14.6')
         self.assertEqual(binding['os'], ['linux'])
         self.assertEqual(binding['cpu'], ['x64'])
         self.assertIsNot(binding.get('optional'), True)
 
         dockerfile = (BASE / 'runtime' / 'camofox' / 'Dockerfile').read_text(encoding='utf-8')
         self.assertIn('--omit=optional', dockerfile)
-        self.assertIn("impit-linux-x64-gnu':'0.14.5", dockerfile)
+        self.assertIn("impit-linux-x64-gnu':'0.14.6", dockerfile)
         self.assertIn("require('impit')", dockerfile)
 
     def test_compose_is_internal_only_and_hardened(self) -> None:
