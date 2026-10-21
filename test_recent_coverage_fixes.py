@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest import mock
+import unittest.mock
 
 import creator_recent_check as crc
 import instagram_ingest as ig
@@ -14,7 +14,7 @@ import instagram_ingest as ig
 
 class RecentCoverageFixTests(unittest.TestCase):
     def test_instagram_long_body_is_not_reel_grid_readiness(self):
-        page = mock.Mock()
+        page = unittest.mock.Mock()
         page.url = "https://www.instagram.com/example/reels/"
         page.locator.return_value.count.return_value = 0
         page.locator.return_value.inner_text.return_value = "Profile content " * 40
@@ -31,24 +31,24 @@ class RecentCoverageFixTests(unittest.TestCase):
             def __exit__(self, *args):
                 return False
 
-        page = mock.Mock()
-        context = mock.Mock()
+        page = unittest.mock.Mock()
+        context = unittest.mock.Mock()
         context.new_page.return_value = page
-        browser = mock.Mock()
+        browser = unittest.mock.Mock()
         video = "https://www.instagram.com/reel/RECENT123/"
         with (
-            mock.patch.object(ig, "sync_playwright", return_value=FakePlaywright()),
-            mock.patch.object(
+            unittest.mock.patch.object(ig, "sync_playwright", return_value=FakePlaywright()),
+            unittest.mock.patch.object(
                 ig, "launch_instagram_ephemeral_context",
                 return_value=(browser, context),
             ),
-            mock.patch.object(ig, "verify_logged_in"),
-            mock.patch.object(
+            unittest.mock.patch.object(ig, "verify_logged_in"),
+            unittest.mock.patch.object(
                 ig, "_wait_for_instagram_profile_ready",
                 return_value={"ready": True, "blocked": False,
                               "media_auth_gated": False, "unavailable": False},
             ),
-            mock.patch.object(
+            unittest.mock.patch.object(
                 ig, "_collect_loaded_reel_urls",
                 side_effect=[([], 1), ([video], 2)],
             ) as collect,
@@ -94,15 +94,15 @@ class RecentCoverageFixTests(unittest.TestCase):
                 json.dumps({"items": []})
             )
             with (
-                mock.patch.object(
+                unittest.mock.patch.object(
                     crc.subprocess, "run",
                     return_value=SimpleNamespace(returncode=0),
                 ),
-                mock.patch.object(
+                unittest.mock.patch.object(
                     crc.tts, "run_research_queue",
                     return_value={"ok": True},
                 ) as queue,
-                mock.patch.object(
+                unittest.mock.patch.object(
                     crc, "_analysis_candidate_coverage",
                     return_value={"queued": ["yt_ABC12345678"], "missing": []},
                 ),
@@ -136,11 +136,11 @@ class RecentCoverageFixTests(unittest.TestCase):
                 json.dumps({"completed": ["yt_ABC12345678"]})
             )
             with (
-                mock.patch.object(crc.subprocess, "run",
+                unittest.mock.patch.object(crc.subprocess, "run",
                                   return_value=SimpleNamespace(returncode=0)),
-                mock.patch.object(crc.tts, "run_research_queue",
+                unittest.mock.patch.object(crc.tts, "run_research_queue",
                                   return_value={"ok": True}),
-                mock.patch.object(crc, "_analysis_candidate_coverage",
+                unittest.mock.patch.object(crc, "_analysis_candidate_coverage",
                                   return_value={"missing": ["yt_ABC12345678"]}),
             ):
                 result = crc._ingest_youtube(root, "matfinog", ["ABC12345678"])
