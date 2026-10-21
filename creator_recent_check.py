@@ -2125,12 +2125,6 @@ def _ingest_instagram_stories(
 
     warnings: list[str] = []
     capture = run.get("capture") or {}
-    reason = str(capture.get("reason") or "")
-    benign_reasons = {
-        "OK",
-        "ENDED_OR_EXITED_STORY_VIEW",
-        "NO_ACTIVE_STORY_OR_STORY_VIEW_REDIRECTED",
-    }
     if run.get("state") == "DONE_WITH_ERRORS":
         # Missing video is material even when the browser captured valid screenshots.
         warnings.extend(str(x) for x in (run.get("errors") or []))
