@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest import mock
+import unittest.mock
 
 import ephemeral_ingest as ingest
 import research_queue
@@ -90,17 +90,17 @@ class StoryVideoEvidenceTests(unittest.TestCase):
                 "media_kind": "VIDEO", "story_id": "123",
             }}}
             capture = {"visited_item_keys": [key]}
-            page = mock.Mock()
-            response = mock.Mock()
+            page = unittest.mock.Mock()
+            response = unittest.mock.Mock()
             response.status = 200
             response.headers = {"content-type": "video/mp4", "content-length": "1024"}
             response.body.return_value = b"\\x00\\x00\\x00\\x18ftyp" + b"x" * 512
-            ctx = mock.Mock()
+            ctx = unittest.mock.Mock()
             ctx.new_page.return_value = page
             ctx.request.get.return_value = response
             with (
-                mock.patch.object(ingest, "dismiss_story_view_confirmation"),
-                mock.patch.object(ingest, "wait_for_story_media_ready", return_value={
+                unittest.mock.patch.object(ingest, "dismiss_story_view_confirmation"),
+                unittest.mock.patch.object(ingest, "wait_for_story_media_ready", return_value={
                     "ready": True,
                     "media": {"kind": "video", "url": "https://scontent.cdninstagram.com/v/t50/story.mp4?token=x"},
                 }),
@@ -119,12 +119,12 @@ class StoryVideoEvidenceTests(unittest.TestCase):
     def test_browser_recorder_saves_audio_video_download_with_numeric_id(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            page = mock.Mock()
+            page = unittest.mock.Mock()
             page.evaluate.side_effect = [
                 {"ok": True, "source_scheme": "blob"},
                 {"ok": True, "bytes": 12000, "format": "webm", "audio_tracks": 1},
             ]
-            download = mock.Mock()
+            download = unittest.mock.Mock()
             download.save_as.side_effect = lambda path: Path(path).write_bytes(b"V" * 12000)
             page.expect_download.return_value.__enter__.return_value.value = download
             result = ingest._record_video_story_from_browser(
@@ -137,7 +137,7 @@ class StoryVideoEvidenceTests(unittest.TestCase):
             download.save_as.assert_called_once()
 
     def test_browser_recorder_rejects_no_audio_track_quickly(self) -> None:
-        page = mock.Mock()
+        page = unittest.mock.Mock()
         page.evaluate.side_effect = [
             {"ok": True, "source_scheme": "blob"},
             {"ok": False, "reason": "AUDIO_TRACK_UNAVAILABLE"},
@@ -149,7 +149,7 @@ class StoryVideoEvidenceTests(unittest.TestCase):
         self.assertEqual(result["reason"], "AUDIO_TRACK_UNAVAILABLE")
 
     def test_browser_recorder_playback_timeout_is_a_bounded_failure(self) -> None:
-        page = mock.Mock()
+        page = unittest.mock.Mock()
         page.evaluate.side_effect = [
             {"ok": True, "source_scheme": "blob"},
             {"ok": False, "reason": "PLAY_START_TIMEOUT"},
@@ -170,16 +170,16 @@ class StoryVideoEvidenceTests(unittest.TestCase):
             manifest = {"items": {key: {
                 "media_kind": "VIDEO", "story_id": story_id,
             }}}
-            page = mock.Mock()
+            page = unittest.mock.Mock()
             page.url = "https://www.instagram.com/stories/nicholascrown/" + story_id + "/"
-            ctx = mock.Mock()
+            ctx = unittest.mock.Mock()
             ctx.new_page.return_value = page
             with (
-                mock.patch.object(ingest, "dismiss_story_view_confirmation"),
-                mock.patch.object(ingest, "wait_for_story_media_ready", return_value={
+                unittest.mock.patch.object(ingest, "dismiss_story_view_confirmation"),
+                unittest.mock.patch.object(ingest, "wait_for_story_media_ready", return_value={
                     "ready": True, "media": {"kind": "video", "url": "blob:https://www.instagram.com/video123"},
                 }),
-                mock.patch.object(ingest, "_record_video_story_from_browser",
+                unittest.mock.patch.object(ingest, "_record_video_story_from_browser",
                                   return_value={"ok": True, "reason": "BROWSER_MEDIARECORDER"}) as record,
             ):
                 result = ingest._recover_missing_story_videos(
@@ -196,11 +196,11 @@ class StoryVideoEvidenceTests(unittest.TestCase):
             root = Path(td)
             key = "STORY:nicholascrown:123"
             manifest = {"items": {key: {"media_kind": "VIDEO", "story_id": "123"}}}
-            page = mock.Mock()
+            page = unittest.mock.Mock()
             page.url = "https://www.instagram.com/stories/nicholascrown/456/"
-            ctx = mock.Mock()
+            ctx = unittest.mock.Mock()
             ctx.new_page.return_value = page
-            with mock.patch.object(ingest, "dismiss_story_view_confirmation"):
+            with unittest.mock.patch.object(ingest, "dismiss_story_view_confirmation"):
                 result = ingest._recover_missing_story_videos(
                     ctx, root, "nicholascrown", manifest,
                     {"visited_item_keys": [key]},
@@ -213,12 +213,12 @@ class StoryVideoEvidenceTests(unittest.TestCase):
             root = Path(td)
             key = "STORY:creator:123"
             manifest = {"items": {key: {"media_kind": "VIDEO", "story_id": "123"}}}
-            page = mock.Mock()
-            ctx = mock.Mock()
+            page = unittest.mock.Mock()
+            ctx = unittest.mock.Mock()
             ctx.new_page.return_value = page
             with (
-                mock.patch.object(ingest, "dismiss_story_view_confirmation"),
-                mock.patch.object(ingest, "wait_for_story_media_ready", return_value={
+                unittest.mock.patch.object(ingest, "dismiss_story_view_confirmation"),
+                unittest.mock.patch.object(ingest, "wait_for_story_media_ready", return_value={
                     "ready": True,
                     "media": {"kind": "video", "url": "https://example.org/exfil.mp4"},
                 }),
@@ -264,7 +264,7 @@ class StoryVideoEvidenceTests(unittest.TestCase):
             (control / "research_screening.json").write_text(
                 json.dumps({"max_queue_items": 100, "creators": []})
             )
-            with mock.patch("sys.argv", ["research_queue.py", "--root", str(root)]):
+            with unittest.mock.patch("sys.argv", ["research_queue.py", "--root", str(root)]):
                 self.assertEqual(research_queue.main(), 0)
             queue = json.loads((state / "research_queue.json").read_text())
             self.assertEqual(queue["count"], 0)
@@ -332,11 +332,11 @@ class StoryVideoEvidenceTests(unittest.TestCase):
                     returncode=0, stdout=f"{filename}{chr(10)}", stderr="",
                 )
             with (
-                mock.patch.object(ingest, "write_netscape_cookiefile"),
-                mock.patch.object(ingest.subprocess, "run", side_effect=fake_run),
+                unittest.mock.patch.object(ingest, "write_netscape_cookiefile"),
+                unittest.mock.patch.object(ingest.subprocess, "run", side_effect=fake_run),
             ):
                 result = ingest.run_ytdlp(
-                    mock.Mock(), root, "creator", "STORY",
+                    unittest.mock.Mock(), root, "creator", "STORY",
                     "https://www.instagram.com/stories/creator/",
                     story_urls=urls,
                 )
