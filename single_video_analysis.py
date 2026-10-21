@@ -119,7 +119,7 @@ def _youtube(root: Path, url: str, video_id: str, status_path: Path) -> dict:
 
 def _tiktok(root: Path, url: str, video_id: str, handle: str, status_path: Path) -> dict:
     import tiktok_camofox_sync as tiktok
-    from youtube_creator_evaluation import reconcile_delivery
+    import youtube_creator_evaluation as youtube
 
     creator_key = "adhoc" + hashlib.sha256(handle.casefold().encode()).hexdigest()[:12]
     profile = f"https://www.tiktok.com/@{handle}"
@@ -168,7 +168,7 @@ def _tiktok(root: Path, url: str, video_id: str, handle: str, status_path: Path)
         tiktok.atomic_json(manifest_path, manifest)
 
     heartbeat(status_path, "QUEUE_WRITE", source_platform="TIKTOK", source_id=video_id)
-    queue_result, _, delivery = reconcile_delivery(root, [queue_id])
+    queue_result, _, delivery = youtube.reconcile_delivery(root, [queue_id])
     disposition = delivery["dispositions"].get(queue_id, "UNAVAILABLE")
     complete = bool(queue_result.get("ok")) and disposition in READY_DISPOSITIONS
     return {
@@ -188,19 +188,19 @@ def main() -> int:
     root = args.root.resolve()
     status_path = root / "state" / STATUS_NAME
     from datetime import datetime, timezone
-    from youtube_creator_evaluation import utc_now, atomic_json
+    import youtube_creator_evaluation as youtube
 
     started = datetime.now(timezone.utc).isoformat()
     try:
         platform, url, video_id, handle = canonical_video_url(args.video_url)
     except ValueError as exc:
-        atomic_json(status_path, {
+        youtube.atomic_json(status_path, {
             "schema_version": 1, "state": "FAILED", "started_at": started,
-            "finished_at": utc_now(), "error": str(exc),
+            "finished_at": youtube.utc_now(), "error": str(exc),
         })
         return 2
 
-    atomic_json(status_path, {
+    youtube.atomic_json(status_path, {
         "schema_version": 1, "state": "RUNNING", "started_at": started,
         "updated_at": started, "source_platform": platform,
         "source_id": video_id, "video_url": url, "queue_id": f"{'yt' if platform == 'YOUTUBE' else 'tt'}_{video_id}",
