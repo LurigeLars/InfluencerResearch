@@ -1,17 +1,17 @@
 mcp==2.3.0
-playwright==1.64.0
-yt-dlp==2026.8.19
+playwright==1.64.1
+yt-dlp==2026.10.21
 yt-dlp-ejs==0.8.0
 faster-whisper==1.2.1
 # PyAV 19 removed av.open(metadata_errors=...), which faster-whisper 1.2.1 still calls.
 av==18.1.0
 imageio-ffmpeg==0.6.0
-google-genai==2.31.0
+google-genai==2.33.0
 tzdata==2026.5
 
 # Explicitly pin transitive packages with known fixes surfaced by Docker Scout.
 msgpack==1.2.3
-setuptools==84.0.0
+setuptools==84.2.1
 
 # TikTok browser-impersonation dependencies are installed separately in the Docker image,
 # wheel-only and hash-locked from requirements_tiktok_impersonation.lock.txt.
