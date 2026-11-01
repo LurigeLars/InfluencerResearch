@@ -47,7 +47,7 @@ class CamofoxContainerRuntimeTests(TestCase):
         )
         self.assertIsNot(rate_limit.get("optional"), True)
         ip_address = lock["packages"]["node_modules/ip-address"]
-        self.assertEqual(ip_address["version"], "10.7.2")
+        self.assertEqual(ip_address["version"], "10.7.5")
         self.assertIsNot(ip_address.get("optional"), True)
         self.assertEqual(sync.CAMOFOX_CONTAINER_SOURCE_COMMIT, "f05fea8b999a262ac6fa9d6d75bcdc4d2b3bf795")
         self.assertEqual(sync.CAMOFOX_CONTAINER_EXPECTED_CAMOFOX_VERSION, "1.18.1")
