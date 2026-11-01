@@ -32,6 +32,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          summary() { printf '%s\n' "$*" >> "$GITHUB_STEP_SUMMARY"; }
           head=$(gh api repos/LurigeLars/camofox-browser/branches/master --jq .commit.sha)
           [[ "$head" =~ ^[0-9a-f]{40}$ ]] || { echo 'Invalid upstream commit SHA' >&2; exit 1; }
           reviewed=$(python - <<'PY'
@@ -44,16 +45,16 @@ jobs:
           print(matched.group(1))
           PY
           )
-          echo "Latest fork commit: ${head:0:12}; reviewed IR commit: ${reviewed:0:12}" >> "$GITHUB_STEP_SUMMARY"
+          summary "Latest fork commit: ${head:0:12}; reviewed IR commit: ${reviewed:0:12}"
           if [[ "$head" == "$reviewed" ]]; then
-            echo "No update needed" >> "$GITHUB_STEP_SUMMARY"
+            summary "No update needed"
             exit 0
           fi
           # One outstanding review at a time. Do not open repeated PRs.
           open=$(gh pr list --state open --limit 100 --json headRefName --jq '.[] | select(.headRefName | startswith("deps/camofox-fork-")) | .headRefName')
           if [[ -n "$open" ]]; then
             echo "::notice::Existing unreviewed Camofox source PR: $open"
-            echo "Pending review: $open" >> "$GITHUB_STEP_SUMMARY"
+            summary "Pending review: $open"
             exit 0
           fi
           echo "update=true" >> "$GITHUB_OUTPUT"
