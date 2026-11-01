@@ -6,7 +6,7 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@askjo/camofox-browser": "https://github.com/LurigeLars/camofox-browser/archive/fb680b37d2d08b198f0095e86c34ed398c3d4c23.tar.gz",
+    "@askjo/camofox-browser": "https://github.com/LurigeLars/camofox-browser/archive/40718e1ba1dd753977a1e912342f6a6fc85e4b27.tar.gz",
     "impit-linux-x64-gnu": "0.14.8"
   },
   "overrides": {
