@@ -85,6 +85,11 @@ updates:
       time: "09:00"
       timezone: "Europe/Stockholm"
     open-pull-requests-limit: 3
+    # Python 3.14 -> 3.15 requires an independently validated runtime migration.
+    # Continue receiving compatible Python 3.14 patch/base digest updates.
+    ignore:
+      - dependency-name: "python"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
     groups:
       dockerfile-minor-patch:
         applies-to: "version-updates"
