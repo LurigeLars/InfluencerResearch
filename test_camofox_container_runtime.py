@@ -31,13 +31,15 @@ class CamofoxContainerRuntimeTests(TestCase):
         lock = json.loads(
             (BASE / "runtime" / "camofox" / "package-lock.json").read_text(encoding="utf-8")
         )
-        expected = "https://github.com/LurigeLars/camofox-browser/archive/fb680b37d2d08b198f0095e86c34ed398c3d4c23.tar.gz"
+        expected = "https://github.com/LurigeLars/camofox-browser/archive/40718e1ba1dd753977a1e912342f6a6fc85e4b27.tar.gz"
         self.assertEqual(package["dependencies"]["@askjo/camofox-browser"], expected)
         self.assertEqual(lock["packages"][""]["dependencies"]["@askjo/camofox-browser"], expected)
         camofox = lock["packages"]["node_modules/@askjo/camofox-browser"]
         self.assertEqual(camofox["version"], "1.18.1")
         self.assertEqual(camofox["resolved"], expected)
-        self.assertNotIn("integrity", camofox)
+        # npm now records a verified SHA-512 for the immutable GitHub archive.
+        # Keep integrity checking enabled instead of stripping this lock metadata.
+        self.assertRegex(camofox["integrity"], r"^sha512-[A-Za-z0-9+/]+={0,2}$")
         self.assertEqual(camofox["dependencies"]["express-rate-limit"], "8.7.1")
         self.assertEqual(camofox["dependencies"]["better-sqlite3"], "13.0.3")
         self.assertNotIn("node_modules/@askjo/camofox-browser/node_modules/better-sqlite3", lock["packages"])
@@ -51,7 +53,7 @@ class CamofoxContainerRuntimeTests(TestCase):
         ip_address = lock["packages"]["node_modules/ip-address"]
         self.assertEqual(ip_address["version"], "10.7.5")
         self.assertIsNot(ip_address.get("optional"), True)
-        self.assertEqual(sync.CAMOFOX_CONTAINER_SOURCE_COMMIT, "fb680b37d2d08b198f0095e86c34ed398c3d4c23")
+        self.assertEqual(sync.CAMOFOX_CONTAINER_SOURCE_COMMIT, "40718e1ba1dd753977a1e912342f6a6fc85e4b27")
         self.assertEqual(sync.CAMOFOX_CONTAINER_EXPECTED_CAMOFOX_VERSION, "1.18.1")
         self.assertEqual(sync.CAMOFOX_FALLBACK_EXPECTED_CAMOFOX_VERSION, "1.17.0")
 
