@@ -31,25 +31,27 @@ class CamofoxContainerRuntimeTests(TestCase):
         lock = json.loads(
             (BASE / "runtime" / "camofox" / "package-lock.json").read_text(encoding="utf-8")
         )
-        expected = "https://github.com/LurigeLars/camofox-browser/archive/f05fea8b999a262ac6fa9d6d75bcdc4d2b3bf795.tar.gz"
+        expected = "https://github.com/LurigeLars/camofox-browser/archive/fb680b37d2d08b198f0095e86c34ed398c3d4c23.tar.gz"
         self.assertEqual(package["dependencies"]["@askjo/camofox-browser"], expected)
         self.assertEqual(lock["packages"][""]["dependencies"]["@askjo/camofox-browser"], expected)
         camofox = lock["packages"]["node_modules/@askjo/camofox-browser"]
         self.assertEqual(camofox["version"], "1.18.1")
         self.assertEqual(camofox["resolved"], expected)
         self.assertNotIn("integrity", camofox)
-        self.assertEqual(camofox["dependencies"]["express-rate-limit"], "8.6.1")
+        self.assertEqual(camofox["dependencies"]["express-rate-limit"], "8.7.1")
+        self.assertEqual(camofox["dependencies"]["better-sqlite3"], "13.0.3")
+        self.assertNotIn("node_modules/@askjo/camofox-browser/node_modules/better-sqlite3", lock["packages"])
         rate_limit = lock["packages"]["node_modules/express-rate-limit"]
-        self.assertEqual(rate_limit["version"], "8.6.1")
+        self.assertEqual(rate_limit["version"], "8.7.1")
         self.assertEqual(
             rate_limit["integrity"],
-            "sha512-0D493aP61w0TJ2A0wy27riRsO7FMQ7FK+KUHOKCSfPvYo0R55aiC6emCVgFUeShH0fq0ICPVzNcgoS+BsbXQCA==",
+            "sha512-2FXbqkygil3mZiXzEtM0IjE/UBmBNot0J1GEVrJT4JbrvwOSoEtqtO+wHbiMQELWe1eNvHoYRg2dkjOid+6JkA==",
         )
         self.assertIsNot(rate_limit.get("optional"), True)
         ip_address = lock["packages"]["node_modules/ip-address"]
         self.assertEqual(ip_address["version"], "10.7.5")
         self.assertIsNot(ip_address.get("optional"), True)
-        self.assertEqual(sync.CAMOFOX_CONTAINER_SOURCE_COMMIT, "f05fea8b999a262ac6fa9d6d75bcdc4d2b3bf795")
+        self.assertEqual(sync.CAMOFOX_CONTAINER_SOURCE_COMMIT, "fb680b37d2d08b198f0095e86c34ed398c3d4c23")
         self.assertEqual(sync.CAMOFOX_CONTAINER_EXPECTED_CAMOFOX_VERSION, "1.18.1")
         self.assertEqual(sync.CAMOFOX_FALLBACK_EXPECTED_CAMOFOX_VERSION, "1.17.0")
 
