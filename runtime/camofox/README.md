@@ -2,9 +2,9 @@
 
 This directory defines the reviewed Camofox/Camoufox container used by the InfluencerResearch Docker runtime.
 
-- Direct dependency: `@askjo/camofox-browser` `1.18.1` from reviewed fork merge commit `f05fea8b999a262ac6fa9d6d75bcdc4d2b3bf795`
+- Direct dependency: `@askjo/camofox-browser` `1.18.1` from reviewed fork commit `fb680b37d2d08b198f0095e86c34ed398c3d4c23`
 - Transitive browser client: `camoufox-js` `0.11.5`
-- Container Node.js baseline: `v26.10.0`
+- Container Node.js baseline: `v26.13.0`
 - Camoufox browser baseline: `152.0.4` / `beta.30`
 - Reviewed fork adds bounded sanitized live observability via per-tab `/network` and `/console` routes; headers, cookies and request/response bodies are not exposed.
 - Direct browser sessions also use the reviewed IPv6-aware, fail-closed SSRF guard; private/local destinations remain blocked by default.
@@ -24,3 +24,5 @@ Both browser services run as the non-root `node` user with read-only root filesy
 Start, stop, inspect or smoke-test the complete stack with `scripts/runtime.ps1`.
 
 Any dependency, browser-baseline, filesystem mount, network exposure or authentication change requires a fresh runtime test.
+
+The reviewed source is pinned to a full fork commit SHA rather than the package semver because this fork uses the same `1.18.1` package version for security and source changes. A source-promotion PR must update both manifests, the locked transitive dependency graph, the provenance assertion and the security smoke tests together; changing `master` alone never changes running IR containers.
