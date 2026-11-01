@@ -1,0 +1,96 @@
+name: Review approved Camoufox browser in IR
+
+on:
+  schedule:
+    - cron: '41 8 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: review-approved-camoufox-browser
+  cancel-in-progress: false
+
+jobs:
+  propose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check accepted browser in Camofox fork master
+        id: candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          summary() { printf '%s\n' "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          fork_sha=$(gh api repos/LurigeLars/camofox-browser/branches/master --jq .commit.sha)
+          [[ "$fork_sha" =~ ^[a-f0-9]{40}$ ]] || { echo 'Invalid approved fork SHA' >&2; exit 1; }
+          mkdir -p /tmp/camoufox-approved
+          gh api "repos/LurigeLars/camofox-browser/contents/Dockerfile?ref=$fork_sha" --jq .content | base64 --decode > /tmp/camoufox-approved/Dockerfile
+          gh api "repos/LurigeLars/camofox-browser/contents/lib/camoufox-download.js?ref=$fork_sha" --jq .content | base64 --decode > /tmp/camoufox-approved/downloader.js
+
+          version=$(sed -n 's/^ARG CAMOUFOX_VERSION=//p' /tmp/camoufox-approved/Dockerfile)
+          release=$(sed -n 's/^ARG CAMOUFOX_RELEASE=//p' /tmp/camoufox-approved/Dockerfile)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && "$release" =~ ^beta\.[0-9]+$ ]] || {
+            echo 'Approved Camofox pin format changed' >&2; exit 1;
+          }
+          gh api "repos/daijro/camoufox/releases/tags/v$version-$release" > /tmp/camoufox-approved/release.json
+
+          # A newer public upstream beta or an open Camofox draft is not approval.
+          # Only exact pins already merged into Camofox master are candidates.
+          candidate=$(python scripts/propose_camoufox_binary_update.py \
+            --source-dockerfile /tmp/camoufox-approved/Dockerfile \
+            --source-downloader /tmp/camoufox-approved/downloader.js \
+            --release-json /tmp/camoufox-approved/release.json \
+            --source-sha "$fork_sha")
+          summary "Approved Camofox fork commit: ${fork_sha:0:12}; browser: $version-$release; IR: $candidate"
+          if [[ "$candidate" == "current" ]]; then
+            summary "No browser upgrade necessary."
+            exit 0
+          fi
+          [[ "$candidate" == "changed" ]] || { echo 'Unexpected binary updater result' >&2; exit 1; }
+          pending=$(gh pr list --state open --limit 100 --json headRefName --jq '.[] | select(.headRefName | startswith("deps/ir-camoufox-browser-")) | .headRefName')
+          if [[ -n "$pending" ]]; then
+            summary "Review already pending: $pending"
+            exit 0
+          fi
+          {
+            echo "update=true"
+            echo "sha=$fork_sha"
+            echo "version=$version"
+            echo "release=$release"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create review-only IR browser PR
+        if: steps.candidate.outputs.update == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.candidate.outputs.sha }}
+          BROWSER_VERSION: ${{ steps.candidate.outputs.version }}
+          BROWSER_RELEASE: ${{ steps.candidate.outputs.release }}
+        run: |
+          set -euo pipefail
+          branch="deps/ir-camoufox-browser-${BROWSER_VERSION//./-}-${BROWSER_RELEASE//./-}-${SOURCE_SHA:0:8}"
+          git checkout -b "$branch"
+          git add runtime/camofox/Dockerfile runtime/camofox/README.md test_camofox_container_runtime.py
+          git diff --cached --quiet && { echo 'No browser pin change to review' >&2; exit 1; }
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m "deps: review IR Camoufox $BROWSER_VERSION-$BROWSER_RELEASE"
+          git push origin "HEAD:refs/heads/$branch"
+          gh pr create --draft --base main --head "$branch" \
+            --title "deps: review IR Camoufox $BROWSER_VERSION-$BROWSER_RELEASE" \
+            --body "Approved Camofox fork master source: $SOURCE_SHA. Exact browser release version and Linux amd64 SHA256 have been verified against daijro/camoufox official release metadata. No deployment or automatic merge. This is the IR-internal browser binary, not the separately pinned Camofox server package. Wait for runtime regression, static security-gate, CodeQL and a REAL IR Camofox Docker build/browser smoke to pass, plus human compatibility review and rollback plan. A newly published upstream beta that has not been merged to the Camofox fork is never proposed."
+          # PRs created with GITHUB_TOKEN do not automatically trigger
+          # pull_request events. Explicitly run existing review checks.
+          gh workflow run runtime-regression.yml --ref "$branch"
+          gh workflow run static-analysis.yml --ref "$branch"
+          gh workflow run codeql.yml --ref "$branch"
+          gh workflow run camoufox-ir-image-smoke.yml --ref "$branch"
