@@ -37,7 +37,9 @@ class CamofoxContainerRuntimeTests(TestCase):
         camofox = lock["packages"]["node_modules/@askjo/camofox-browser"]
         self.assertEqual(camofox["version"], "1.18.1")
         self.assertEqual(camofox["resolved"], expected)
-        self.assertNotIn("integrity", camofox)
+        # npm now records a verified SHA-512 for the immutable GitHub archive.
+        # Keep integrity checking enabled instead of stripping this lock metadata.
+        self.assertRegex(camofox["integrity"], r"^sha512-[A-Za-z0-9+/]+={0,2}$")
         self.assertEqual(camofox["dependencies"]["express-rate-limit"], "8.7.1")
         self.assertEqual(camofox["dependencies"]["better-sqlite3"], "13.0.3")
         self.assertNotIn("node_modules/@askjo/camofox-browser/node_modules/better-sqlite3", lock["packages"])
