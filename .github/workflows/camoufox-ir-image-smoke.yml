@@ -32,3 +32,27 @@ jobs:
           docker run --rm --platform linux/amd64 \
             --entrypoint node ir-camofox-reviewed-candidate \
             -e "const fs=require('fs');const v=JSON.parse(fs.readFileSync('/opt/camoufox/version.json','utf8'));if(!v.version||!v.release||!fs.existsSync('/opt/camoufox/camoufox-bin'))process.exit(1);const Database=require('better-sqlite3');const db=new Database(':memory:');if(db.prepare('select 1 as ok').get().ok!==1)process.exit(2);db.close();require('impit');require('express-rate-limit');"
+      - name: Run the patched browser as non-root and verify Playwright 1.64 protocol
+        run: |
+          set -euo pipefail
+          docker run --rm --platform linux/amd64 --entrypoint node ir-camofox-reviewed-candidate \
+            --input-type=module -e '
+              import fs from "node:fs";
+              import { createHash } from "node:crypto";
+              import { firefox } from "playwright-core";
+              const sha = createHash("sha256").update(fs.readFileSync("/opt/camoufox/omni.ja")).digest("hex");
+              if (sha !== "2bad253389292f3009f669401eb8bc3abd615fb7c4e7d9619865f6c75b5c50fa") throw new Error("Patched browser digest mismatch");
+              const browser = await firefox.launch({ executablePath: "/opt/camoufox/camoufox-bin", headless: true });
+              try {
+                const context = await browser.newContext();
+                const page = await context.newPage();
+                await page.route("**/probe", route => route.fulfill({ status: 200, body: "ir-juggler-ok" }));
+                await page.goto("http://example.test/probe");
+                if ((await page.locator("body").textContent()) !== "ir-juggler-ok") throw new Error("Routing failed");
+                const storage = await context.storageState();
+                if (!Array.isArray(storage.cookies) || !Array.isArray(storage.origins)) throw new Error("storageState failed");
+                console.log("IR Camoufox Playwright 1.64.1 derived-image runtime smoke passed");
+              } finally {
+                await browser.close();
+              }
+            '
