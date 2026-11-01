@@ -21,7 +21,7 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
     && apt-get update \
     && apt-get -y upgrade \
     && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng tesseract-ocr-swe \
-    && test "$(node --version)" = "v26.12.1" \
+    && test "$(node --version)" = "v26.13.0" \
     && rm -rf /var/lib/apt/lists/* \
     && python -m pip check \
     && python -m pip uninstall -y pip \
