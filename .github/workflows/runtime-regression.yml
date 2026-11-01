@@ -108,3 +108,38 @@ jobs:
           test_instagram_camofox_public_smoke
           test_smoke_production_separation
           test_tiktok_media_transport
+
+  camofox-dependency-smoke:
+    name: Camofox npm lock and patched transitive dependencies
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: runtime/camofox/package-lock.json
+      - name: Reproduce hardened Camofox runtime dependency installation
+        run: npm ci --ignore-scripts --omit=dev --omit=optional --no-audit --no-fund --prefix runtime/camofox
+      - name: Verify installed patched security dependencies
+        run: |
+          node <<'NODE'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const root = path.resolve('runtime/camofox/node_modules');
+          const expected = {
+            '@modelcontextprotocol/sdk': '1.32.1',
+            'body-parser': '2.4.0',
+            'fast-uri': '3.1.9',
+            'hono': '4.13.13',
+            'ip-address': '10.7.5',
+            'qs': '6.17.1',
+          };
+          for (const [name, version] of Object.entries(expected)) {
+            const packageFile = path.join(root, name, 'package.json');
+            const actual = JSON.parse(fs.readFileSync(packageFile, 'utf8')).version;
+            assert.equal(actual, version, name);
+          }
+          NODE
