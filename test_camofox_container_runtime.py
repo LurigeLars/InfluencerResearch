@@ -60,17 +60,17 @@ class CamofoxContainerRuntimeTests(TestCase):
         lock = json.loads(
             (BASE / 'runtime' / 'camofox' / 'package-lock.json').read_text(encoding='utf-8')
         )
-        self.assertEqual(package['dependencies']['impit-linux-x64-gnu'], '0.14.6')
-        self.assertEqual(lock['packages']['']['dependencies']['impit-linux-x64-gnu'], '0.14.6')
+        self.assertEqual(package['dependencies']['impit-linux-x64-gnu'], '0.14.8')
+        self.assertEqual(lock['packages']['']['dependencies']['impit-linux-x64-gnu'], '0.14.8')
         binding = lock['packages']['node_modules/impit-linux-x64-gnu']
-        self.assertEqual(binding['version'], '0.14.6')
+        self.assertEqual(binding['version'], '0.14.8')
         self.assertEqual(binding['os'], ['linux'])
         self.assertEqual(binding['cpu'], ['x64'])
         self.assertIsNot(binding.get('optional'), True)
 
         dockerfile = (BASE / 'runtime' / 'camofox' / 'Dockerfile').read_text(encoding='utf-8')
         self.assertIn('--omit=optional', dockerfile)
-        self.assertIn("impit-linux-x64-gnu':'0.14.6", dockerfile)
+        self.assertIn("impit-linux-x64-gnu':'0.14.8", dockerfile)
         self.assertIn("require('impit')", dockerfile)
 
     def test_compose_is_internal_only_and_hardened(self) -> None:
