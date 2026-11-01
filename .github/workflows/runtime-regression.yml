@@ -122,6 +122,10 @@ jobs:
           cache-dependency-path: runtime/camofox/package-lock.json
       - name: Reproduce hardened Camofox runtime dependency installation
         run: npm ci --ignore-scripts --omit=dev --omit=optional --no-audit --no-fund --prefix runtime/camofox
+      - name: Verify impit native binding can load on Linux
+        run: |
+          cd runtime/camofox
+          node -e "const impit=require('impit'); if (!impit) process.exit(1);"
       - name: Verify installed patched security dependencies
         run: |
           node <<'NODE'
