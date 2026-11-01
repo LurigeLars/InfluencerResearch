@@ -69,12 +69,12 @@ class CreatorEvaluationPipelineTests(unittest.TestCase):
             / "influencerresearch"
             / "Dockerfile"
         ).read_text(encoding="utf-8")
-        self.assertIn("FROM node:26.12.0-trixie-slim AS node-runtime", dockerfile)
+        self.assertIn("FROM node:26.12.1-trixie-slim AS node-runtime", dockerfile)
         self.assertIn(
             "COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node",
             dockerfile,
         )
-        self.assertIn('test "$(node --version)" = "v26.12.0"', dockerfile)
+        self.assertIn('test "$(node --version)" = "v26.12.1"', dockerfile)
 
     def test_seeded_sample_includes_pins_and_fills_to_requested_unique_count(self) -> None:
         seeds = [{"id": "seed1"}, {"id": "seed2"}]
