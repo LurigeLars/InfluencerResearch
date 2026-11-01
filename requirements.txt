@@ -4,7 +4,7 @@ yt-dlp==2026.10.26
 yt-dlp-ejs==0.8.0
 faster-whisper==1.2.1
 # PyAV 19 removed av.open(metadata_errors=...), which faster-whisper 1.2.1 still calls.
-av==18.1.0
+av==19.0.2
 imageio-ffmpeg==0.7.0
 google-genai==2.34.0
 tzdata==2026.6
