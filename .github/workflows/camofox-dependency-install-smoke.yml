@@ -8,6 +8,7 @@ on:
       - "runtime/camofox/package-lock.json"
       - "test_camofox_container_runtime.py"
       - ".github/workflows/camofox-dependency-install-smoke.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
