@@ -13,15 +13,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DOCKERFILE = ROOT / "runtime" / "camofox" / "Dockerfile"
 PACKAGE_JSON = ROOT / "runtime" / "camofox" / "package.json"
-REQUIREMENTS = ROOT / "requirements.txt"
 
 CAMOUFOX_REPO = "daijro/camoufox"
 CAMOFOX_BROWSER_REPO = "LurigeLars/camofox-browser"
 CAMOFOX_BROWSER_BRANCH = "master"
-MCP_REPO = "modelcontextprotocol/python-sdk"
 CAMOUFOX_ISSUE = "Dependency watch: Camoufox upstream release"
 CAMOFOX_BROWSER_ISSUE = "Dependency watch: camofox-browser reviewed pin"
-MCP_ISSUE = "Dependency watch: MCP Python SDK release"
 
 TAG_RE = re.compile(r"^v\d+\.\d+\.\d+-(?:alpha|beta)\.\d+$")
 ARCHIVE_RE = re.compile(
@@ -86,25 +83,6 @@ def latest_camofox_browser_sha() -> tuple[str, str]:
     return sha, str(commit.get("html_url") or "")
 
 
-def current_mcp_version() -> str:
-    match = re.search(
-        r"^mcp==([^\s#]+)",
-        REQUIREMENTS.read_text(encoding="utf-8"),
-        re.MULTILINE,
-    )
-    if not match:
-        raise RuntimeError("MCP Python SDK pin could not be parsed")
-    return match.group(1)
-
-
-def latest_mcp_release() -> tuple[str, str]:
-    release = github_json(f"/repos/{MCP_REPO}/releases/latest")
-    tag = str(release.get("tag_name") or "").removeprefix("v")
-    if not re.fullmatch(r"\d+\.\d+\.\d+", tag):
-        raise RuntimeError("MCP Python SDK latest release tag is invalid")
-    return tag, str(release.get("html_url") or "")
-
-
 def _find_issue(repository: str, title: str) -> dict | None:
     issues = github_json(f"/repos/{repository}/issues?state=all&per_page=100")
     for issue in issues:
@@ -149,8 +127,6 @@ def main() -> int:
     latest_camoufox, latest_camoufox_url = latest_camoufox_tag()
     current_browser = current_camofox_browser_sha()
     latest_browser, latest_browser_url = latest_camofox_browser_sha()
-    current_mcp = current_mcp_version()
-    latest_mcp, latest_mcp_url = latest_mcp_release()
 
     result = {
         "camoufox": {
@@ -165,12 +141,6 @@ def main() -> int:
             "branch": CAMOFOX_BROWSER_BRANCH,
             "outdated": current_browser != latest_browser,
             "latest_url": latest_browser_url,
-        },
-        "mcp": {
-            "current": current_mcp,
-            "latest": latest_mcp,
-            "outdated": current_mcp != latest_mcp,
-            "latest_url": latest_mcp_url,
         },
     }
     print(json.dumps(result, indent=2, sort_keys=True))
@@ -203,19 +173,6 @@ def main() -> int:
                 f"- current `{CAMOFOX_BROWSER_BRANCH}` head: `{latest_browser}`\n"
                 f"- upstream fork commit: {latest_browser_url}\n\n"
                 "This watcher is signal-only. The exact commit remains manual-review-only."
-            ),
-        )
-        _sync_issue(
-            repository,
-            MCP_ISSUE,
-            outdated=result["mcp"]["outdated"],
-            body=(
-                "A newer MCP Python SDK release exists.\n\n"
-                f"- reviewed runtime pin: `{current_mcp}`\n"
-                f"- newest upstream release: `{latest_mcp}`\n"
-                f"- upstream: {latest_mcp_url}\n\n"
-                "Dependabot remains the normal package-update path. This watcher is a "
-                "signal-only backstop for releases that have not yet produced a PR."
             ),
         )
 
