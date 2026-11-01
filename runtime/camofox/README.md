@@ -6,7 +6,7 @@ This directory defines the reviewed Camofox/Camoufox container used by the Influ
 - Transitive browser client: `camoufox-js` `0.11.5`
 - Tested Playwright protocol client: `1.63.0` (exact dependency in the reviewed fork; Playwright 1.64+ awaits upstream Juggler patch)
 - Container Node.js baseline: `v26.13.0`
-- Camoufox browser baseline: `152.0.4` / `beta.30`
+- Camoufox browser baseline: `158.0.1` / `beta.41` (official Linux AMD64 artifact, SHA256-pinned; Playwright 1.63.0 validated with fork PR #103)
 - Reviewed fork adds bounded sanitized live observability via per-tab `/network` and `/console` routes; headers, cookies and request/response bodies are not exposed.
 - Direct browser sessions also use the reviewed IPv6-aware, fail-closed SSRF guard; private/local destinations remain blocked by default.
 
