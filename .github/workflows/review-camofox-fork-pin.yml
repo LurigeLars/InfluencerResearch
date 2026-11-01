@@ -57,9 +57,11 @@ jobs:
             summary "Pending review: $open"
             exit 0
           fi
-          echo "update=true" >> "$GITHUB_OUTPUT"
-          echo "sha=$head" >> "$GITHUB_OUTPUT"
-          echo "old=$reviewed" >> "$GITHUB_OUTPUT"
+          {
+            echo "update=true"
+            echo "sha=$head"
+            echo "old=$reviewed"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Generate and open draft source promotion
         if: steps.candidate.outputs.update == 'true'
