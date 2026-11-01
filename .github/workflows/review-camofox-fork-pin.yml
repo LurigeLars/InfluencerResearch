@@ -1,0 +1,92 @@
+name: Review updated Camofox fork commit
+
+on:
+  schedule:
+    - cron: '22 7 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: review-camofox-fork-pin
+  cancel-in-progress: false
+
+jobs:
+  propose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+      actions: write # dispatch the existing required checks for GITHUB_TOKEN-created PRs
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Find reviewed fork update candidate
+        id: candidate
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          head=$(gh api repos/LurigeLars/camofox-browser/branches/master --jq .commit.sha)
+          [[ "$head" =~ ^[0-9a-f]{40}$ ]] || { echo 'Invalid upstream commit SHA' >&2; exit 1; }
+          reviewed=$(python - <<'PY'
+          import json, re
+          from pathlib import Path
+          spec = json.loads(Path('runtime/camofox/package.json').read_text())['dependencies']['@askjo/camofox-browser']
+          matched = re.fullmatch(r'https://github[.]com/LurigeLars/camofox-browser/archive/([0-9a-f]{40})[.]tar[.]gz', spec)
+          if not matched:
+              raise SystemExit('Runtime fork pin does not match the reviewed immutable source format')
+          print(matched.group(1))
+          PY
+          )
+          echo "Latest fork commit: ${head:0:12}; reviewed IR commit: ${reviewed:0:12}" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$head" == "$reviewed" ]]; then
+            echo "No update needed" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          # One outstanding review at a time. Do not open repeated PRs.
+          open=$(gh pr list --state open --limit 100 --json headRefName --jq '.[] | select(.headRefName | startswith("deps/camofox-fork-")) | .headRefName')
+          if [[ -n "$open" ]]; then
+            echo "::notice::Existing unreviewed Camofox source PR: $open"
+            echo "Pending review: $open" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          echo "update=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$head" >> "$GITHUB_OUTPUT"
+          echo "old=$reviewed" >> "$GITHUB_OUTPUT"
+
+      - name: Generate and open draft source promotion
+        if: steps.candidate.outputs.update == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.candidate.outputs.sha }}
+          PREVIOUS_SHA: ${{ steps.candidate.outputs.old }}
+        run: |
+          set -euo pipefail
+          branch="deps/camofox-fork-${SOURCE_SHA:0:12}"
+          git checkout -b "$branch"
+          python scripts/propose_camofox_source_update.py --candidate-sha "$SOURCE_SHA"
+
+          # Resolve a real npm lock; do not synthesize nested integrity records.
+          # Lifecycle scripts are forbidden in this proposal workflow.
+          (cd runtime/camofox && npm install --package-lock-only --ignore-scripts --no-audit --no-fund)
+          node -e "const p=require('./runtime/camofox/package-lock.json');if(!p.packages['node_modules/@askjo/camofox-browser']?.resolved?.endsWith(process.env.SOURCE_SHA+'.tar.gz'))process.exit(1)"
+          git add runtime/camofox/package.json runtime/camofox/package-lock.json tiktok_camofox_sync.py test_camofox_container_runtime.py runtime/camofox/README.md
+          git diff --cached --quiet && { echo 'No changed files after proposed update' >&2; exit 1; }
+
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m "deps: propose reviewed Camofox fork ${SOURCE_SHA:0:12}"
+          git push origin "HEAD:refs/heads/$branch"
+          gh pr create --draft --base main --head "$branch" \
+            --title "deps: review Camofox fork ${SOURCE_SHA:0:12}" \
+            --body "Automatic **review-only** source promotion from protected Camofox fork master.\\n\\nPrevious SHA: \`$PREVIOUS_SHA\`\\nCandidate SHA: \`$SOURCE_SHA\`\\n\\nThe runtime manifest, npm lock graph, exact source provenance and test expectations are updated together. Do not merge until native package install, regression, static security-gate and CodeQL are green. Review any changed transitive dependencies. GITHUB_TOKEN-created PRs do not automatically fire pull_request CI, so the workflow explicitly dispatches existing checks. No images are built or deployed and the browser binary stays separately pinned."
+          # GITHUB_TOKEN-created PRs do not emit a downstream pull_request CI event.
+          # Dispatch existing checks on the candidate branch, fail closed on errors.
+          gh workflow run runtime-regression.yml --ref "$branch"
+          gh workflow run static-analysis.yml --ref "$branch"
+          gh workflow run codeql.yml --ref "$branch"
+          gh workflow run camofox-dependency-install-smoke.yml --ref "$branch"
+          echo "Created a draft PR and dispatched CI for $branch" >> "$GITHUB_STEP_SUMMARY"
