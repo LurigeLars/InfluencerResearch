@@ -2,17 +2,17 @@
 
 This directory defines the reviewed Camofox/Camoufox container used by the InfluencerResearch Docker runtime.
 
-- Direct dependency: `@askjo/camofox-browser` `1.18.1` from reviewed fork commit `d4cf2b6b56c7d9fab2187f068d51e26eb9a8d2e6`
+- Direct dependency: `@askjo/camofox-browser` `1.18.1` from reviewed fork commit `6e3c341e68c2b5b05478a2de5372472ea00e35eb`
 - Transitive browser client: `camoufox-js` `0.11.5`
-- Tested Playwright protocol client: `1.63.0` (exact dependency in the reviewed fork; Playwright 1.64+ awaits upstream Juggler patch)
+- Tested Playwright protocol client: `1.64.1` with the locally reproducible, SHA256-locked Juggler compatibility patch based on upstream PR #976.
 - Container Node.js baseline: `v26.13.0`
-- Camoufox browser baseline: `158.0.1` / `beta.41` (official Linux AMD64 artifact, SHA256-pinned; Playwright 1.63.0 validated with fork PR #103)
+- Camoufox browser baseline: `158.0.1` / `beta.41` (official Linux AMD64 ZIP SHA256-verified, then Juggler `omni.ja` patched and SHA256-verified to `2bad253389292f3009f669401eb8bc3abd615fb7c4e7d9619865f6c75b5c50fa`).
 - Reviewed fork adds bounded sanitized live observability via per-tab `/network` and `/console` routes; headers, cookies and request/response bodies are not exposed.
 - Direct browser sessions also use the reviewed IPv6-aware, fail-closed SSRF guard; private/local destinations remain blocked by default.
 
 `package-lock.json` is the project-specific reviewed runtime baseline resolved from the exact commit-pinned Camofox tarball above. The lockfile records the artifact integrity; it is not a byte-for-byte copy of upstream's development lockfile.
 
-The Docker build disables npm lifecycle scripts during dependency resolution, explicitly builds the required `better-sqlite3` native binding, and bakes the exact reviewed Linux Camoufox release into the image after verifying the release artifact. The dynamic Camofox postinstall browser fetch is not used.
+The Docker build disables npm lifecycle scripts during dependency resolution, explicitly builds the required `better-sqlite3` native binding, and bakes the exact reviewed Linux Camoufox release into the image after verifying the release artifact. The dynamic Camofox postinstall browser fetch is not used. The patch tool comes only from the immutable reviewed Camofox fork dependency and must pass a second SHA256 check after rebuilding `omni.ja`. Any upstream browser input or build variation fails the build; this is a derived, documented Camoufox binary, **not** a claimed official release containing PR #976.
 
 Direct Camofox is a separate service in the root `compose.yaml`. It is reachable only from the Compose `runtime` network at `http://camofox:9377`; port 9377 is not published to the Windows host. The `influencerresearch` service authenticates to it with generated access/admin keys.
 

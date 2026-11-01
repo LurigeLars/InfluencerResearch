@@ -4,6 +4,7 @@ ARG CAMOUFOX_VERSION=158.0.1
 ARG CAMOUFOX_RELEASE=beta.41
 ARG CAMOUFOX_ARCH=x86_64
 ARG CAMOUFOX_SHA256=3f2eb1d0451fa58e45e43e55f5e6181565069791ae60c0574f0ceb1f01341c33
+ARG CAMOUFOX_PATCHED_OMNI_SHA256=2bad253389292f3009f669401eb8bc3abd615fb7c4e7d9619865f6c75b5c50fa
 
 ENV NODE_ENV=production \
     CAMOFOX_SKIP_DOWNLOAD=1 \
@@ -65,6 +66,14 @@ RUN mkdir -p /opt/camoufox \
     && test -f /opt/camoufox/version.json \
     && test -d /opt/camoufox/fontconfig \
     && chmod -R a+rX /opt/camoufox
+
+# Same reviewed patcher shipped inside the exact SHA-pinned fork dependency.
+# The original downloaded browser ZIP AND the modified omni.ja are digest-locked.
+# Apply after npm ci; no binary modifications or unverified scripts at runtime.
+RUN test -f /app/node_modules/@askjo/camofox-browser/scripts/compat/patch_juggler_976.py \
+    && python3 /app/node_modules/@askjo/camofox-browser/scripts/compat/patch_juggler_976.py \
+       /opt/camoufox --expect-sha256 "${CAMOUFOX_PATCHED_OMNI_SHA256}" \
+    && echo "${CAMOUFOX_PATCHED_OMNI_SHA256}  /opt/camoufox/omni.ja" | sha256sum -c -
 
 COPY runtime/camofox/camofox.config.json /app/node_modules/@askjo/camofox-browser/camofox.config.json
 

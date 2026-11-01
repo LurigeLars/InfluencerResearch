@@ -16,6 +16,10 @@ class CamofoxContainerRuntimeTests(TestCase):
         self.assertIn("CAMOUFOX_VERSION=158.0.1", text)
         self.assertIn("CAMOUFOX_RELEASE=beta.41", text)
         self.assertIn("CAMOUFOX_SHA256=3f2eb1d0451fa58e45e43e55f5e6181565069791ae60c0574f0ceb1f01341c33", text)
+        self.assertIn("CAMOUFOX_PATCHED_OMNI_SHA256=2bad253389292f3009f669401eb8bc3abd615fb7c4e7d9619865f6c75b5c50fa", text)
+        self.assertIn("scripts/compat/patch_juggler_976.py", text)
+        self.assertIn("--expect-sha256", text)
+        self.assertIn("sha256sum -c -", text)
         self.assertIn("/opt/camoufox/version.json", text)
         self.assertIn("test -d /opt/camoufox/fontconfig", text)
         self.assertIn("npm ci --ignore-scripts", text)
@@ -31,12 +35,16 @@ class CamofoxContainerRuntimeTests(TestCase):
         lock = json.loads(
             (BASE / "runtime" / "camofox" / "package-lock.json").read_text(encoding="utf-8")
         )
-        expected = "https://github.com/LurigeLars/camofox-browser/archive/d4cf2b6b56c7d9fab2187f068d51e26eb9a8d2e6.tar.gz"
+        expected = "https://github.com/LurigeLars/camofox-browser/archive/6e3c341e68c2b5b05478a2de5372472ea00e35eb.tar.gz"
         self.assertEqual(package["dependencies"]["@askjo/camofox-browser"], expected)
         self.assertEqual(lock["packages"][""]["dependencies"]["@askjo/camofox-browser"], expected)
         camofox = lock["packages"]["node_modules/@askjo/camofox-browser"]
         self.assertEqual(camofox["version"], "1.18.1")
         self.assertEqual(camofox["resolved"], expected)
+        self.assertEqual(camofox["dependencies"]["playwright-core"], "1.64.1")
+        patched_playwright = lock["packages"].get("node_modules/@askjo/camofox-browser/node_modules/playwright-core") or lock["packages"]["node_modules/playwright-core"]
+        self.assertEqual(patched_playwright["version"], "1.64.1")
+        self.assertTrue(patched_playwright["integrity"].startswith("sha512-"))
         # npm now records a verified SHA-512 for the immutable GitHub archive.
         # Keep integrity checking enabled instead of stripping this lock metadata.
         self.assertRegex(camofox["integrity"], r"^sha512-[A-Za-z0-9+/]+={0,2}$")
@@ -53,7 +61,7 @@ class CamofoxContainerRuntimeTests(TestCase):
         ip_address = lock["packages"]["node_modules/ip-address"]
         self.assertEqual(ip_address["version"], "10.7.5")
         self.assertIsNot(ip_address.get("optional"), True)
-        self.assertEqual(sync.CAMOFOX_CONTAINER_SOURCE_COMMIT, "d4cf2b6b56c7d9fab2187f068d51e26eb9a8d2e6")
+        self.assertEqual(sync.CAMOFOX_CONTAINER_SOURCE_COMMIT, "6e3c341e68c2b5b05478a2de5372472ea00e35eb")
         self.assertEqual(sync.CAMOFOX_CONTAINER_EXPECTED_CAMOFOX_VERSION, "1.18.1")
         self.assertEqual(sync.CAMOFOX_FALLBACK_EXPECTED_CAMOFOX_VERSION, "1.17.0")
 
