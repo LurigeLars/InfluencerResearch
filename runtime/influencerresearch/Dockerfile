@@ -1,6 +1,6 @@
-FROM node:26.12.1-trixie-slim AS node-runtime
+FROM node:26.13.0-trixie-slim AS node-runtime
 
-FROM python:3.14-slim-trixie
+FROM python:3.15-slim-trixie
 
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 
