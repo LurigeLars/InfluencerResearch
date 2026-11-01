@@ -1,4 +1,4 @@
-FROM node:26.12.1-trixie-slim AS node-runtime
+FROM node:26.13.0-trixie-slim AS node-runtime
 
 FROM python:3.14-slim-trixie
 
