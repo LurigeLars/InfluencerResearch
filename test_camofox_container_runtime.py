@@ -12,7 +12,7 @@ BASE = Path(__file__).resolve().parent
 class CamofoxContainerRuntimeTests(TestCase):
     def test_dockerfile_pins_reviewed_runtime_and_skips_dynamic_postinstall(self) -> None:
         text = (BASE / "runtime" / "camofox" / "Dockerfile").read_text(encoding="utf-8")
-        self.assertIn("FROM node:26.12.0-trixie-slim", text)
+        self.assertIn("FROM node:26.12.1-trixie-slim", text)
         self.assertIn("CAMOUFOX_VERSION=152.0.4", text)
         self.assertIn("CAMOUFOX_RELEASE=beta.30", text)
         self.assertIn("CAMOUFOX_SHA256=5720d45b894ce1770543de024c6f10d514b38be560fa2dc3226b3d8586caf672", text)
@@ -47,7 +47,7 @@ class CamofoxContainerRuntimeTests(TestCase):
         )
         self.assertIsNot(rate_limit.get("optional"), True)
         ip_address = lock["packages"]["node_modules/ip-address"]
-        self.assertEqual(ip_address["version"], "10.7.2")
+        self.assertEqual(ip_address["version"], "10.7.5")
         self.assertIsNot(ip_address.get("optional"), True)
         self.assertEqual(sync.CAMOFOX_CONTAINER_SOURCE_COMMIT, "f05fea8b999a262ac6fa9d6d75bcdc4d2b3bf795")
         self.assertEqual(sync.CAMOFOX_CONTAINER_EXPECTED_CAMOFOX_VERSION, "1.18.1")

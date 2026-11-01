@@ -8,5 +8,13 @@
   "dependencies": {
     "@askjo/camofox-browser": "https://github.com/LurigeLars/camofox-browser/archive/f05fea8b999a262ac6fa9d6d75bcdc4d2b3bf795.tar.gz",
     "impit-linux-x64-gnu": "0.14.6"
+  },
+  "overrides": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "body-parser": "2.4.0",
+    "fast-uri": "3.1.9",
+    "hono": "4.13.13",
+    "ip-address": "10.7.5",
+    "qs": "6.17.1"
   }
 }
