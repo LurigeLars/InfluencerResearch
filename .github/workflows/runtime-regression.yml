@@ -133,7 +133,6 @@ jobs:
             '@modelcontextprotocol/sdk': '1.32.1',
             'body-parser': '2.4.0',
             'fast-uri': '3.1.9',
-            'hono': '4.13.13',
             'ip-address': '10.7.5',
             'qs': '6.17.1',
           };
@@ -142,4 +141,9 @@ jobs:
             const actual = JSON.parse(fs.readFileSync(packageFile, 'utf8')).version;
             assert.equal(actual, version, name);
           }
+          // Hono is optional and intentionally omitted from this runtime image;
+          // keep its lock resolved to a patched version for non-omit installs.
+          const lock = JSON.parse(fs.readFileSync('runtime/camofox/package-lock.json', 'utf8'));
+          assert.equal(lock.packages['node_modules/hono']?.version, '4.13.13');
+          assert.equal(lock.packages['node_modules/hono']?.optional, true);
           NODE
