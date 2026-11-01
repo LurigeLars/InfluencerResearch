@@ -31,7 +31,7 @@ class CamofoxContainerRuntimeTests(TestCase):
         lock = json.loads(
             (BASE / "runtime" / "camofox" / "package-lock.json").read_text(encoding="utf-8")
         )
-        expected = "https://github.com/LurigeLars/camofox-browser/archive/40718e1ba1dd753977a1e912342f6a6fc85e4b27.tar.gz"
+        expected = "https://github.com/LurigeLars/camofox-browser/archive/19c2ea8018366465ad3c59c9a8ae6e0427f5dd60.tar.gz"
         self.assertEqual(package["dependencies"]["@askjo/camofox-browser"], expected)
         self.assertEqual(lock["packages"][""]["dependencies"]["@askjo/camofox-browser"], expected)
         camofox = lock["packages"]["node_modules/@askjo/camofox-browser"]
@@ -53,7 +53,7 @@ class CamofoxContainerRuntimeTests(TestCase):
         ip_address = lock["packages"]["node_modules/ip-address"]
         self.assertEqual(ip_address["version"], "10.7.5")
         self.assertIsNot(ip_address.get("optional"), True)
-        self.assertEqual(sync.CAMOFOX_CONTAINER_SOURCE_COMMIT, "40718e1ba1dd753977a1e912342f6a6fc85e4b27")
+        self.assertEqual(sync.CAMOFOX_CONTAINER_SOURCE_COMMIT, "19c2ea8018366465ad3c59c9a8ae6e0427f5dd60")
         self.assertEqual(sync.CAMOFOX_CONTAINER_EXPECTED_CAMOFOX_VERSION, "1.18.1")
         self.assertEqual(sync.CAMOFOX_FALLBACK_EXPECTED_CAMOFOX_VERSION, "1.17.0")
 
