@@ -133,17 +133,24 @@ jobs:
             '@modelcontextprotocol/sdk': '1.32.1',
             'body-parser': '2.4.0',
             'fast-uri': '3.1.9',
+            'hono': '4.13.13',
             'ip-address': '10.7.5',
             'qs': '6.17.1',
           };
-          for (const [name, version] of Object.entries(expected)) {
-            const packageFile = path.join(root, name, 'package.json');
-            const actual = JSON.parse(fs.readFileSync(packageFile, 'utf8')).version;
-            assert.equal(actual, version, name);
-          }
-          // Hono is optional and intentionally omitted from this runtime image;
-          // keep its lock resolved to a patched version for non-omit installs.
+          const optionalPaths = new Set(['@modelcontextprotocol/sdk', 'fast-uri', 'hono']);
           const lock = JSON.parse(fs.readFileSync('runtime/camofox/package-lock.json', 'utf8'));
-          assert.equal(lock.packages['node_modules/hono']?.version, '4.13.13');
-          assert.equal(lock.packages['node_modules/hono']?.optional, true);
+          for (const [name, version] of Object.entries(expected)) {
+            const locked = lock.packages[`node_modules/${name}`];
+            assert.equal(locked?.version, version, `${name} lock version`);
+            assert.match(locked?.integrity ?? '', /^sha512-/, `${name} integrity`);
+            const packageFile = path.join(root, name, 'package.json');
+            if (fs.existsSync(packageFile)) {
+              const actual = JSON.parse(fs.readFileSync(packageFile, 'utf8')).version;
+              assert.equal(actual, version, `${name} installed version`);
+            } else {
+              // The runtime deliberately uses --omit=optional; an SDK-only
+              // dependency tree can be absent but must remain patched in lock.
+              assert.ok(optionalPaths.has(name), `${name} required dependency missing`);
+            }
+          }
           NODE
