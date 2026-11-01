@@ -1,0 +1,34 @@
+name: IR Camoufox browser image smoke
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "runtime/camofox/Dockerfile"
+      - "test_camofox_container_runtime.py"
+      - ".github/workflows/camoufox-ir-image-smoke.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ir-camoufox-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build actual IR Camofox image, verify upstream ZIP digest and native modules
+        run: |
+          set -euo pipefail
+          docker build --platform linux/amd64 -f runtime/camofox/Dockerfile -t ir-camofox-reviewed-candidate .
+      - name: Verify runtime browser artifact and native SQLite without secrets
+        run: |
+          set -euo pipefail
+          docker run --rm --platform linux/amd64 \
+            --entrypoint node ir-camofox-reviewed-candidate \
+            -e "const fs=require('fs');const v=JSON.parse(fs.readFileSync('/opt/camoufox/version.json','utf8'));if(!v.version||!v.release||!fs.existsSync('/opt/camoufox/camoufox-bin'))process.exit(1);const Database=require('better-sqlite3');const db=new Database(':memory:');if(db.prepare('select 1 as ok').get().ok!==1)process.exit(2);db.close();require('impit');require('express-rate-limit');"
