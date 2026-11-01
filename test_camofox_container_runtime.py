@@ -13,9 +13,9 @@ class CamofoxContainerRuntimeTests(TestCase):
     def test_dockerfile_pins_reviewed_runtime_and_skips_dynamic_postinstall(self) -> None:
         text = (BASE / "runtime" / "camofox" / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn("FROM node:26.13.0-trixie-slim", text)
-        self.assertIn("CAMOUFOX_VERSION=152.0.4", text)
-        self.assertIn("CAMOUFOX_RELEASE=beta.30", text)
-        self.assertIn("CAMOUFOX_SHA256=5720d45b894ce1770543de024c6f10d514b38be560fa2dc3226b3d8586caf672", text)
+        self.assertIn("CAMOUFOX_VERSION=158.0.1", text)
+        self.assertIn("CAMOUFOX_RELEASE=beta.41", text)
+        self.assertIn("CAMOUFOX_SHA256=3f2eb1d0451fa58e45e43e55f5e6181565069791ae60c0574f0ceb1f01341c33", text)
         self.assertIn("/opt/camoufox/version.json", text)
         self.assertIn("test -d /opt/camoufox/fontconfig", text)
         self.assertIn("npm ci --ignore-scripts", text)
@@ -31,7 +31,7 @@ class CamofoxContainerRuntimeTests(TestCase):
         lock = json.loads(
             (BASE / "runtime" / "camofox" / "package-lock.json").read_text(encoding="utf-8")
         )
-        expected = "https://github.com/LurigeLars/camofox-browser/archive/19c2ea8018366465ad3c59c9a8ae6e0427f5dd60.tar.gz"
+        expected = "https://github.com/LurigeLars/camofox-browser/archive/d4cf2b6b56c7d9fab2187f068d51e26eb9a8d2e6.tar.gz"
         self.assertEqual(package["dependencies"]["@askjo/camofox-browser"], expected)
         self.assertEqual(lock["packages"][""]["dependencies"]["@askjo/camofox-browser"], expected)
         camofox = lock["packages"]["node_modules/@askjo/camofox-browser"]
@@ -53,7 +53,7 @@ class CamofoxContainerRuntimeTests(TestCase):
         ip_address = lock["packages"]["node_modules/ip-address"]
         self.assertEqual(ip_address["version"], "10.7.5")
         self.assertIsNot(ip_address.get("optional"), True)
-        self.assertEqual(sync.CAMOFOX_CONTAINER_SOURCE_COMMIT, "19c2ea8018366465ad3c59c9a8ae6e0427f5dd60")
+        self.assertEqual(sync.CAMOFOX_CONTAINER_SOURCE_COMMIT, "d4cf2b6b56c7d9fab2187f068d51e26eb9a8d2e6")
         self.assertEqual(sync.CAMOFOX_CONTAINER_EXPECTED_CAMOFOX_VERSION, "1.18.1")
         self.assertEqual(sync.CAMOFOX_FALLBACK_EXPECTED_CAMOFOX_VERSION, "1.17.0")
 
