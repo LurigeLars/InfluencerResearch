@@ -1,0 +1,67 @@
+name: Camofox dependency install smoke
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "runtime/camofox/package.json"
+      - "runtime/camofox/package-lock.json"
+      - "test_camofox_container_runtime.py"
+      - ".github/workflows/camofox-dependency-install-smoke.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  npm-runtime-install:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Node 26
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '26'
+      - name: Install exact reviewed lock without lifecycle scripts
+        working-directory: runtime/camofox
+        env:
+          CAMOFOX_SKIP_DOWNLOAD: "1"
+        run: npm ci --ignore-scripts --omit=dev --omit=optional --no-audit --no-fund
+      - name: Verify pinned package and patched transitive dependencies
+        working-directory: runtime/camofox
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const packages = {
+            '@askjo/camofox-browser': '1.18.1',
+            'better-sqlite3': '13.0.3',
+            'express-rate-limit': '8.7.1',
+            'camoufox-js': '0.11.5',
+            'impit-linux-x64-gnu': '0.14.8',
+          };
+          for (const [name, expected] of Object.entries(packages)) {
+            const manifest = JSON.parse(fs.readFileSync(path.join('node_modules', ...name.split('/'), 'package.json'), 'utf8'));
+            if (manifest.version !== expected) throw new Error(name + ': ' + manifest.version + ' != ' + expected);
+          }
+          NODE
+      - name: Rebuild only the reviewed native dependency
+        working-directory: runtime/camofox
+        env:
+          npm_config_build_from_source: 'true'
+        run: npm rebuild better-sqlite3 --foreground-scripts --no-audit --no-fund
+      - name: Test native SQLite and runtime imports without launching a browser
+        working-directory: runtime/camofox
+        run: |
+          node - <<'NODE'
+          require('impit');
+          require('express-rate-limit');
+          const Database = require('better-sqlite3');
+          const db = new Database(':memory:');
+          if (db.prepare('SELECT 1 AS ok').get().ok !== 1) process.exit(2);
+          db.close();
+          NODE
