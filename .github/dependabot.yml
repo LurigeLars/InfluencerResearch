@@ -10,6 +10,11 @@ updates:
       time: "09:00"
       timezone: "Europe/Stockholm"
     open-pull-requests-limit: 5
+    # faster-whisper 1.2.1 still calls av.open(metadata_errors=...),
+    # removed in PyAV 19. Keep compatible PyAV 18.x maintenance updates.
+    ignore:
+      - dependency-name: "av"
+        update-types: ["version-update:semver-major"]
     groups:
       python-minor-patch:
         applies-to: "version-updates"
