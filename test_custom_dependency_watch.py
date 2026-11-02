@@ -6,7 +6,7 @@ import io
 import json
 import sys
 import unittest
-from unittest.mock import call, patch
+from unittest.mock import patch
 
 from scripts import check_custom_dependencies as watch
 
