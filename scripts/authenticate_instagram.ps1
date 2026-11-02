@@ -12,6 +12,22 @@ $SecretPath = Join-Path $SecretDir "instagram_cookies.dpapi"
 $Venv = Join-Path $Runtime "auth-venv"
 $Python = Join-Path $Venv "Scripts\python.exe"
 $Setup = Join-Path $App "setup_auth.py"
+$RequirementsPath = Join-Path $App "requirements.txt"
+if (-not (Test-Path -LiteralPath $RequirementsPath -PathType Leaf)) {
+    throw "InfluencerResearch requirements file not found: $RequirementsPath"
+}
+# One authoritative pin for the container runtime and host-side auth bootstrap.
+$PlaywrightPins = @(
+    foreach ($line in Get-Content -LiteralPath $RequirementsPath) {
+        if ($line -match '^\s*playwright==([0-9]+\.[0-9]+\.[0-9]+)\s*(?:#.*)?$') {
+            $Matches[1]
+        }
+    }
+)
+if ($PlaywrightPins.Count -ne 1) {
+    throw "Expected exactly one pinned playwright==X.Y.Z in requirements.txt."
+}
+$ExpectedPlaywrightVersion = $PlaywrightPins[0]
 $TempExport = Join-Path ([IO.Path]::GetTempPath()) ("influencerresearch-instagram-" + [guid]::NewGuid().ToString("N") + ".json")
 $TempDpapi = "$SecretPath.tmp"
 
@@ -27,8 +43,15 @@ if (-not (Test-Path -LiteralPath $Python -PathType Leaf)) {
     & py -3.12 -m venv $Venv
     if ($LASTEXITCODE -ne 0) { throw "Unable to create Instagram auth virtual environment." }
 
-    & $Python -m pip install --disable-pip-version-check "playwright==1.63.0"
-    if ($LASTEXITCODE -ne 0) { throw "Unable to install Playwright for Instagram auth bootstrap." }
+}
+# Existing auth-venv installations must follow requirements.txt as well.
+$InstalledPlaywrightVersion = [string](& $Python -c 'import importlib.metadata as m; print(next((d.version for d in m.distributions() if d.metadata.get("Name", "").lower() == "playwright"), ""))')
+if ($LASTEXITCODE -ne 0) {
+    throw "Unable to inspect the Instagram auth Playwright installation."
+}
+if ($InstalledPlaywrightVersion.Trim() -ne $ExpectedPlaywrightVersion) {
+    & $Python -m pip install --disable-pip-version-check "playwright==$ExpectedPlaywrightVersion"
+    if ($LASTEXITCODE -ne 0) { throw "Unable to synchronize Playwright for Instagram auth bootstrap." }
 }
 
 New-Item -ItemType Directory -Force -Path $SecretDir | Out-Null
