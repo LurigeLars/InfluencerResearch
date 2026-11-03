@@ -1,8 +1,8 @@
 name: Review approved Camoufox browser in IR
 
 on:
-  schedule:
-    - cron: '41 8 * * *'
+  # A new browser binary requires explicit review of the Camofox fork first.
+  # Keep the candidate workflow available on demand, never auto-deploy.
   workflow_dispatch:
 
 permissions:
