@@ -23,7 +23,8 @@ class CamofoxContainerRuntimeTests(TestCase):
         self.assertIn("/opt/camoufox/version.json", text)
         self.assertIn("test -d /opt/camoufox/fontconfig", text)
         self.assertIn("npm ci --ignore-scripts", text)
-        self.assertIn("require('express-rate-limit')", text)
+        self.assertIn("fromCamofox('express-rate-limit')", text)
+        self.assertIn("createRequire", text)
         self.assertIn("CAMOFOX_SKIP_DOWNLOAD=1", text)
         self.assertIn("USER node", text)
         self.assertNotIn("releases/latest", text)
@@ -48,16 +49,20 @@ class CamofoxContainerRuntimeTests(TestCase):
         # npm now records a verified SHA-512 for the immutable GitHub archive.
         # Keep integrity checking enabled instead of stripping this lock metadata.
         self.assertRegex(camofox["integrity"], r"^sha512-[A-Za-z0-9+/]+={0,2}$")
-        self.assertEqual(camofox["dependencies"]["express-rate-limit"], "8.7.1")
+        self.assertEqual(camofox["dependencies"]["express-rate-limit"], "8.7.2")
         self.assertEqual(camofox["dependencies"]["better-sqlite3"], "13.0.3")
         self.assertNotIn("node_modules/@askjo/camofox-browser/node_modules/better-sqlite3", lock["packages"])
-        rate_limit = lock["packages"]["node_modules/express-rate-limit"]
-        self.assertEqual(rate_limit["version"], "8.7.1")
+        # Resolve the mandatory dependency from the Camofox package context.
+        # npm is allowed to nest it; an old optional root copy is omitted by
+        # our production `npm ci --omit=optional` and must not be required.
+        rate_limit = lock["packages"]["node_modules/@askjo/camofox-browser/node_modules/express-rate-limit"]
+        self.assertEqual(rate_limit["version"], "8.7.2")
         self.assertEqual(
             rate_limit["integrity"],
-            "sha512-2FXbqkygil3mZiXzEtM0IjE/UBmBNot0J1GEVrJT4JbrvwOSoEtqtO+wHbiMQELWe1eNvHoYRg2dkjOid+6JkA==",
+            "sha512-U1ScocxDD9WI09LaBVypvNkOtNR5yWAmZLkuKJdAzIchA4YKFYF6GT5IKER7epG58oXtjvGlV0/6ii0F83EyZg==",
         )
         self.assertIsNot(rate_limit.get("optional"), True)
+        self.assertIs(lock["packages"]["node_modules/express-rate-limit"].get("optional"), True)
         ip_address = lock["packages"]["node_modules/ip-address"]
         self.assertEqual(ip_address["version"], "10.7.5")
         self.assertIsNot(ip_address.get("optional"), True)
