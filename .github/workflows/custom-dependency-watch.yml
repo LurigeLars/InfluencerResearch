@@ -1,8 +1,8 @@
 name: Custom dependency watch
 
 on:
-  schedule:
-    - cron: "45 6 * * *"
+  # On-demand diagnostics only: the weekly fork review handles the reviewed
+  # source pin, and Camofox's own upstream review handles browser releases.
   workflow_dispatch:
 
 permissions:

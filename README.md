@@ -179,6 +179,24 @@ ingestion, evidence, retries, persistence and MCP job behavior. Camofox owns bro
 execution. Keeping that boundary explicit makes it possible to update or patch the
 browser implementation without turning browser internals into the public research API.
 
+## Browser dependency maintenance
+
+Browser dependency checks use one automatic review path in this repository:
+`review-camofox-fork-pin.yml` runs weekly, checks the Camofox fork's reviewed
+commit pin and opens at most one draft PR. An existing draft must be reviewed
+before the next update; proposals never deploy images.
+
+The `review-approved-camoufox-browser.yml` workflow is **manual only**, used
+when a newer Camoufox browser binary has first been reviewed and accepted in
+the Camofox fork. The `custom-dependency-watch.yml` issue diagnostic is also
+**manual only**, avoiding duplicate scheduled issue/PR alerts. Both remain
+available through GitHub Actions' **Run workflow** control.
+
+The Camofox fork independently monitors upstream changes. Keep
+`scripts/runtime.ps1` for secure DPAPI secret hydration, health-gated recovery,
+and deliberate deployment. None of these GitHub workflows auto-merges,
+rebuilds or restarts local Docker containers.
+
 ## Quick start
 
 The canonical runtime is Docker Compose and is managed through the PowerShell runtime
