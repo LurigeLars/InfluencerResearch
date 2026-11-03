@@ -31,7 +31,7 @@ jobs:
           set -euo pipefail
           docker run --rm --platform linux/amd64 \
             --entrypoint node ir-camofox-reviewed-candidate \
-            -e "const fs=require('fs');const v=JSON.parse(fs.readFileSync('/opt/camoufox/version.json','utf8'));if(!v.version||!v.release||!fs.existsSync('/opt/camoufox/camoufox-bin'))process.exit(1);const Database=require('better-sqlite3');const db=new Database(':memory:');if(db.prepare('select 1 as ok').get().ok!==1)process.exit(2);db.close();require('impit');require('express-rate-limit');"
+            -e "const fs=require('fs');const v=JSON.parse(fs.readFileSync('/opt/camoufox/version.json','utf8'));if(!v.version||!v.release||!fs.existsSync('/opt/camoufox/camoufox-bin'))process.exit(1);const Database=require('better-sqlite3');const db=new Database(':memory:');if(db.prepare('select 1 as ok').get().ok!==1)process.exit(2);db.close();require('impit');const path=require('node:path');const fromCamofox=require('node:module').createRequire(path.join(process.cwd(),'node_modules/@askjo/camofox-browser/package.json'));if(typeof fromCamofox('express-rate-limit').rateLimit!=='function')process.exit(3);"
       - name: Run the patched browser as non-root and verify Playwright 1.64 protocol
         run: |
           set -euo pipefail
