@@ -1,5 +1,10 @@
 name: influencerresearch
 
+# OCI labels let Docker-MCP's deployment audit compare a running image with the repo HEAD.
+x-image-revision: &image-revision
+  org.opencontainers.image.source: https://github.com/LurigeLars/InfluencerResearch
+  org.opencontainers.image.revision: ${SOURCE_REVISION:-unknown}
+
 services:
   secret-holder:
     image: busybox:1.38.0-musl
@@ -22,6 +27,7 @@ services:
     build:
       context: .
       dockerfile: runtime/influencerresearch/Dockerfile
+      labels: *image-revision
     container_name: influencerresearch-mcp
     user: "10001:10001"
     environment:
@@ -91,6 +97,7 @@ services:
     build:
       context: .
       dockerfile: runtime/camofox/Dockerfile
+      labels: *image-revision
     container_name: influencerresearch-camofox
     user: node
     group_add:
@@ -173,6 +180,7 @@ services:
     build:
       context: .
       dockerfile: runtime/camofox/Dockerfile
+      labels: *image-revision
     container_name: influencerresearch-camofox-public-proxy
     user: node
     group_add:

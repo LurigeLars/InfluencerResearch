@@ -301,6 +301,9 @@ $env:INFLUENCER_RESEARCH_CONTROL_DIR = Join-Path $Root "control"
 $env:INFLUENCER_RESEARCH_STATE_DIR = Join-Path $Root "state"
 $env:INFLUENCER_RESEARCH_OUTPUT_DIR = Join-Path $Root "output"
 $env:INFLUENCER_RESEARCH_LOG_DIR = Join-Path $Root "logs"
+# Stamped into image labels (compose.yaml x-image-revision) so Docker-MCP's audit can spot stale images.
+# A tree with local changes is not HEAD, so leave it unset and the label falls back to "unknown".
+$env:SOURCE_REVISION = if (-not (git -C $Root status --porcelain 2>$null)) { git -C $Root rev-parse HEAD 2>$null }
 
 function Compose([string[]]$ComposeArgs) {
     & docker compose -f $Compose @ComposeArgs
