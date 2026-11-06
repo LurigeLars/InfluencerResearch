@@ -15,6 +15,7 @@ from typing import Any
 
 import tiktok_camofox_sync as sync
 from evaluation_progress import heartbeat, sample_outcome, terminalize
+from manifest_store import load_manifest, save_manifest
 
 EVAL_VERSION = "0.4.1"
 
@@ -757,7 +758,7 @@ def mark_evaluation_items(
     verification: dict,
 ) -> list[str]:
     manifest_path = root / "state" / "manifest.json"
-    manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
+    manifest = load_manifest(manifest_path, {"schema_version": 1, "items": {}})
     items = manifest.setdefault("items", {})
     marked: list[str] = []
     for completed in result.get("completed", []):
@@ -779,7 +780,7 @@ def mark_evaluation_items(
             },
         })
         marked.append(key)
-    atomic_json(manifest_path, manifest)
+    save_manifest(manifest_path, manifest)
     return marked
 
 

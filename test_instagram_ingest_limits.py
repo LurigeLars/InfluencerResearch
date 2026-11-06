@@ -107,7 +107,7 @@ class InstagramIngestLimitTests(unittest.TestCase):
                 },
             }
             writes = []
-            real_write = ig.atomic_write_json
+            real_write = ig.save_manifest
 
             def recording_write(path, data):
                 writes.append(Path(path))
@@ -130,7 +130,7 @@ class InstagramIngestLimitTests(unittest.TestCase):
                 ),
                 unittest.mock.patch.object(
                     ig,
-                    "atomic_write_json",
+                    "save_manifest",
                     side_effect=recording_write,
                 ),
             ):

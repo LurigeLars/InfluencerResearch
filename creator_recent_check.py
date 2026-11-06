@@ -20,6 +20,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from creator_registry import get_creator, load_registry, select_monitor_sources
+from manifest_store import load_manifest, save_manifest
 import youtube_creator_evaluation as yte
 import tiktok_camofox_sync as tts
 import instagram_ingest as instagram
@@ -1633,7 +1634,7 @@ def _ingest_youtube(
     # incorrect for already-registered monitored creators and make queue audits
     # ambiguous. Promote exact completed IDs to their canonical monitored source.
     manifest_path = root / "state" / "manifest.json"
-    manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
+    manifest = load_manifest(manifest_path, {"schema_version": 1, "items": {}})
     changed = False
     retained = []
     for video_id in completed:
@@ -1661,7 +1662,7 @@ def _ingest_youtube(
             changed = True
         retained.append(video_id)
     if changed:
-        atomic_json(manifest_path, manifest)
+        save_manifest(manifest_path, manifest)
     queue_result = tts.run_research_queue(
         root, must_include=[f"yt_{video_id}" for video_id in retained],
     )
@@ -1712,7 +1713,7 @@ def _ingest_instagram(
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
 
     manifest_path = root / "state" / "manifest.json"
-    manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
+    manifest = load_manifest(manifest_path, {"schema_version": 1, "items": {}})
     changed = False
     completed: list[str] = []
     for source_id in ids:
@@ -1733,7 +1734,7 @@ def _ingest_instagram(
         if item.get("download_status") == "DONE" and item.get("transcription_status") == "DONE":
             completed.append(source_id)
     if changed:
-        atomic_json(manifest_path, manifest)
+        save_manifest(manifest_path, manifest)
 
     queue = tts.run_research_queue(root)
     errors = []
@@ -1804,7 +1805,7 @@ def _promote_story_items(
         {"schema_version": 1, "items": {}},
     )
     manifest_path = root / "state" / "manifest.json"
-    manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
+    manifest = load_manifest(manifest_path, {"schema_version": 1, "items": {}})
     manifest.setdefault("items", {})
 
     canonical_key = str(profile["creator_key"])
@@ -2048,7 +2049,7 @@ def _promote_story_items(
         available.append(row)
 
     if changed:
-        atomic_json(manifest_path, manifest)
+        save_manifest(manifest_path, manifest)
 
     return {
         "promoted": promoted,
@@ -2829,7 +2830,7 @@ def _reattribute_monitored_youtube_evidence(
     discovery may reattribute that row; never guess ownership from a title.
     """
     manifest_path = root / "state" / "manifest.json"
-    manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
+    manifest = load_manifest(manifest_path, {"schema_version": 1, "items": {}})
     items = manifest.get("items") or {}
     if not isinstance(items, dict):
         return {"updated": [], "conflicts": []}
@@ -2889,7 +2890,7 @@ def _reattribute_monitored_youtube_evidence(
         if changed:
             updated.append(key)
     if updated:
-        atomic_json(manifest_path, manifest)
+        save_manifest(manifest_path, manifest)
     return {"updated": updated, "conflicts": conflicts}
 
 

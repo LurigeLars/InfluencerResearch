@@ -12,6 +12,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from evaluation_progress import heartbeat, terminalize
+from manifest_store import load_manifest, save_manifest
 
 STATUS_NAME = "video_url_analysis_status.json"
 YOUTUBE_ID = re.compile(r"[A-Za-z0-9_-]{11}\Z")
@@ -149,7 +150,7 @@ def _tiktok(root: Path, url: str, video_id: str, handle: str, status_path: Path)
     )
     queue_id = f"tt_{video_id}"
     manifest_path = root / "state" / "manifest.json"
-    manifest = tiktok.load_json(manifest_path, {"schema_version": 1, "items": {}})
+    manifest = load_manifest(manifest_path, {"schema_version": 1, "items": {}})
     item = manifest.get("items", {}).get(queue_id)
     if not isinstance(item, dict) or item.get("transcription_status") != "DONE":
         failures = ingest.get("failures") or []
@@ -165,7 +166,7 @@ def _tiktok(root: Path, url: str, video_id: str, handle: str, status_path: Path)
         item["evaluation_mode"] = "SINGLE_VIDEO_URL"
         item["permanent_source"] = False
         item["evaluation_source_profile"] = profile
-        tiktok.atomic_json(manifest_path, manifest)
+        save_manifest(manifest_path, manifest)
 
     heartbeat(status_path, "QUEUE_WRITE", source_platform="TIKTOK", source_id=video_id)
     queue_result, _, delivery = youtube.reconcile_delivery(root, [queue_id])

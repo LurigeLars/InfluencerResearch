@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 
+from manifest_store import load_manifest, save_manifest
+
 
 SCREEN_VERSION = "0.4.8"
 ANALYSIS_OWNER = "EKONOMI"
@@ -529,7 +531,7 @@ def main() -> int:
     decisions_path = root / "state" / "research_decisions.json"
     config_path = root / "control" / "research_screening.json"
 
-    manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
+    manifest = load_manifest(manifest_path, {"schema_version": 1, "items": {}})
     config = load_json(config_path, {})
     decisions = load_json(
         decisions_path,
@@ -928,7 +930,7 @@ def main() -> int:
     }
     atomic_write_json(queue_path, queue)
     if manifest_changed:
-        atomic_write_json(manifest_path, manifest)
+        save_manifest(manifest_path, manifest)
 
     # Compact per-item packets remain a transport convenience, not an analysis source of truth.
     # Avoid replacing identical packets on every queue refresh; bind-mounted small-file

@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 from evaluation_progress import heartbeat, sample_outcome, terminalize
+from manifest_store import load_manifest, save_manifest
 import video_visual_evidence as vve
 from urllib.parse import urlparse
 
@@ -2137,7 +2138,7 @@ def reconcile_delivery(root: Path, targets: list[str]) -> tuple[dict, dict, dict
 
     def snapshot() -> tuple[dict, dict]:
         queue = load_json(queue_path, {"items": []})
-        manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
+        manifest = load_manifest(manifest_path, {"schema_version": 1, "items": {}})
         decisions = load_json(decisions_path, {"schema_version": 2, "items": {}})
         return queue, delivery_dispositions(
             targets, manifest=manifest, decisions=decisions, queue=queue
@@ -2220,7 +2221,7 @@ def main() -> int:
     heartbeat(status_path, "DISCOVERY", requested_sample_size=sample_size)
 
     manifest_path = root / "state" / "manifest.json"
-    manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
+    manifest = load_manifest(manifest_path, {"schema_version": 1, "items": {}})
     manifest.setdefault("items", {})
 
     try:
@@ -2507,7 +2508,7 @@ def main() -> int:
         }
         visual_frame_count += int(visual.get("retained_frames") or 0)
         completed.append(key)
-        atomic_json(manifest_path, manifest)
+        save_manifest(manifest_path, manifest)
 
         # Make each completed evidence item analysis-reachable before moving to
         # the next expensive candidate. A later STOP/watchdog must not strand
@@ -2523,7 +2524,7 @@ def main() -> int:
         # research_queue may add canonical lineage/research metadata to the
         # manifest. Reload it before the next item so the evaluator never
         # overwrites those queue-side updates with stale in-memory state.
-        manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
+        manifest = load_manifest(manifest_path, {"schema_version": 1, "items": {}})
         manifest.setdefault("items", {})
         known = manifest["items"]
 

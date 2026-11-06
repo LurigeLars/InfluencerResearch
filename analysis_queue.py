@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import copy
+import functools
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
+from manifest_store import load_manifest, save_manifest
 from apply_research_decisions import (
     ANALYSIS_OWNER,
     CURRENT_DECISIONS,
@@ -567,6 +570,21 @@ def summarize_creator_evaluation_run(root: Path, evaluation_run_id: str) -> dict
     }
 
 
+# The MCP server runs these in parallel threads; each reads and rewrites research_decisions.json,
+# research_queue.json and research_followups.json, so two at once would drop one decision.
+# shortcut: in-process lock; the job worker only reads these files. Use a file lock if that changes.
+_DECISION_LOCK = threading.RLock()
+
+
+def _decision_write(fn):
+    @functools.wraps(fn)
+    def locked(*args, **kwargs):
+        with _DECISION_LOCK:
+            return fn(*args, **kwargs)
+    return locked
+
+
+@_decision_write
 def mark_analysis_insufficient(
     root: Path,
     queue_id: str,
@@ -590,7 +608,7 @@ def mark_analysis_insufficient(
     decisions_path = root / "state" / "research_decisions.json"
 
     queue = load_json(queue_path, {"items": []})
-    manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
+    manifest = load_manifest(manifest_path, {"schema_version": 1, "items": {}})
     decisions = load_json(decisions_path, {"schema_version": 2, "items": {}})
     decision = (decisions.get("items") or {}).get(wanted)
     if isinstance(decision, dict):
@@ -674,7 +692,7 @@ def mark_analysis_insufficient(
     queue["updated_at"] = utc_now()
     manifest["items"][wanted] = manifest_item
 
-    atomic_write_json(manifest_path, manifest)
+    save_manifest(manifest_path, manifest)
     atomic_write_json(queue_path, queue)
     return {
         "result": "WRITTEN",
@@ -697,6 +715,7 @@ def _same_decision(existing: dict, payload: dict) -> bool:
     return all(existing.get(field) == payload.get(field) for field in DECISION_FIELDS)
 
 
+@_decision_write
 def _apply_record(root: Path, queue_id: str, record: dict) -> dict:
     decisions_path = root / "state" / "research_decisions.json"
     manifest_path = root / "state" / "manifest.json"
@@ -707,7 +726,7 @@ def _apply_record(root: Path, queue_id: str, record: dict) -> dict:
         decisions_path,
         {"schema_version": 2, "screen_version": SCREEN_VERSION, "items": {}},
     )
-    manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
+    manifest = load_manifest(manifest_path, {"schema_version": 1, "items": {}})
     queue = load_json(queue_path, {"items": []})
     followups = load_json(followups_path, default_followup_registry())
 
@@ -783,7 +802,7 @@ def _apply_record(root: Path, queue_id: str, record: dict) -> dict:
     # Existing governance uses these same canonical files. Validate everything first,
     # then write source-of-truth state; identical replay repairs an interrupted apply.
     atomic_write_json(decisions_path, decisions)
-    atomic_write_json(manifest_path, manifest)
+    save_manifest(manifest_path, manifest)
     atomic_write_json(followups_path, followups)
     atomic_write_json(queue_path, queue)
 
