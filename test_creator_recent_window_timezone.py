@@ -72,7 +72,8 @@ class CatchUpWindowTests(unittest.TestCase):
         watermark = NOW - timedelta(days=3, hours=5)
         start, meta = self.resolve(watermark)
 
-        self.assertEqual(start, watermark)
+        # Overlap re-reads items published just before the watermark but listed after it.
+        self.assertEqual(start, watermark - crc.CATCH_UP_OVERLAP)
         self.assertEqual(meta["basis"], "WATERMARK")
         self.assertEqual(meta["watermark"], watermark.isoformat())
 
