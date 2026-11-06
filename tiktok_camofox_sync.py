@@ -25,6 +25,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 import camofox_container as camofox_container_config
+from manifest_store import load_manifest, save_manifest
 from transcription_backend import extract_visible_text_gemini, transcribe_video
 from video_visual_evidence import VISUAL_REVIEW_POLICY_VERSION, capture_local_video_visual_evidence
 
@@ -1914,7 +1915,7 @@ def update_main_manifest(
     visual_evidence: dict | None = None,
 ) -> dict:
     manifest_path = root / "state" / "manifest.json"
-    manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
+    manifest = load_manifest(manifest_path, {"schema_version": 1, "items": {}})
     manifest.setdefault("items", {})
 
     vid = download["video_id"]
@@ -2040,7 +2041,7 @@ def update_main_manifest(
         "research_status": old.get("research_status") or "PENDING",
         "source_class": "INFLUENCER_DISCOVERY_SECONDARY",
     }
-    atomic_json(manifest_path, manifest)
+    save_manifest(manifest_path, manifest)
     return manifest["items"][key]
 
 

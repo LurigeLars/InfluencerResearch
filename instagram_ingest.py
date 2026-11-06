@@ -19,6 +19,7 @@ from urllib.parse import urljoin, urlsplit
 
 from playwright.sync_api import sync_playwright
 
+from manifest_store import load_manifest, save_manifest
 from transcription_backend import transcribe_video
 from video_visual_evidence import VISUAL_REVIEW_POLICY_VERSION, capture_local_video_visual_evidence
 
@@ -753,7 +754,7 @@ def transcribe_videos(root: Path, manifest: dict, settings: dict, keys: list[str
             item["media_validation"] = validation
             item["transcription_status"] = "NOT_STARTED"
             errors.append(f"{key}: invalid media before transcription: {validation}")
-            atomic_write_json(manifest_path, manifest)
+            save_manifest(manifest_path, manifest)
             continue
 
         transcript_dir = root / "output" / creator / "transcripts"
@@ -765,7 +766,7 @@ def transcribe_videos(root: Path, manifest: dict, settings: dict, keys: list[str
             item["transcription_status"] = "DONE"
             item["transcript_txt"] = str(txt_path.relative_to(root))
             item["transcript_json"] = str(json_path.relative_to(root))
-            atomic_write_json(manifest_path, manifest)
+            save_manifest(manifest_path, manifest)
             continue
 
         try:
@@ -807,12 +808,12 @@ def transcribe_videos(root: Path, manifest: dict, settings: dict, keys: list[str
             item["transcript_json"] = str(json_path.relative_to(root))
             item["transcribed_at"] = utc_now()
             completed += 1
-            atomic_write_json(manifest_path, manifest)
+            save_manifest(manifest_path, manifest)
         except Exception as exc:
             item["transcription_status"] = "ERROR"
             item["transcription_error"] = f"{type(exc).__name__}: {exc}"
             errors.append(f"{key}: {type(exc).__name__}: {exc}")
-            atomic_write_json(manifest_path, manifest)
+            save_manifest(manifest_path, manifest)
 
     return {
         "attempted": len(keys),
@@ -911,7 +912,7 @@ def enrich_visual_evidence(root: Path, manifest: dict, keys: list[str]) -> dict:
             item["creator_visual_prior"] = "NEUTRAL"
             fail_open += 1
             errors.append(f"{key}: {item['visual_evidence_error']}")
-        atomic_write_json(manifest_path, manifest)
+        save_manifest(manifest_path, manifest)
     return {"attempted": len(keys), "completed": completed, "fail_open": fail_open, "errors": errors}
 
 
@@ -1019,10 +1020,7 @@ def main() -> int:
     creators_cfg = load_json(root / "control" / "creators.json", default=[])
     manifest_path = root / "state" / "manifest.json"
     status_path = root / "state" / "status.json"
-    manifest = load_json(
-        manifest_path,
-        default={"schema_version": 1, "items": {}},
-    )
+    manifest = load_manifest(manifest_path, {"schema_version": 1, "items": {}})
     manifest.setdefault("items", {})
 
     creators = resolve_creators(creators_cfg, args.creator)
@@ -1088,7 +1086,7 @@ def main() -> int:
                                 manifest["items"][key] = item
                                 summary["downloaded"] += 1
                                 summary["new_keys"].append(key)
-                                atomic_write_json(manifest_path, manifest)
+                                save_manifest(manifest_path, manifest)
                                 time.sleep(1.0)
                             except Exception as exc:
                                 err = f"{key}: {type(exc).__name__}: {exc}"
@@ -1097,7 +1095,7 @@ def main() -> int:
                                     existing["download_status"] = "ERROR"
                                     existing["download_error"] = err
                                     existing["transcription_status"] = "NOT_STARTED"
-                                atomic_write_json(manifest_path, manifest)
+                                save_manifest(manifest_path, manifest)
 
                     except Exception as exc:
                         summary["errors"].append(f"{type(exc).__name__}: {exc}")
@@ -1121,7 +1119,7 @@ def main() -> int:
                 only_shortcodes=only_shortcodes,
             )
             transcription = transcribe_videos(root, manifest, settings, pending)
-            atomic_write_json(manifest_path, manifest)
+            save_manifest(manifest_path, manifest)
 
         visual_keys = select_visual_evidence_keys(
             manifest,
@@ -1130,7 +1128,7 @@ def main() -> int:
             only_shortcodes=only_shortcodes,
         )
         visual_enrichment = enrich_visual_evidence(root, manifest, visual_keys)
-        atomic_write_json(manifest_path, manifest)
+        save_manifest(manifest_path, manifest)
 
         total_errors = (
             sum(len(s["errors"]) for s in summaries)

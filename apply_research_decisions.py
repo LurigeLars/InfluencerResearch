@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from manifest_store import load_manifest, save_manifest
 
 SCREEN_VERSION = "0.2.0"
 ANALYSIS_OWNER = "EKONOMI"
@@ -364,7 +365,7 @@ def main() -> int:
         decisions_path,
         {"schema_version": 2, "screen_version": SCREEN_VERSION, "items": {}},
     )
-    manifest = load_json(manifest_path, {"schema_version": 1, "items": {}})
+    manifest = load_manifest(manifest_path, {"schema_version": 1, "items": {}})
     followups = load_json(followups_path, default_followup_registry())
 
     all_errors: list[str] = []
@@ -488,7 +489,7 @@ def main() -> int:
             queue["updated_at"] = utc_now()
 
     if manifest_changed:
-        atomic_write_json(manifest_path, manifest)
+        save_manifest(manifest_path, manifest)
     if followups_opened or not followups_path.exists():
         followups["updated_at"] = utc_now()
         atomic_write_json(followups_path, followups)
