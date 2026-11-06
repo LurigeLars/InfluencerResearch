@@ -112,6 +112,11 @@ jobs:
           test_instagram_camofox_public_smoke
           test_smoke_production_separation
           test_tiktok_media_transport
+          test_creator_registry_concurrency
+          test_instagram_auth_playwright_pin
+          test_instagram_pause_policy
+          test_recent_coverage_fixes
+          test_youtube_monitor_attribution
 
   camofox-dependency-smoke:
     name: Camofox npm lock and patched transitive dependencies

@@ -102,6 +102,9 @@ MAX_ANALYSIS_EVIDENCE_CHARS = 6000
 STOCKHOLM_TZ = ZoneInfo("Europe/Stockholm")
 # SINCE_LAST_RUN never reaches further back than this, the same ceiling as LAST_N_DAYS.
 MAX_CATCH_UP_DAYS = 30
+# Platforms list some items after their published time (processing, premieres, indexing).
+# SINCE_LAST_RUN re-reads this much before the watermark; manifest dedupe absorbs the repeats.
+CATCH_UP_OVERLAP = timedelta(hours=2)
 # Errors that rerunning the same window cannot repair: Stories expire, and insufficient
 # content stays insufficient. Every other error holds the catch-up watermark back.
 WATERMARK_NONBLOCKING_STAGES = frozenset({"STORY_PREFETCH", "STORY_INGESTION"})
@@ -485,7 +488,9 @@ def resolve_window(
         elif watermark < floor:
             start, basis = floor, "WATERMARK_OLDER_THAN_MAX_CATCH_UP"
         else:
-            start, basis = min(watermark, end), "WATERMARK"
+            # A future watermark (clock skew) still gives an empty window, never an overlap.
+            start = end if watermark >= end else max(floor, watermark - CATCH_UP_OVERLAP)
+            basis = "WATERMARK"
         meta = {
             "window": "SINCE_LAST_RUN",
             "timezone": "UTC",

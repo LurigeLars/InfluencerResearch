@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import functools
 import json
 import os
 import re
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
@@ -595,6 +597,21 @@ def _apply_explicit_supersession(
     return {**registry, "updated_at": now_iso(), "creators": creators}, disabled
 
 
+# The MCP server runs sync tools in parallel threads; each mutation reads, changes and
+# rewrites the whole registry, so two at once would silently drop one of them.
+# shortcut: in-process lock only; the job worker never writes the registry. Use a file lock if that changes.
+_REGISTRY_LOCK = threading.RLock()
+
+
+def _registry_mutation(fn):
+    @functools.wraps(fn)
+    def locked(*args, **kwargs):
+        with _REGISTRY_LOCK:
+            return fn(*args, **kwargs)
+    return locked
+
+
+@_registry_mutation
 def register_creator(root: Path, req: dict) -> dict:
     root = root.resolve()
     path = root / "control" / "creator_registry.json"
@@ -739,6 +756,7 @@ def list_creator_summaries(root: Path, *, include_retired: bool = False) -> list
     return summaries
 
 
+@_registry_mutation
 def update_creator(root: Path, req: dict) -> dict:
     root = root.resolve()
     key = str(req.get("creator_key") or "").strip().lower()
@@ -902,6 +920,7 @@ def update_creator(root: Path, req: dict) -> dict:
     }
 
 
+@_registry_mutation
 def retire_creator(root: Path, creator_key: str, reason: str, *, issued_by: str = "UNKNOWN") -> dict:
     root = root.resolve()
     key = str(creator_key or "").strip().lower()
