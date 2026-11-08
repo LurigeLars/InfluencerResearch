@@ -7,12 +7,11 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from manifest_store import load_manifest, save_manifest
+from manifest_store import atomic_write_json, load_manifest, save_manifest
 from apply_research_decisions import (
     ANALYSIS_OWNER,
     CURRENT_DECISIONS,
     SCREEN_VERSION,
-    atomic_write_json,
     build_followup,
     default_followup_registry,
     manifest_research_fields,

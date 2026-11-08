@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from manifest_store import atomic_write_json
+
 
 APP_DIR = Path(__file__).resolve().parent
 ROOT = Path("/research")
@@ -33,13 +35,6 @@ def _bounded_env_int(name: str, default: int, minimum: int, maximum: int) -> int
     except (TypeError, ValueError):
         return default
     return max(minimum, min(maximum, value))
-
-
-def _atomic_json(path: Path, obj: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
 
 
 def _load_status(path: Path) -> dict:
@@ -162,7 +157,7 @@ def _arm_evaluation_watchdog(request: dict[str, Any]) -> threading.Event | None:
                     return
                 continue
             try:
-                _atomic_json(status_path, failed)
+                atomic_write_json(status_path, failed)
             finally:
                 _kill_worker_group()
 
@@ -216,7 +211,7 @@ def _arm_recent_check_watchdog(request: dict[str, Any]) -> threading.Event | Non
         })
         status["transitions"] = transitions[-200:]
         try:
-            _atomic_json(RECENT_CHECK_STATUS_PATH, status)
+            atomic_write_json(RECENT_CHECK_STATUS_PATH, status)
         finally:
             _kill_worker_group()
 

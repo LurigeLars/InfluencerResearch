@@ -290,7 +290,7 @@ class CamoFoxRetryTests(unittest.TestCase):
             root = Path(td)
             video_id = "7690974941457534222"
             catalog_path = root / "state" / "tiktok" / "nicholascrown_catalog.json"
-            sync.atomic_json(catalog_path, {
+            sync.atomic_write_json(catalog_path, {
                 "schema_version": 1,
                 "profile_url": "https://www.tiktok.com/@nicholas_crown",
                 "order": [video_id],

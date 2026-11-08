@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 from evaluation_progress import heartbeat, sample_outcome, terminalize
-from manifest_store import load_manifest, save_manifest
+from manifest_store import atomic_write_json, load_manifest, save_manifest
 import video_visual_evidence as vve
 from urllib.parse import urlparse
 
@@ -79,13 +79,6 @@ def utc_now() -> str:
 
 def compact_timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-
-
-def atomic_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
 
 
 def load_json(path: Path, default: Any) -> Any:
@@ -1112,7 +1105,7 @@ def fetch_captions(root: Path, creator_key: str, url: str, video_id: str) -> dic
     text = render_caption_transcript(best_rows)
     when = utc_now()
     txt_path.write_text(text + "\n", encoding="utf-8")
-    atomic_json(json_path, {
+    atomic_write_json(json_path, {
         "schema_version": 1,
         "app_version": YOUTUBE_EVAL_VERSION,
         "source_platform": "YOUTUBE",
@@ -1264,7 +1257,7 @@ def transcribe_whisper(
 
     when = utc_now()
     txt_path.write_text(" ".join(text_parts).strip() + "\n", encoding="utf-8")
-    atomic_json(json_path, {
+    atomic_write_json(json_path, {
         "schema_version": 1,
         "app_version": YOUTUBE_EVAL_VERSION,
         "source_platform": "YOUTUBE",
@@ -1774,7 +1767,7 @@ def _capture_seeked_visual_evidence(
                 "snapshot_failures": failures,
             },
         }
-        atomic_json(index_path, index)
+        atomic_write_json(index_path, index)
         return {
             "ok": True,
             "index": index_path,
@@ -1843,7 +1836,7 @@ def capture_visual_evidence(
                         existing["agent_visual_bundle"] = agent_visual_bundle
                         summary["agent_visual_bundle"] = agent_visual_bundle
                         existing["summary"] = summary
-                        atomic_json(index_path, existing)
+                        atomic_write_json(index_path, existing)
                 return {"ok": True, "source": "existing_visual_evidence", "index": index_path, **summary}
 
     ffmpeg = _ffmpeg_exe()
@@ -2056,7 +2049,7 @@ def capture_visual_evidence(
         summary["visual_capture_warning"] = "EMPTY_SCENE_BRANCH_NO_PACKETS"
     index["summary"] = summary
     index["diagnostics"]["benign_empty_scene"] = bool(benign_empty_scene)
-    atomic_json(index_path, index)
+    atomic_write_json(index_path, index)
     ok = yt_rc == 0 and bool(frames) and (ff_rc == 0 or benign_empty_scene)
     return {"ok": ok, "index": index_path, **summary, "diagnostic_tail": (yt_stderr + "\n" + ff_stderr)[-2500:]}
 
@@ -2217,7 +2210,7 @@ def main() -> int:
         },
         "requested_sample_size": sample_size,
     }
-    atomic_json(status_path, {**base_status, "state": "RUNNING", "updated_at": started})
+    atomic_write_json(status_path, {**base_status, "state": "RUNNING", "updated_at": started})
     heartbeat(status_path, "DISCOVERY", requested_sample_size=sample_size)
 
     manifest_path = root / "state" / "manifest.json"
@@ -2229,16 +2222,16 @@ def main() -> int:
         seed_ids = parse_exact_video_ids(args.seed_video_ids)
     except ValueError as exc:
         status = {**base_status, "state": "BAD_VIDEO_ID_FILTER", "finished_at": utc_now(), "error": str(exc)}
-        atomic_json(status_path, status)
-        atomic_json(immutable_status_path, status)
+        atomic_write_json(status_path, status)
+        atomic_write_json(immutable_status_path, status)
         print(json.dumps(status, ensure_ascii=False, indent=2))
         return 6
 
     required_attribution_term = str(args.required_attribution_term or "").strip()
     if len(required_attribution_term) > 120 or any(ord(ch) < 32 for ch in required_attribution_term):
         status = {**base_status, "state": "BAD_ATTRIBUTION_TERM", "finished_at": utc_now()}
-        atomic_json(status_path, status)
-        atomic_json(immutable_status_path, status)
+        atomic_write_json(status_path, status)
+        atomic_write_json(immutable_status_path, status)
         print(json.dumps(status, ensure_ascii=False, indent=2))
         return 6
 
@@ -2254,8 +2247,8 @@ def main() -> int:
                 "discovery": discovery_diag,
                 "entries_discovered": len(entries),
             }
-            atomic_json(status_path, status)
-            atomic_json(immutable_status_path, status)
+            atomic_write_json(status_path, status)
+            atomic_write_json(immutable_status_path, status)
             print(json.dumps(status, ensure_ascii=False, indent=2))
             return 6
     else:
@@ -2294,8 +2287,8 @@ def main() -> int:
                 "finished_at": utc_now(),
                 "discovery": discovery_diag,
             }
-            atomic_json(status_path, status)
-            atomic_json(immutable_status_path, status)
+            atomic_write_json(status_path, status)
+            atomic_write_json(immutable_status_path, status)
             print(json.dumps(status, ensure_ascii=False, indent=2))
             return 4
 
@@ -2608,7 +2601,7 @@ def main() -> int:
             terminal_reason=status.get("shortfall_reason"),
             **{key: value for key, value in status.items() if key not in {"state", "progress"}},
         )
-        atomic_json(immutable_status_path, status)
+        atomic_write_json(immutable_status_path, status)
         print(json.dumps(status, ensure_ascii=False, indent=2))
         return 0 if terminal_state == "COMPLETE" else 1
 
@@ -2708,7 +2701,7 @@ def main() -> int:
         terminal_reason=shortfall_reason if state == "COMPLETE" and not sample_complete else None,
         **{key: value for key, value in status.items() if key not in {"state", "progress"}},
     )
-    atomic_json(immutable_status_path, status)
+    atomic_write_json(immutable_status_path, status)
     print(json.dumps(status, ensure_ascii=False, indent=2))
 
     if state == "COMPLETE":

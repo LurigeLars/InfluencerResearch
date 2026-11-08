@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from manifest_store import atomic_write_json
 
 
 RUNNING_PHASES = {
@@ -31,13 +32,6 @@ def _load(path: Path) -> dict:
         return {}
 
 
-def _atomic(path: Path, value: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
-
-
 def heartbeat(path: Path, phase: str, **metrics: Any) -> dict:
     phase = str(phase or "").upper()
     if phase not in RUNNING_PHASES:
@@ -53,7 +47,7 @@ def heartbeat(path: Path, phase: str, **metrics: Any) -> dict:
     status["state"] = "RUNNING"
     status["updated_at"] = now
     status["progress"] = progress
-    _atomic(path, status)
+    atomic_write_json(path, status)
     return status
 
 
@@ -75,7 +69,7 @@ def terminalize(path: Path, state: str, *, terminal_reason: str | None = None, *
     status["updated_at"] = now
     status["finished_at"] = fields.get("finished_at") or now
     status["progress"] = progress
-    _atomic(path, status)
+    atomic_write_json(path, status)
     return status
 
 

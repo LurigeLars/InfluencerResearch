@@ -3,14 +3,13 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit, urlunsplit
 
-from manifest_store import load_manifest, save_manifest
+from manifest_store import atomic_write_json, load_manifest, save_manifest
 
 
 SCREEN_VERSION = "0.4.8"
@@ -43,19 +42,9 @@ def load_json(path: Path, default: Any = None) -> Any:
     raise FileNotFoundError(path)
 
 
-def _json_text(data: dict) -> str:
-    return json.dumps(data, ensure_ascii=False, indent=2) + "\n"
-
-
-def atomic_write_json(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(_json_text(data), encoding="utf-8")
-    os.replace(tmp, path)
-
-
 def atomic_write_json_if_changed(path: Path, data: dict) -> bool:
-    text = _json_text(data)
+    # Same text atomic_write_json writes, so an unchanged packet compares equal.
+    text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
     if path.is_file():
         try:
             if path.read_text(encoding="utf-8") == text:
@@ -63,10 +52,7 @@ def atomic_write_json_if_changed(path: Path, data: dict) -> bool:
         except OSError:
             # Best-effort comparison: a transient read failure falls through to atomic rewrite.
             pass
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    atomic_write_json(path, data)
     return True
 
 

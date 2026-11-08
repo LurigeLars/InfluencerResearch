@@ -25,7 +25,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
 import camofox_container as camofox_container_config
-from manifest_store import load_manifest, save_manifest
+from manifest_store import atomic_write_json, load_manifest, save_manifest
 from transcription_backend import extract_visible_text_gemini, transcribe_video
 from video_visual_evidence import VISUAL_REVIEW_POLICY_VERSION, capture_local_video_visual_evidence
 
@@ -102,13 +102,6 @@ _CAMOFOX_PROXY_METRIC_KEYS = (
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def atomic_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
 
 
 def load_json(path: Path, default: Any = None) -> Any:
@@ -240,7 +233,7 @@ def _increment_public_proxy_metric(key: str, by: int = 1) -> None:
     with _CAMOFOX_PROXY_METRICS_LOCK:
         metrics = _read_public_proxy_metrics()
         metrics[key] = max(0, int(metrics[key]) + int(by))
-        atomic_json(_public_proxy_metrics_path(), metrics)
+        atomic_write_json(_public_proxy_metrics_path(), metrics)
 
 
 def _proxy_hosts() -> tuple[str, ...]:
@@ -1788,7 +1781,7 @@ def transcribe(
     if result.get("fallback_from"):
         metadata["fallback_from"] = result.get("fallback_from")
         metadata["fallback_error"] = result.get("fallback_error")
-    atomic_json(json_path, metadata)
+    atomic_write_json(json_path, metadata)
     return {
         "ok": True,
         "source": str(result.get("provider") or "unknown"),
@@ -1843,7 +1836,7 @@ def extract_visible_text(
     full_text = str(result.get("text") or "").strip()
     when = utc_now()
     txt_path.write_text(full_text + ("\n" if full_text else ""), encoding="utf-8")
-    atomic_json(json_path, {
+    atomic_write_json(json_path, {
         "schema_version": 1,
         "app_version": APP_VERSION,
         "source_platform": "TIKTOK",
@@ -2219,7 +2212,7 @@ def process_source(
             )
             discovery_diag["readiness_seed_count"] = len(readiness_urls)
             catalog = merge_catalog(catalog, discovered, profile_url=profile_url)
-            atomic_json(catalog_path, catalog)
+            atomic_write_json(catalog_path, catalog)
         finally:
             if tab_id:
                 with contextlib.suppress(Exception):
@@ -2537,7 +2530,7 @@ def main() -> int:
 
     status_path = root / "state" / "tiktok" / "sync_status.json"
     started = utc_now()
-    atomic_json(status_path, {
+    atomic_write_json(status_path, {
         "schema_version": 1,
         "app_version": APP_VERSION,
         "state": "RUNNING",
@@ -2585,7 +2578,7 @@ def main() -> int:
         "top_errors": top_errors,
         "total_errors": failures,
     }
-    atomic_json(status_path, status)
+    atomic_write_json(status_path, status)
     print(json.dumps(status, ensure_ascii=False, indent=2))
     return 0 if failures == 0 else 1
 

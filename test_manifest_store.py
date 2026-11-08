@@ -6,7 +6,7 @@ import threading
 import unittest
 from pathlib import Path
 
-from manifest_store import load_manifest, save_manifest
+from manifest_store import atomic_write_json, load_manifest, save_manifest
 
 
 class ManifestStoreTests(unittest.TestCase):
@@ -88,6 +88,50 @@ class ManifestStoreTests(unittest.TestCase):
         for thread in threads:
             thread.join(timeout=30)
         self.assertEqual(sorted(self.on_disk()["items"]), ["a", *sorted(f"item-{n}" for n in range(8))])
+
+
+class AtomicWriteJsonTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_writes_the_project_format_and_leaves_no_temp_file(self) -> None:
+        path = self.dir / "new" / "status.json"
+        atomic_write_json(path, {"name": "Åsa", "n": 1})
+        self.assertEqual(path.read_text(encoding="utf-8"), '{\n  "name": "Åsa",\n  "n": 1\n}\n')
+        self.assertEqual([p.name for p in path.parent.iterdir()], ["status.json"])
+
+    def test_parallel_writers_of_one_file_never_fail_or_leave_a_partial_file(self) -> None:
+        # A shared fixed "<name>.tmp" made one writer's os.replace fail once another had moved it.
+        path = self.dir / "status.json"
+        errors: list[BaseException] = []
+
+        def write(n: int) -> None:
+            try:
+                for i in range(25):
+                    atomic_write_json(path, {"writer": n, "i": i, "pad": "x" * 4000})
+            except BaseException as exc:  # noqa: BLE001 - collected for the assertion below
+                errors.append(exc)
+
+        threads = [threading.Thread(target=write, args=(n,)) for n in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual(errors, [])
+        self.assertIn(json.loads(path.read_text(encoding="utf-8"))["writer"], range(8))
+        self.assertEqual([p.name for p in self.dir.iterdir()], ["status.json"])
+
+    def test_unserializable_data_keeps_the_old_file(self) -> None:
+        path = self.dir / "status.json"
+        atomic_write_json(path, {"ok": True})
+        with self.assertRaises(TypeError):
+            atomic_write_json(path, {"bad": object()})
+        self.assertEqual(json.loads(path.read_text(encoding="utf-8")), {"ok": True})
+        self.assertEqual([p.name for p in self.dir.iterdir()], ["status.json"])
 
 
 if __name__ == "__main__":

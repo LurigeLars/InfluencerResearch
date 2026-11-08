@@ -20,7 +20,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from creator_registry import get_creator, load_registry, select_monitor_sources
-from manifest_store import load_manifest, save_manifest
+from manifest_store import atomic_write_json, load_manifest, save_manifest
 import youtube_creator_evaluation as yte
 import tiktok_camofox_sync as tts
 import instagram_ingest as instagram
@@ -126,13 +126,6 @@ def load_json(path: Path, default):
     return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
-def atomic_json(path: Path, obj: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
-
-
 def _is_transient_spawn_error(exc: BaseException) -> bool:
     return isinstance(exc, OSError) and getattr(exc, "errno", None) in {
         errno.EAGAIN,
@@ -197,7 +190,7 @@ def _launch_recent_worker(
         "parent_pid": os.getpid(),
         **payload,
     }
-    atomic_json(request_path, request)
+    atomic_write_json(request_path, request)
     proc = subprocess.Popen(
         [
             sys.executable,
@@ -291,7 +284,7 @@ def _internal_worker_watchdog(
 
     def terminate_self(error: str, *, timeout: bool, exit_code: int) -> None:
         with contextlib.suppress(Exception):
-            atomic_json(
+            atomic_write_json(
                 result_path,
                 {
                     "ok": False,
@@ -1224,7 +1217,7 @@ def _update_instagram_discovery_catalog(
             reverse=True,
         )[:INSTAGRAM_DISCOVERY_CACHE_MAX]
     )
-    atomic_json(
+    atomic_write_json(
         path,
         {
             "schema_version": 1,
@@ -3132,11 +3125,11 @@ def _internal_worker_main(request_path: Path) -> int:
             }
         else:
             raise ValueError(f"BAD_INTERNAL_OPERATION:{operation}")
-        atomic_json(result_path, result)
+        atomic_write_json(result_path, result)
         return 0
     except Exception as exc:
         with contextlib.suppress(Exception):
-            atomic_json(
+            atomic_write_json(
                 result_path,
                 {
                     "ok": False,
@@ -3200,7 +3193,7 @@ def _main_impl() -> int:
     }
 
     def write_progress(stage: str, **details) -> None:
-        atomic_json(status_path, {
+        atomic_write_json(status_path, {
             **progress_base,
             "updated_at": now_iso(),
             "progress": {
@@ -3875,7 +3868,7 @@ def _main_impl() -> int:
             pending_extraction=pending_extraction_recent,
         )
         if watermark["advanced"]:
-            atomic_json(_watermark_path(root), {
+            atomic_write_json(_watermark_path(root), {
                 "schema_version": 1,
                 "scope": "MONITORED",
                 "covered_until": watermark["covered_until"],
@@ -4158,7 +4151,7 @@ def _main_impl() -> int:
             "error_count": len(errors),
             "errors": errors,
         }
-        atomic_json(status_path, status)
+        atomic_write_json(status_path, status)
         print(json.dumps(status, ensure_ascii=True, indent=2))
         return 0 if final_state == "COMPLETE" else (1 if final_state == "PARTIAL" else 2)
     except Exception as exc:
@@ -4192,7 +4185,7 @@ def _main_impl() -> int:
                 )[:20],
             },
         }
-        atomic_json(status_path, status)
+        atomic_write_json(status_path, status)
         print(json.dumps(status, ensure_ascii=True, indent=2))
         return 2
 
