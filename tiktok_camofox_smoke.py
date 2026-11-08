@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import os
 import re
 import subprocess
 import tempfile
@@ -16,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 import camofox_container as camofox_container_config
+from manifest_store import atomic_write_json
 
 
 APP_VERSION = "0.8.0"
@@ -28,13 +28,6 @@ NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def atomic_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
 
 
 def request_json(method: str, path: str, body: dict | None = None, timeout: int = 30) -> Any:
@@ -186,7 +179,7 @@ def main() -> int:
     urls_path = state_dir / "camofox_smoke_discovered_urls.json"
 
     started = utc_now()
-    atomic_json(status_path, {
+    atomic_write_json(status_path, {
         "schema_version": 1,
         "app_version": APP_VERSION,
         "state": "RUNNING",
@@ -212,7 +205,7 @@ def main() -> int:
         time.sleep(4)
 
         urls, diagnostics = collect_video_urls(tab_id, target=10)
-        atomic_json(urls_path, {
+        atomic_write_json(urls_path, {
             "schema_version": 1,
             "app_version": APP_VERSION,
             "generated_at": utc_now(),
@@ -261,7 +254,7 @@ def main() -> int:
             },
             "decision": decision,
         }
-        atomic_json(status_path, status)
+        atomic_write_json(status_path, status)
         print(json.dumps(status, ensure_ascii=False, indent=2))
         return 0 if decision == "PASS_HYBRID" else 1
 
@@ -275,7 +268,7 @@ def main() -> int:
             "profile_url": PROFILE_URL,
             "error": f"{type(exc).__name__}: {exc}",
         }
-        atomic_json(status_path, status)
+        atomic_write_json(status_path, status)
         print(json.dumps(status, ensure_ascii=False, indent=2), file=sys.stderr)
         return 2
 

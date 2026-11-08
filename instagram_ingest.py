@@ -19,7 +19,7 @@ from urllib.parse import urljoin, urlsplit
 
 from playwright.sync_api import sync_playwright
 
-from manifest_store import load_manifest, save_manifest
+from manifest_store import atomic_write_json, load_manifest, save_manifest
 from transcription_backend import transcribe_video
 from video_visual_evidence import VISUAL_REVIEW_POLICY_VERSION, capture_local_video_visual_evidence
 
@@ -30,13 +30,6 @@ REEL_RE = re.compile(r"/reel/([A-Za-z0-9_-]+)/?")
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def atomic_write_json(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
 
 
 def load_json(path: Path, default: Any = None) -> Any:

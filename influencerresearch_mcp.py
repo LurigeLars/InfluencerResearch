@@ -43,6 +43,7 @@ from creator_registry import (
 )
 from research_status_summary import compact_job_status, summarize_status
 from single_video_analysis import canonical_video_url
+from manifest_store import atomic_write_json
 
 
 SERVER_NAME = "InfluencerResearch"
@@ -56,13 +57,6 @@ MCP_PORT = int(os.environ.get("INFLUENCER_RESEARCH_MCP_PORT", "8770"))
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def atomic_json(path: Path, value: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
 
 
 def load_json(path: Path, default: dict | None = None) -> dict:
@@ -130,7 +124,7 @@ def _persist_creator_evaluation_accounting(status_path: Path, run_id: str) -> di
         changed = True
 
     if changed:
-        atomic_json(status_path, status)
+        atomic_write_json(status_path, status)
     return {"ok": True, **accounting}
 
 
@@ -419,7 +413,7 @@ class JobManager:
             "progress": progress,
         })
         if status_path is not None:
-            atomic_json(status_path, status)
+            atomic_write_json(status_path, status)
             if kind == "creator_evaluate":
                 _reconcile_completed_creator_evaluation(status_path)
         recovered = {
@@ -429,7 +423,7 @@ class JobManager:
             "status": summarize_status(status_path),
         }
         self._last = recovered
-        atomic_json(JOB_STATE_PATH, recovered)
+        atomic_write_json(JOB_STATE_PATH, recovered)
 
     def _public(self, job: dict) -> dict:
         out = {
@@ -471,7 +465,7 @@ class JobManager:
         public = self._public(job)
         self._last = public
         self._active = None
-        atomic_json(JOB_STATE_PATH, public)
+        atomic_write_json(JOB_STATE_PATH, public)
 
     def start(self, kind: str, params: dict) -> dict:
         with self._lock:
@@ -505,7 +499,7 @@ class JobManager:
                 "kind": kind,
                 "params": params,
             }
-            atomic_json(JOB_REQUEST_PATH, request)
+            atomic_write_json(JOB_REQUEST_PATH, request)
 
             proc = subprocess.Popen(
                 [sys.executable, str(APP_DIR / "mcp_job_worker.py")],
@@ -527,7 +521,7 @@ class JobManager:
             }
             self._active = job
             public = self._public(job)
-            atomic_json(JOB_STATE_PATH, public)
+            atomic_write_json(JOB_STATE_PATH, public)
             return {"ok": True, "job": public}
 
     def status(self) -> dict:
@@ -577,7 +571,7 @@ class JobManager:
             "terminal_reason": "USER_REQUESTED",
         })
         status["transitions"] = transitions[-200:]
-        atomic_json(status_path, status)
+        atomic_write_json(status_path, status)
         return summarize_status(status_path)
 
     def stop(self) -> dict:
@@ -608,7 +602,7 @@ class JobManager:
                 public = self._public(job)
                 self._last = public
                 self._active = None
-                atomic_json(JOB_STATE_PATH, public)
+                atomic_write_json(JOB_STATE_PATH, public)
             return {"ok": True, "job": public}
 
 

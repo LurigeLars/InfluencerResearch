@@ -144,7 +144,6 @@ class VideoUrlAnalysisTests(unittest.TestCase):
             def atomic(path, data):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(json.dumps(data), encoding="utf-8")
-            fake_tiktok.atomic_json = atomic
             def merge(catalog, urls, *, profile_url):
                 self.assertEqual(len(urls), 1)
                 catalog["items"][urls[0].split("/")[-1]] = {"url": urls[0]}

@@ -10,7 +10,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
+
+from manifest_store import atomic_write_json
 
 VISUAL_REVIEW_POLICY_VERSION = 5
 VISUAL_CAPTURE_VERSION = 1
@@ -38,13 +40,6 @@ TRANSCRIPT_VISUAL_CUES = {
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
-
-
-def atomic_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    tmp.replace(path)
 
 
 def _ffmpeg_exe() -> str | None:
@@ -661,7 +656,7 @@ def capture_local_video_visual_evidence(
             "timings_ms": timings_ms,
         },
     }
-    atomic_json(index_path, index)
+    atomic_write_json(index_path, index)
     return {
         "ok": True,
         "source": (

@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
-import os
 import re
 import subprocess
 import sys
@@ -15,7 +14,7 @@ from typing import Any
 
 import tiktok_camofox_sync as sync
 from evaluation_progress import heartbeat, sample_outcome, terminalize
-from manifest_store import load_manifest, save_manifest
+from manifest_store import atomic_write_json, load_manifest, save_manifest
 
 EVAL_VERSION = "0.4.1"
 
@@ -26,13 +25,6 @@ def utc_now() -> str:
 
 def compact_timestamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-
-
-def atomic_json(path: Path, data: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
 
 
 def load_json(path: Path, default: Any = None) -> Any:
@@ -741,7 +733,7 @@ def seed_verified_catalog(root: Path, *, handle: str, profile_url: str, urls: li
         },
     )
     merged = sync.merge_catalog(catalog, urls, profile_url=profile_url)
-    atomic_json(catalog_path, merged)
+    atomic_write_json(catalog_path, merged)
     return {
         "path": str(catalog_path),
         "seeded_urls": len(urls),
@@ -807,7 +799,7 @@ def main() -> int:
     status_path = root / "state" / "creator_evaluation_status.json"
     started_at = utc_now()
 
-    atomic_json(status_path, {
+    atomic_write_json(status_path, {
         "schema_version": 1,
         "evaluation_version": EVAL_VERSION,
         "state": "RUNNING",
@@ -849,8 +841,8 @@ def main() -> int:
                 "discovery": discovery,
                 "permanent_source": False,
             }
-            atomic_json(status_path, final)
-            atomic_json(root / "state" / "evaluations" / f"{evaluation_run_id}.json", final)
+            atomic_write_json(status_path, final)
+            atomic_write_json(root / "state" / "evaluations" / f"{evaluation_run_id}.json", final)
             print(json.dumps(final, ensure_ascii=False, indent=2))
             return 4
 
@@ -978,7 +970,7 @@ def main() -> int:
             terminal_reason=shortfall_reason if not sample_complete else None,
             **{key: value for key, value in final.items() if key not in {"state", "progress"}},
         )
-        atomic_json(root / "state" / "evaluations" / f"{evaluation_run_id}.json", final)
+        atomic_write_json(root / "state" / "evaluations" / f"{evaluation_run_id}.json", final)
         print(json.dumps(final, ensure_ascii=False, indent=2))
         return 0 if state == "COMPLETE" else 1
     except Exception as exc:
@@ -1003,7 +995,7 @@ def main() -> int:
             terminal_reason=f"{type(exc).__name__}:{exc}",
             **{key: value for key, value in final.items() if key not in {"state", "progress"}},
         )
-        atomic_json(root / "state" / "evaluations" / f"{evaluation_run_id}.json", final)
+        atomic_write_json(root / "state" / "evaluations" / f"{evaluation_run_id}.json", final)
         print(json.dumps(final, ensure_ascii=False, indent=2))
         return 2
 

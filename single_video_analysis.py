@@ -12,7 +12,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from evaluation_progress import heartbeat, terminalize
-from manifest_store import load_manifest, save_manifest
+from manifest_store import atomic_write_json, load_manifest, save_manifest
 
 STATUS_NAME = "video_url_analysis_status.json"
 YOUTUBE_ID = re.compile(r"[A-Za-z0-9_-]{11}\Z")
@@ -132,7 +132,7 @@ def _tiktok(root: Path, url: str, video_id: str, handle: str, status_path: Path)
     # Preseed the exact URL. process_source skips profile browsing when the
     # requested ID is present in the catalog, and processes no other videos.
     catalog = tiktok.merge_catalog(catalog, [url], profile_url=profile)
-    tiktok.atomic_json(catalog_path, catalog)
+    atomic_write_json(catalog_path, catalog)
 
     def progress(phase: str, metrics: dict) -> None:
         heartbeat(status_path, phase, source_platform="TIKTOK", source_id=video_id, **metrics)
@@ -195,13 +195,13 @@ def main() -> int:
     try:
         platform, url, video_id, handle = canonical_video_url(args.video_url)
     except ValueError as exc:
-        youtube.atomic_json(status_path, {
+        atomic_write_json(status_path, {
             "schema_version": 1, "state": "FAILED", "started_at": started,
             "finished_at": youtube.utc_now(), "error": str(exc),
         })
         return 2
 
-    youtube.atomic_json(status_path, {
+    atomic_write_json(status_path, {
         "schema_version": 1, "state": "RUNNING", "started_at": started,
         "updated_at": started, "source_platform": platform,
         "source_id": video_id, "video_url": url, "queue_id": f"{'yt' if platform == 'YOUTUBE' else 'tt'}_{video_id}",

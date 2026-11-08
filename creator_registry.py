@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import functools
 import json
-import os
 import re
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
+
+from manifest_store import atomic_write_json
 
 REGISTRY_SCHEMA_VERSION = 1
 CREATOR_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,79}$")
@@ -51,13 +52,6 @@ def now_iso() -> str:
 
 def load_json(path: Path):
     return json.loads(path.read_text(encoding="utf-8-sig"))
-
-
-def atomic_json(path: Path, obj: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
 
 
 def _valid_https_url(platform: str, value: str) -> bool:
@@ -639,7 +633,7 @@ def register_creator(root: Path, req: dict) -> dict:
             merged, disabled = _apply_explicit_supersession(registry, key, supersedes)
             if disabled:
                 merged = validate_registry(merged)
-                atomic_json(path, merged)
+                atomic_write_json(path, merged)
                 return {
                     "result": "SUPERSEDED",
                     "creator_key": key,
@@ -665,7 +659,7 @@ def register_creator(root: Path, req: dict) -> dict:
             }
             merged, disabled = _apply_explicit_supersession(merged, key, supersedes)
             merged = validate_registry(merged)
-            atomic_json(path, merged)
+            atomic_write_json(path, merged)
             return {
                 "result": "EXTENDED",
                 "creator_key": key,
@@ -692,7 +686,7 @@ def register_creator(root: Path, req: dict) -> dict:
                 "source_count": len(profile["sources"]),
             }
         merged = validate_registry(merged)
-        atomic_json(path, merged)
+        atomic_write_json(path, merged)
         return {
             "result": "ENRICHED",
             "creator_key": key,
@@ -714,7 +708,7 @@ def register_creator(root: Path, req: dict) -> dict:
     }
     merged, disabled = _apply_explicit_supersession(merged, key, supersedes)
     merged = validate_registry(merged)
-    atomic_json(path, merged)
+    atomic_write_json(path, merged)
     return {
         "result": "REGISTERED",
         "creator_key": key,
@@ -907,7 +901,7 @@ def update_creator(root: Path, req: dict) -> dict:
         "updated_at": changed_at,
         "creators": {**registry["creators"], key: updated_profile},
     })
-    atomic_json(root / "control" / "creator_registry.json", merged)
+    atomic_write_json(root / "control" / "creator_registry.json", merged)
     resulting = merged["creators"][key]
     return {
         "result": "UPDATED",
@@ -1000,7 +994,7 @@ def retire_creator(root: Path, creator_key: str, reason: str, *, issued_by: str 
         "updated_at": retired_at,
         "creators": {**registry["creators"], key: retired_profile},
     })
-    atomic_json(root / "control" / "creator_registry.json", merged)
+    atomic_write_json(root / "control" / "creator_registry.json", merged)
     resulting = merged["creators"][key]
     return {
         "result": "RETIRED",

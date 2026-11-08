@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from manifest_store import atomic_write_json
+
 
 APP_VERSION = "0.5.0"
 SOURCE_TYPE = "TIKTOK"
@@ -43,13 +45,6 @@ def load_json(path: Path, default: Any = None) -> Any:
     if default is not None:
         return default
     raise FileNotFoundError(path)
-
-
-def atomic_write_json(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
 
 
 def validate_media(path: Path) -> tuple[bool, str]:

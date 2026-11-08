@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from manifest_store import load_manifest, save_manifest
+from manifest_store import atomic_write_json, load_manifest, save_manifest
 
 SCREEN_VERSION = "0.2.0"
 ANALYSIS_OWNER = "EKONOMI"
@@ -95,13 +95,6 @@ def load_json(path: Path, default: Any = None) -> Any:
     if default is not None:
         return default
     raise FileNotFoundError(path)
-
-
-def atomic_write_json(path: Path, data: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
 
 
 def normalized_decision(value: str) -> str:

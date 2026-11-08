@@ -12,8 +12,8 @@ import contextlib
 import copy
 import json
 import os
-import tempfile
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -24,6 +24,24 @@ class Manifest(dict):
     """A manifest dict that remembers the state it was loaded from."""
 
     base: dict
+
+
+def atomic_write_json(path: Path, data: Any) -> None:
+    """Write JSON so a reader never sees a half-written file.
+
+    The temp name is unique per write, so two processes saving the same file at once cannot
+    overwrite each other's temp file; the later os.replace wins. The project's single JSON
+    writer: every script imports it from here.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            tmp.unlink()
+        raise
 
 
 def _read(path: Path, default: dict) -> dict:
@@ -136,15 +154,7 @@ def save_manifest(path: Path, manifest: dict) -> None:
     with _locked(path):
         # Deep copy: merge() reuses the caller's item objects, which _refresh_in_place then clears.
         merged = copy.deepcopy(merge(_read(path, {"schema_version": 1, "items": {}}), base, manifest))
-        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(json.dumps(merged, ensure_ascii=False, indent=2) + "\n")
-            os.replace(tmp, path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                os.unlink(tmp)
-            raise
+        atomic_write_json(path, merged)
     _refresh_in_place(manifest, merged)
     if isinstance(manifest, Manifest):
         manifest.base = copy.deepcopy(merged)
