@@ -6,7 +6,7 @@ faster-whisper==1.2.1
 # PyAV 19 removed av.open(metadata_errors=...), which faster-whisper 1.2.1 still calls.
 av==18.1.0
 imageio-ffmpeg==0.8.1
-google-genai==2.34.0
+google-genai==3.0.0
 tzdata==2026.6
 
 # Explicitly pin transitive packages with known fixes surfaced by Docker Scout.
