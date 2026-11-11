@@ -71,6 +71,8 @@ def gemini_http_options(
 ) -> dict[str, Any]:
     """Bound Gemini HTTP operations."""
     return {
+        # google-genai 3.x defaults to v1, where gemini-3.5-transcribe is not served (404).
+        "api_version": "v1beta",
         "timeout": int(timeout_ms),
         "retry_options": {"attempts": int(retry_attempts)},
     }
