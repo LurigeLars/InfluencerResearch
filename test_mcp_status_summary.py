@@ -195,6 +195,30 @@ class McpStatusSummaryTests(unittest.TestCase):
         self.assertNotIn("by_creator", status["story_visual_enrichment"])
         self.assertNotIn("slowest_operations", status["timings"])
 
+    def test_transcription_fallback_is_visible_in_summary_and_compact_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "status.json"
+            path.write_text(
+                json.dumps({
+                    "state": "COMPLETE",
+                    "error_count": 0,
+                    "transcription_fallback_count": 1,
+                    "transcription_fallback_items": [{"video_id": "1", "fallback_from": "gemini"}],
+                }),
+                encoding="utf-8",
+            )
+            summary = summarize_status(path)
+        self.assertEqual(summary["transcription_fallback_count"], 1)
+        self.assertEqual(summary["transcription_fallback_items"][0]["fallback_from"], "gemini")
+
+        compact = compact_job_status({
+            "active": None,
+            "last": {"job_id": "j", "state": "COMPLETE", "status": summary},
+        })
+        status = compact["last"]["status"]
+        self.assertEqual(status["transcription_fallback_count"], 1)
+        self.assertNotIn("transcription_fallback_items", status)
+
 
 if __name__ == "__main__":
     unittest.main()

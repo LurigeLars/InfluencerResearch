@@ -596,6 +596,27 @@ class CreatorRecentLifecycleTests(unittest.TestCase):
         self.assertEqual(set(recent["completed_ids"]), monitor_result[1])
         self.assertEqual(recent["failed_ids"], monitor_result[2])
 
+    def test_transcription_fallbacks_are_collected_per_group(self) -> None:
+        items = crc._transcription_fallback_items([
+            {
+                "creator_key": "a",
+                "platform": "TIKTOK",
+                "transcription_fallbacks": [
+                    {"video_id": "1", "fallback_from": "gemini", "provider": "faster-whisper", "error": "E"},
+                ],
+            },
+            {"creator_key": "b", "platform": "TIKTOK", "transcription_fallbacks": []},
+            {"creator_key": "c", "platform": "YOUTUBE"},
+        ])
+        self.assertEqual(items, [{
+            "creator_key": "a",
+            "platform": "TIKTOK",
+            "video_id": "1",
+            "fallback_from": "gemini",
+            "provider": "faster-whisper",
+            "error": "E",
+        }])
+
 
 if __name__ == "__main__":
     unittest.main()
