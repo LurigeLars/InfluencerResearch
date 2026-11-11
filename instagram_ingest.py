@@ -797,6 +797,12 @@ def transcribe_videos(root: Path, manifest: dict, settings: dict, keys: list[str
             item["transcription_status"] = "DONE"
             item["transcription_provider"] = result.get("provider")
             item["transcription_model"] = result.get("model")
+            if result.get("fallback_from"):
+                item["transcription_fallback_from"] = result.get("fallback_from")
+                item["transcription_fallback_error"] = result.get("fallback_error")
+            else:
+                item.pop("transcription_fallback_from", None)
+                item.pop("transcription_fallback_error", None)
             item["transcript_txt"] = str(txt_path.relative_to(root))
             item["transcript_json"] = str(json_path.relative_to(root))
             item["transcribed_at"] = utc_now()

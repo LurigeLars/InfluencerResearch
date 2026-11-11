@@ -596,6 +596,26 @@ class CreatorRecentLifecycleTests(unittest.TestCase):
         self.assertEqual(set(recent["completed_ids"]), monitor_result[1])
         self.assertEqual(recent["failed_ids"], monitor_result[2])
 
+    def test_instagram_fallback_counts_only_transcripts_from_this_run(self) -> None:
+        started = datetime(2026, 11, 11, 20, 0, tzinfo=timezone.utc)
+        item = {
+            "transcription_provider": "faster-whisper",
+            "transcription_fallback_from": "gemini",
+            "transcription_fallback_error": "RuntimeError: Gemini transcription failed",
+            "transcribed_at": "2026-11-11T20:05:00+00:00",
+        }
+        self.assertEqual(crc._instagram_transcription_fallback("abc", item, started), {
+            "video_id": "abc",
+            "fallback_from": "gemini",
+            "provider": "faster-whisper",
+            "error": "RuntimeError: Gemini transcription failed",
+        })
+        older = {**item, "transcribed_at": "2026-11-10T08:00:00+00:00"}
+        self.assertIsNone(crc._instagram_transcription_fallback("abc", older, started))
+        self.assertIsNone(crc._instagram_transcription_fallback(
+            "abc", {"transcription_provider": "gemini", "transcribed_at": item["transcribed_at"]}, started,
+        ))
+
     def test_transcription_fallbacks_are_collected_per_group(self) -> None:
         items = crc._transcription_fallback_items([
             {
