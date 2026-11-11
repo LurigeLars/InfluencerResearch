@@ -92,6 +92,28 @@ class TikTokContentFallbackTests(unittest.TestCase):
             self.assertEqual(record["content_extraction_version"], sync.CONTENT_EXTRACTION_VERSION)
             self.assertTrue(record["content_extraction_exhausted"])
 
+    def test_transcribe_reports_gemini_fallback_to_caller(self) -> None:
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            media = root / "123.mp4"
+            media.write_bytes(b"x")
+            fake = {
+                "provider": "faster-whisper",
+                "model": "small",
+                "text": "hej",
+                "fallback_from": "gemini",
+                "fallback_error": "RuntimeError: Gemini transcription failed",
+            }
+            with patch.object(sync, "validate_media", return_value=(True, "ok")), \
+                    patch.object(sync, "transcribe_video", return_value=fake):
+                result = sync.transcribe(root, "creator", media, model_holder={})
+
+        self.assertEqual(result["provider"], "faster-whisper")
+        self.assertEqual(result["fallback_from"], "gemini")
+        self.assertIn("Gemini transcription failed", result["fallback_error"])
+
 
 if __name__ == "__main__":
     unittest.main()

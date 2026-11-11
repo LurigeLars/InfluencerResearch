@@ -1788,6 +1788,8 @@ def transcribe(
         "text": full_text,
         "provider": result.get("provider"),
         "model": result.get("model"),
+        "fallback_from": result.get("fallback_from"),
+        "fallback_error": result.get("fallback_error"),
         "txt": txt_path,
         "json": json_path,
         "transcribed_at": when,
@@ -2269,6 +2271,7 @@ def process_source(
     model_holder: dict[str, Any] = {"model": None}
     completed = []
     failures = []
+    transcription_fallbacks = []
     downloaded_network = 0
     ingested_count = 0
     transcribed_count = 0
@@ -2387,6 +2390,13 @@ def process_source(
             continue
 
         transcribed_count += 1
+        if transcription.get("fallback_from"):
+            transcription_fallbacks.append({
+                "video_id": vid,
+                "fallback_from": transcription.get("fallback_from"),
+                "provider": transcription.get("provider"),
+                "error": transcription.get("fallback_error"),
+            })
         report(
             "EVIDENCE",
             current_index=index,
@@ -2507,6 +2517,7 @@ def process_source(
         "completed_new": len(completed),
         "downloaded_network": downloaded_network,
         "failures": failures,
+        "transcription_fallbacks": transcription_fallbacks,
         "completed": completed,
         "timings_ms": timings_ms,
     }

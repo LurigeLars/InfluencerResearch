@@ -2181,9 +2181,29 @@ def _ingest_tiktok(root: Path, profile: dict, source: dict, ids: list[str], disc
         "completed_ids": completed,
         "returncode": 0 if not failures else 1,
         "failures": failures,
+        "transcription_fallbacks": list(obj.get("transcription_fallbacks") or []),
         "discovery_skipped_for_exact_ids": bool(obj.get("discovery_skipped_for_exact_ids")),
         "pipeline_timings_ms": obj.get("timings_ms") or {},
     }
+
+
+def _transcription_fallback_items(ingestion_results: list[dict]) -> list[dict]:
+    """Transcripts that succeeded only through the local fallback provider.
+
+    Not an error (the transcript exists), but a degraded provider must stay
+    visible instead of hiding behind error_count 0.
+    """
+    items = []
+    for row in ingestion_results:
+        for fallback in row.get("transcription_fallbacks") or []:
+            if not isinstance(fallback, dict):
+                continue
+            items.append({
+                "creator_key": row.get("creator_key"),
+                "platform": row.get("platform"),
+                **fallback,
+            })
+    return items
 
 
 def _analysis_candidate_coverage(
@@ -3819,6 +3839,7 @@ def _main_impl() -> int:
                 if item.get("analysis_content_status") == status_name
             ]
 
+        transcription_fallbacks = _transcription_fallback_items(ingestion_results)
         deferred_extraction_recent = compact_nonready("DEFERRED_EXTRACTION")
         extraction_error_recent = compact_nonready("EXTRACTION_ERROR")
         pending_extraction_recent = compact_nonready("PENDING_EXTRACTION")
@@ -4087,6 +4108,8 @@ def _main_impl() -> int:
             "extraction_error_items": extraction_error_recent[:100],
             "pending_extraction_count": len(pending_extraction_recent),
             "pending_extraction_items": pending_extraction_recent[:100],
+            "transcription_fallback_count": len(transcription_fallbacks),
+            "transcription_fallback_items": transcription_fallbacks[:100],
             "provider_circuit_breaker": {
                 "gemini_story_visual": dict(story_gemini_circuit),
             },
