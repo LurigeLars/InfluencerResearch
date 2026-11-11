@@ -61,6 +61,7 @@ class TranscriptionBackendTests(unittest.TestCase):
         self.assertEqual(
             tb.gemini_http_options(),
             {
+                "api_version": "v1beta",
                 "timeout": 45_000,
                 "retry_options": {"attempts": 2},
             },
@@ -73,6 +74,7 @@ class TranscriptionBackendTests(unittest.TestCase):
                 retry_attempts=tb.STORY_GEMINI_RETRY_ATTEMPTS,
             ),
             {
+                "api_version": "v1beta",
                 "timeout": 12_000,
                 "retry_options": {"attempts": 1},
             },
