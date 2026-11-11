@@ -1708,12 +1708,14 @@ def _ingest_instagram(
         "--transcribe-new-only",
         "--only-shortcodes", ",".join(ids),
     ]
+    started_at = datetime.now(timezone.utc)
     p = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
 
     manifest_path = root / "state" / "manifest.json"
     manifest = load_manifest(manifest_path, {"schema_version": 1, "items": {}})
     changed = False
     completed: list[str] = []
+    transcription_fallbacks: list[dict] = []
     for source_id in ids:
         item = (manifest.get("items") or {}).get(source_id)
         if not isinstance(item, dict):
@@ -1731,6 +1733,9 @@ def _ingest_instagram(
                 changed = True
         if item.get("download_status") == "DONE" and item.get("transcription_status") == "DONE":
             completed.append(source_id)
+        fallback = _instagram_transcription_fallback(source_id, item, started_at)
+        if fallback:
+            transcription_fallbacks.append(fallback)
     if changed:
         save_manifest(manifest_path, manifest)
 
@@ -1744,6 +1749,7 @@ def _ingest_instagram(
         "requested_ids": ids,
         "completed_ids": completed,
         "errors": errors,
+        "transcription_fallbacks": transcription_fallbacks,
         "queue": queue,
         "returncode": int(p.returncode),
         "stdout_tail": (p.stdout or "")[-2000:],
@@ -2204,6 +2210,25 @@ def _transcription_fallback_items(ingestion_results: list[dict]) -> list[dict]:
                 **fallback,
             })
     return items
+
+
+def _instagram_transcription_fallback(
+    source_id: str, item: dict, started_at: datetime,
+) -> dict | None:
+    """Fallback recorded by instagram_ingest for a transcript made in this run."""
+    if not item.get("transcription_fallback_from"):
+        return None
+    try:
+        if parse_iso_utc(item.get("transcribed_at") or "") < started_at:
+            return None
+    except ValueError:
+        return None
+    return {
+        "video_id": source_id,
+        "fallback_from": item.get("transcription_fallback_from"),
+        "provider": item.get("transcription_provider"),
+        "error": item.get("transcription_fallback_error"),
+    }
 
 
 def _analysis_candidate_coverage(
