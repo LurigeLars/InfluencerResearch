@@ -109,6 +109,7 @@ def summarize_status(path: Path | None) -> dict | None:
         "pending_extraction_items",
         "transcription_fallback_count",
         "transcription_fallback_items",
+        "queue_drain",
         "provider_circuit_breaker",
         "provider_health",
         "timings",

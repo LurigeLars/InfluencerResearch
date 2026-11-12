@@ -785,7 +785,9 @@ def video_url_analyze(video_url: str) -> str:
         "Start bounded recent-window discovery and ingestion. Window SINCE_LAST_RUN resumes "
         "from where the last full MONITORED run finished with nothing left unlisted, capped or "
         "unfetched (at most 30 days back); the result's `watermark` says whether this run moved "
-        "that point and, if not, what blocked it."
+        "that point and, if not, what blocked it. max_items is per batch: the job keeps running "
+        "batches until the cap holds nothing back (at most 5, within the job deadline); "
+        "`queue_drain` lists them and why it stopped."
     ),
     annotations=RUN,
     structured_output=False,
