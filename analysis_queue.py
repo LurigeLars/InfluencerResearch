@@ -189,6 +189,7 @@ def get_analysis_queue_item(root: Path, queue_id: str) -> dict:
             "queue_item": None,
             "manifest_item": manifest_item,
             "decision": existing,
+            "test_results": _test_results(root)["items"].get(wanted, []),
         }
     if isinstance(manifest_item, dict) and str(
         manifest_item.get("analysis_content_status")
@@ -235,6 +236,7 @@ def list_analysis_decisions(
         raise ValueError("BAD_DECISION")
 
     rows: list[dict] = []
+    test_results = _test_results(root)["items"]
     decision_items = decisions.get("items", {}) if isinstance(decisions.get("items"), dict) else {}
     manifest_items = manifest.get("items", {}) if isinstance(manifest.get("items"), dict) else {}
     for queue_id, record in decision_items.items():
@@ -279,6 +281,7 @@ def list_analysis_decisions(
             "evidence_lineage_id": record.get("evidence_lineage_id") or item.get("evidence_lineage_id"),
             "duplicate_of": record.get("duplicate_of"),
             "duplicate_basis": record.get("duplicate_basis"),
+            "test_outcome": (test_results.get(queue_id) or [{}])[-1].get("outcome"),
         })
 
     rows.sort(key=lambda x: (str(x.get("screened_at") or ""), str(x.get("queue_id") or "")), reverse=True)
@@ -914,3 +917,48 @@ def record_analysis_decision_batch(root: Path, items: list[dict]) -> dict:
         "failed": failed,
         "results": results,
     }
+
+TEST_OUTCOMES = {"SUPPORTED", "REJECTED", "INCONCLUSIVE"}
+TESTABLE_DECISIONS = {"TEST_CANDIDATE", "BACKLOG_CANDIDATE"}
+TEST_RESULT_FIELDS = ("outcome", "method", "data", "summary", "next_step", "evidence_lineage_id")
+
+
+def _test_results(root: Path) -> dict:
+    results = load_json(root / "state" / "research_test_results.json", {"schema_version": 1, "items": {}})
+    return results if isinstance(results.get("items"), dict) else {"schema_version": 1, "items": {}}
+
+
+@_decision_write
+def record_test_result(root: Path, queue_id: str, payload: dict) -> dict:
+    """Append a test outcome for a finalized TEST/BACKLOG candidate; the decision itself stays immutable."""
+    root = root.resolve()
+    wanted = str(queue_id or "").strip()
+    if not wanted:
+        raise ValueError("BAD_QUEUE_ID")
+    decision = (load_json(root / "state" / "research_decisions.json", {"items": {}}).get("items") or {}).get(wanted)
+    if not isinstance(decision, dict):
+        return {"result": "NOT_FOUND", "queue_id": wanted, "error": "DECISION_NOT_FOUND"}
+    if str(decision.get("decision") or "").upper() not in TESTABLE_DECISIONS:
+        return {"result": "CONFLICT", "queue_id": wanted, "error": "NOT_A_TEST_OR_BACKLOG_CANDIDATE",
+                "existing_decision": decision.get("decision")}
+
+    record = {field: str(payload.get(field) or "").strip() for field in TEST_RESULT_FIELDS}
+    record["outcome"] = record["outcome"].upper()
+    errors = []
+    if record["outcome"] not in TEST_OUTCOMES:
+        errors.append("BAD_OUTCOME")
+    errors += [f"MISSING_{field.upper()}" for field in ("method", "data", "summary") if not record[field]]
+    if record["evidence_lineage_id"] != str(decision.get("evidence_lineage_id") or ""):
+        errors.append("EVIDENCE_LINEAGE_MISMATCH")
+    if errors:
+        return {"result": "VALIDATION_ERROR", "queue_id": wanted, "errors": errors}
+
+    results = _test_results(root)
+    history = results["items"].setdefault(wanted, [])
+    if any(all(old.get(f) == record[f] for f in TEST_RESULT_FIELDS) for old in history if isinstance(old, dict)):
+        return {"result": "NO_OP", "queue_id": wanted, "outcome": record["outcome"], "test_count": len(history)}
+    record["tested_at"] = utc_now()
+    history.append(record)
+    atomic_write_json(root / "state" / "research_test_results.json", results)
+    return {"result": "WRITTEN", "queue_id": wanted, "outcome": record["outcome"],
+            "tested_at": record["tested_at"], "test_count": len(history)}

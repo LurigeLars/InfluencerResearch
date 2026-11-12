@@ -32,6 +32,7 @@ from analysis_queue import (
     mark_analysis_insufficient,
     record_analysis_decision,
     record_analysis_decision_batch,
+    record_test_result,
     summarize_creator_evaluation_run,
 )
 from creator_registry import (
@@ -1042,6 +1043,37 @@ def analysis_decision_record_batch(items: list[AnalysisDecisionInput]) -> str:
         return as_text(_refill_analysis_queue_if_drained(result))
     except Exception as exc:
         return as_text({"result": "REJECTED", "error": f"{type(exc).__name__}:{exc}"})
+
+
+@mcp.tool(
+    description=(
+        "Record the outcome of testing a finalized TEST_CANDIDATE or BACKLOG_CANDIDATE. Appends to the item's "
+        "test history; the original decision is never changed. Identical replay is idempotent."
+    ),
+    annotations=UPDATE,
+    structured_output=False,
+)
+def analysis_test_result_record(
+    queue_id: str,
+    outcome: Literal["SUPPORTED", "REJECTED", "INCONCLUSIVE"],
+    method: str,
+    data: str,
+    summary: str,
+    evidence_lineage_id: str,
+    next_step: str = "",
+) -> str:
+    payload = {
+        "outcome": outcome,
+        "method": method,
+        "data": data,
+        "summary": summary,
+        "next_step": next_step,
+        "evidence_lineage_id": evidence_lineage_id,
+    }
+    try:
+        return as_text(record_test_result(ROOT, queue_id, payload))
+    except Exception as exc:
+        return as_text({"result": "REJECTED", "queue_id": queue_id, "error": f"{type(exc).__name__}:{exc}"})
 
 
 @mcp.tool(

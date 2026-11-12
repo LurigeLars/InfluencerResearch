@@ -40,6 +40,7 @@ class MCPContractTests(unittest.TestCase):
                 "analysis_decision_list",
                 "analysis_decision_record",
                 "analysis_decision_record_batch",
+                "analysis_test_result_record",
                 "analysis_evidence_get",
                 "research_status",
                 "research_stop",
