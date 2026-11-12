@@ -64,6 +64,7 @@ The current MCP surface is intentionally limited to nineteen tools:
 - `analysis_decision_list`
 - `analysis_decision_record`
 - `analysis_decision_record_batch`
+- `analysis_test_result_record`
 - `analysis_evidence_get`
 - `research_status`
 - `research_stop`
@@ -290,6 +291,7 @@ The MCP v1 tool surface is deliberately small:
 - `analysis_decision_list`
 - `analysis_decision_record`
 - `analysis_decision_record_batch`
+- `analysis_test_result_record`
 - `analysis_evidence_get`
 - `research_status`
 - `research_stop`
@@ -306,7 +308,7 @@ Long-running research operations are fixed allowlisted jobs. Only one research j
 
 `creator_evaluate` treats registered YouTube `evaluation_video_ids` as must-include seeds. They are evaluated first, then channel discovery fills the remaining requested sample with unique eligible items. Unpinned YouTube candidates are evidence-cost preflighted before local Whisper: by default, a candidate longer than 20 minutes must have a usable English/Swedish caption transcript or it is deferred and a later discovered item backfills the sample. Streams remain eligible, and pinned/exact IDs deliberately bypass this cost defer. The duration ceiling can be changed with `INFLUENCER_RESEARCH_YOUTUBE_MAX_UNPINNED_WHISPER_DURATION_SECONDS` (bounded to 5–60 minutes). Deferred items and reasons are exposed in evaluation status. Each completed YouTube item is reconciled into the canonical analysis queue immediately, with a terminal JobManager reconciliation safety net for STOPPED, PARTIAL, FAILED, watchdog and orphan-recovery paths. Selection persists explicit run membership before expensive evidence work starts, so already-complete items can participate in a later evaluation without overwriting their original manifest `evaluation_run_id`; terminal reconciliation follows that membership rather than inferring it only from provenance. `creator_evaluation_item_list` is a read-only canonical join over manifest, analysis queue and finalized decisions, so every evaluated item can be inspected by run/creator/platform and classified as pending analysis, finalized, duplicate, insufficient, not analysis-ready, pipeline-incomplete, queue-missing or unaccounted. Terminal reconciliation also persists explicit `analysis_*` disposition counters into `research_status`, including any unaccounted queue IDs. YouTube visual evidence capture now writes FFmpeg diagnostics to disk instead of buffering them in model-process memory, emits progress heartbeats during staging, frame capture and OCR/bundle postprocessing, and stops the yt-dlp/FFmpeg child processes if their combined process-tree RSS exceeds 768 MiB on the full-stream fallback. The optimized path lets yt-dlp download a temporary direct-HTTP visual source at at most 480p, bounded to 192 MiB and 120 seconds, then takes at most 24 duration-spread snapshots by seeking only in that local file. The temporary source is deleted before analysis evidence is persisted. If local staging or snapshot sampling cannot produce enough frames it falls back to the bounded full-stream path (at most 120 timeline frames plus 120 scene-change frames). The fallback transport prefers direct formats for streaming startup and retains HLS/m3u8 as an availability fallback. Override that ceiling with `INFLUENCER_RESEARCH_YOUTUBE_VISUAL_CAPTURE_MAX_CHILD_RSS_MB` (bounded to 256–1024 MiB). The IR runtime image also includes pinned Node 26.10.0, which `_node_runtime_arg()` supplies explicitly to yt-dlp for YouTube EJS extraction. `research_status` exposes evaluation phase/heartbeat and sample coverage. A creator evaluation that stops making progress is terminalized as `FAILED / NO_PROGRESS_TIMEOUT` rather than remaining `RUNNING` indefinitely.
 
-`analysis_queue_list` and `analysis_queue_get` provide the current canonical analysis worklist without direct state-file access. Retired creators are excluded from the pending list, while specific historical queue/decision records remain readable. `analysis_queue_mark_insufficient` is the non-decision path for retained evidence that proves unusable after direct inspection: it validates the evidence lineage, removes the item from pending analysis, records `INSUFFICIENT_CONTENT` in the manifest, preserves provenance/evidence and is idempotent. It does not create an `IGNORE` decision and therefore does not distort investment-decision or creator-yield statistics. `analysis_decision_list` is a read-only view over canonical `research_decisions.json` joined to manifest metadata, with creator/platform/decision/evaluation-run/date filters and pagination. `analysis_decision_record` and `analysis_decision_record_batch` validate the existing canonical decision schema, persist to `research_decisions.json`, apply the existing manifest/follow-up governance, and remove finalized work from the active pending queue. Identical replay is idempotent; a conflicting second decision is rejected instead of silently overwriting the ledger.
+`analysis_queue_list` and `analysis_queue_get` provide the current canonical analysis worklist without direct state-file access. Retired creators are excluded from the pending list, while specific historical queue/decision records remain readable. `analysis_queue_mark_insufficient` is the non-decision path for retained evidence that proves unusable after direct inspection: it validates the evidence lineage, removes the item from pending analysis, records `INSUFFICIENT_CONTENT` in the manifest, preserves provenance/evidence and is idempotent. It does not create an `IGNORE` decision and therefore does not distort investment-decision or creator-yield statistics. `analysis_decision_list` is a read-only view over canonical `research_decisions.json` joined to manifest metadata, with creator/platform/decision/evaluation-run/date filters and pagination. `analysis_decision_record` and `analysis_decision_record_batch` validate the existing canonical decision schema, persist to `research_decisions.json`, apply the existing manifest/follow-up governance, and remove finalized work from the active pending queue. Identical replay is idempotent; a conflicting second decision is rejected instead of silently overwriting the ledger. `analysis_test_result_record` records what happened when a `TEST_CANDIDATE` or `BACKLOG_CANDIDATE` was actually tested (`SUPPORTED`, `REJECTED` or `INCONCLUSIVE`, with method, data, summary and next step) in `state/research_test_results.json`. It appends to that item's test history and never changes the decision, so the original screening stays auditable; the lineage must match the decision, identical replay is a no-op, and a retest adds a new entry. `analysis_queue_get` returns the history as `test_results` and `analysis_decision_list` shows the latest as `test_outcome`.
 
 The former Windows request-file/Scheduled-Task research bridge is retired and is not part of the canonical runtime.
 
@@ -345,11 +347,11 @@ the same `local-mcp` proxy pattern the other local MCP services in this fleet us
 No credential is needed on loopback: the authentication boundary is Cloudflare Access on the public
 path, not the local one. Keep the endpoint bound to `127.0.0.1` so that stays true.
 
-**Verify** by listing the tools. The local surface is eighteen: `creator_register`, `creator_update`, `creator_retire`, `creator_list`,
+**Verify** by listing the tools. The local surface is nineteen: `creator_register`, `creator_update`, `creator_retire`, `creator_list`,
 `creator_get`, `creator_evaluate`, `video_url_analyze`, `creator_recent_check`, `creator_evaluation_item_list`, `analysis_queue_list`,
 `analysis_queue_get`, `analysis_queue_mark_insufficient`, `analysis_decision_list`, `analysis_decision_record`,
-`analysis_decision_record_batch`, `analysis_evidence_get`, `research_status` and `research_stop`.
-The public allowlist is the same eighteen.
+`analysis_decision_record_batch`, `analysis_test_result_record`, `analysis_evidence_get`, `research_status` and `research_stop`.
+The public allowlist is the same nineteen.
 
 ## Public Cloudflare access
 
@@ -382,7 +384,7 @@ pwsh -NoProfile -File scripts\public.ps1 -Action Status
 pwsh -NoProfile -File scripts\public.ps1 -Action Logs
 ```
 
-Cloudflare Access remains the authentication boundary. The gateway independently verifies the Access JWT audience/issuer, restricts requests to `/mcp`, caps request size/rate, strips client credentials before proxying, and applies the same seventeen-tool public allowlist as the MCP server.
+Cloudflare Access remains the authentication boundary. The gateway independently verifies the Access JWT audience/issuer, restricts requests to `/mcp`, caps request size/rate, strips client credentials before proxying, and applies the same nineteen-tool public allowlist as the MCP server.
 
 ## Instagram authentication bootstrap
 
