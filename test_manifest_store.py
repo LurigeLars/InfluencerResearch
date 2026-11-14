@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import threading
+import sys
 import unittest
 from pathlib import Path
 
@@ -104,6 +105,7 @@ class AtomicWriteJsonTests(unittest.TestCase):
         self.assertEqual(path.read_text(encoding="utf-8"), '{\n  "name": "Åsa",\n  "n": 1\n}\n')
         self.assertEqual([p.name for p in path.parent.iterdir()], ["status.json"])
 
+    @unittest.skipIf(sys.platform == "win32", "Windows refuses os.replace onto a file another writer has open; IR runs only on Linux")
     def test_parallel_writers_of_one_file_never_fail_or_leave_a_partial_file(self) -> None:
         # A shared fixed "<name>.tmp" made one writer's os.replace fail once another had moved it.
         path = self.dir / "status.json"
