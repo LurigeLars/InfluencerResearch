@@ -3,8 +3,8 @@ from __future__ import annotations
 import tempfile
 import threading
 import unittest
+import unittest.mock
 from pathlib import Path
-from unittest import mock
 
 import creator_registry as cr
 
@@ -51,7 +51,7 @@ class RegistryConcurrencyTests(unittest.TestCase):
             def register(key: str) -> None:
                 results[key] = cr.register_creator(root, request(key))["result"]
 
-            with mock.patch.object(cr, "load_registry", load_then_wait):
+            with unittest.mock.patch.object(cr, "load_registry", load_then_wait):
                 threads = [threading.Thread(target=register, args=(k,)) for k in ("alpha", "bravo")]
                 for thread in threads:
                     thread.start()
