@@ -94,6 +94,7 @@ class MCPJobSemanticsTests(unittest.TestCase):
             self.assertFalse(status_path.exists())
             self.assertIsNone(result["job"].get("status"))
 
+    @unittest.skipIf(sys.platform == "win32", "POSIX process groups (os.killpg); IR runs only in its Linux container")
     def test_research_stop_persists_nested_stopped_state_atomically(self) -> None:
         class FakeProc:
             pid = 4242

@@ -119,6 +119,9 @@ jobs:
           test_instagram_pause_policy
           test_recent_coverage_fixes
           test_youtube_monitor_attribution
+          test_story_video_evidence
+          test_recent_check_queue_drain
+          test_analysis_test_results
 
   camofox-dependency-smoke:
     name: Camofox npm lock and patched transitive dependencies

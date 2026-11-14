@@ -310,6 +310,7 @@ class CreatorRecentLifecycleTests(unittest.TestCase):
             ["ONLYONE"],
         )
 
+    @unittest.skipIf(sys.platform == "win32", "POSIX process groups (os.killpg); IR runs only in its Linux container")
     def test_instagram_ingestion_worker_hang_is_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

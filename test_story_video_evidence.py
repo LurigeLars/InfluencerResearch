@@ -91,6 +91,7 @@ class StoryVideoEvidenceTests(unittest.TestCase):
             }}}
             capture = {"visited_item_keys": [key]}
             page = unittest.mock.Mock()
+            page.url = "https://www.instagram.com/stories/creator/123/"
             response = unittest.mock.Mock()
             response.status = 200
             response.headers = {"content-type": "video/mp4", "content-length": "1024"}
@@ -119,7 +120,7 @@ class StoryVideoEvidenceTests(unittest.TestCase):
     def test_browser_recorder_saves_audio_video_download_with_numeric_id(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            page = unittest.mock.Mock()
+            page = unittest.mock.MagicMock()
             page.evaluate.side_effect = [
                 {"ok": True, "source_scheme": "blob"},
                 {"ok": True, "bytes": 12000, "format": "webm", "audio_tracks": 1},
@@ -137,7 +138,7 @@ class StoryVideoEvidenceTests(unittest.TestCase):
             download.save_as.assert_called_once()
 
     def test_browser_recorder_rejects_no_audio_track_quickly(self) -> None:
-        page = unittest.mock.Mock()
+        page = unittest.mock.MagicMock()
         page.evaluate.side_effect = [
             {"ok": True, "source_scheme": "blob"},
             {"ok": False, "reason": "AUDIO_TRACK_UNAVAILABLE"},
@@ -149,7 +150,7 @@ class StoryVideoEvidenceTests(unittest.TestCase):
         self.assertEqual(result["reason"], "AUDIO_TRACK_UNAVAILABLE")
 
     def test_browser_recorder_playback_timeout_is_a_bounded_failure(self) -> None:
-        page = unittest.mock.Mock()
+        page = unittest.mock.MagicMock()
         page.evaluate.side_effect = [
             {"ok": True, "source_scheme": "blob"},
             {"ok": False, "reason": "PLAY_START_TIMEOUT"},
@@ -214,6 +215,7 @@ class StoryVideoEvidenceTests(unittest.TestCase):
             key = "STORY:creator:123"
             manifest = {"items": {key: {"media_kind": "VIDEO", "story_id": "123"}}}
             page = unittest.mock.Mock()
+            page.url = "https://www.instagram.com/stories/creator/123/"
             ctx = unittest.mock.Mock()
             ctx.new_page.return_value = page
             with (
@@ -222,14 +224,17 @@ class StoryVideoEvidenceTests(unittest.TestCase):
                     "ready": True,
                     "media": {"kind": "video", "url": "https://example.org/exfil.mp4"},
                 }),
+                unittest.mock.patch.object(ingest, "_record_video_story_from_browser",
+                                           return_value={"ok": False, "reason": "AUDIO_TRACK_UNAVAILABLE"}) as record,
             ):
                 result = ingest._recover_missing_story_videos(
                     ctx, root, "creator", manifest, {"visited_item_keys": [key]},
                 )
-            self.assertEqual(
-                result["failures"]["123"], "MEDIA_SOURCE_NOT_ALLOWLISTED"
-            )
+            # The untrusted URL is never requested; only the visible video may be recorded.
             ctx.request.get.assert_not_called()
+            record.assert_called_once()
+            self.assertEqual(result["failures"]["123"], "AUDIO_TRACK_UNAVAILABLE")
+            self.assertEqual(result["recovered"], [])
 
     def test_missing_video_is_counted_as_pending_not_dropped(self) -> None:
         with tempfile.TemporaryDirectory() as td:
