@@ -109,13 +109,13 @@ class AtomicWriteJsonTests(unittest.TestCase):
     def test_parallel_writers_of_one_file_never_fail_or_leave_a_partial_file(self) -> None:
         # A shared fixed "<name>.tmp" made one writer's os.replace fail once another had moved it.
         path = self.dir / "status.json"
-        errors: list[BaseException] = []
+        errors: list[Exception] = []
 
         def write(n: int) -> None:
             try:
                 for i in range(25):
                     atomic_write_json(path, {"writer": n, "i": i, "pad": "x" * 4000})
-            except BaseException as exc:  # noqa: BLE001 - collected for the assertion below
+            except Exception as exc:  # noqa: BLE001 - collected for the assertion below
                 errors.append(exc)
 
         threads = [threading.Thread(target=write, args=(n,)) for n in range(8)]
