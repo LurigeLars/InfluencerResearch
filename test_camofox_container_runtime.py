@@ -12,7 +12,7 @@ BASE = Path(__file__).resolve().parent
 class CamofoxContainerRuntimeTests(TestCase):
     def test_dockerfile_pins_reviewed_runtime_and_skips_dynamic_postinstall(self) -> None:
         text = (BASE / "runtime" / "camofox" / "Dockerfile").read_text(encoding="utf-8")
-        self.assertIn("FROM node:26.13.0-trixie-slim", text)
+        self.assertIn("FROM node:26.13.1-trixie-slim", text)
         self.assertIn("CAMOUFOX_VERSION=158.0.1", text)
         self.assertIn("CAMOUFOX_RELEASE=beta.41", text)
         self.assertIn("CAMOUFOX_SHA256=3f2eb1d0451fa58e45e43e55f5e6181565069791ae60c0574f0ceb1f01341c33", text)
