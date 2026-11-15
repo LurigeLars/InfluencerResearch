@@ -42,7 +42,7 @@ jobs:
             '@askjo/camofox-browser': '1.18.1',
             'better-sqlite3': '13.0.3',
             'camoufox-js': '0.11.5',
-            'impit-linux-x64-gnu': '0.14.8',
+            'impit-linux-x64-gnu': '0.14.9',
           };
           for (const [name, expected] of Object.entries(packages)) {
             const manifest = JSON.parse(fs.readFileSync(path.join('node_modules', ...name.split('/'), 'package.json'), 'utf8'));
