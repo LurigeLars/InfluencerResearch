@@ -5,7 +5,7 @@ This directory defines the reviewed Camofox/Camoufox container used by the Influ
 - Direct dependency: `@askjo/camofox-browser` `1.18.1` from reviewed fork commit `08a32767809e9fe0f89e029462de0c9999eedcaf`
 - Transitive browser client: `camoufox-js` `0.11.5`
 - Tested Playwright protocol client: `1.64.1` with the locally reproducible, SHA256-locked Juggler compatibility patch based on upstream PR #976.
-- Container Node.js baseline: `v26.13.0`
+- Container Node.js baseline: `v26.13.1`
 - Camoufox browser baseline: `158.0.1` / `beta.41` (official Linux AMD64 ZIP SHA256-verified, then Juggler `omni.ja` patched and SHA256-verified to `2bad253389292f3009f669401eb8bc3abd615fb7c4e7d9619865f6c75b5c50fa`).
 - Reviewed fork adds bounded sanitized live observability via per-tab `/network` and `/console` routes; headers, cookies and request/response bodies are not exposed.
 - Direct browser sessions also use the reviewed IPv6-aware, fail-closed SSRF guard; private/local destinations remain blocked by default.

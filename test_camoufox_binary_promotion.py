@@ -43,7 +43,7 @@ class ApprovedBrowserUpdateTests(unittest.TestCase):
         self.test = root / "test_runtime.py"
         self.readme = root / "README.md"
         self.docker.write_text("\n".join((
-            "FROM node:26.13.0-trixie-slim",
+            "FROM node:26.13.1-trixie-slim",
             "ARG CAMOUFOX_VERSION=152.0.4",
             "ARG CAMOUFOX_RELEASE=beta.30",
             "ARG CAMOUFOX_SHA256=" + OLD_AMD,
