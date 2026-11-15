@@ -17,6 +17,8 @@ COPY requirements.txt requirements_tiktok_impersonation.lock.txt ./
 RUN python -m pip install --no-cache-dir --upgrade pip \
     && python -m pip install --no-cache-dir -r requirements.txt \
     && python -m pip install --no-cache-dir --only-binary=:all: --no-deps --require-hashes -r requirements_tiktok_impersonation.lock.txt \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends libatomic1 \
     && python -m playwright install --with-deps chromium \
     && apt-get update \
     && apt-get -y upgrade \
