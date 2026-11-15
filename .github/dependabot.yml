@@ -1,15 +1,23 @@
 version: 2
 
+# One weekly pull request for all version updates (every ecosystem), so the
+# strict up-to-date branch rule needs a single CI run. Security updates are
+# not part of this group and still open immediately.
+multi-ecosystem-groups:
+  weekly-dependencies:
+    schedule:
+      interval: weekly
+      day: saturday
+      time: "09:00"
+      timezone: Europe/Stockholm
+    open-pull-requests-limit: 5
+
 updates:
   # Standard Python runtime dependencies in requirements.txt.
   - package-ecosystem: "pip"
     directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "saturday"
-      time: "09:00"
-      timezone: "Europe/Stockholm"
-    open-pull-requests-limit: 5
+    multi-ecosystem-group: weekly-dependencies
+    patterns: ["*"]
     # faster-whisper 1.2.1 still calls av.open(metadata_errors=...),
     # removed in PyAV 19. Keep compatible PyAV 18.x maintenance updates.
     ignore:
@@ -20,83 +28,44 @@ updates:
         applies-to: "security-updates"
         patterns: ["*"]
         update-types: ["minor", "patch"]
-      python-minor-patch:
-        applies-to: "version-updates"
-        patterns:
-          - "*"
-        update-types:
-          - "minor"
-          - "patch"
     # The TikTok impersonation lock remains hash-pinned. Dependabot may propose
     # updates, but every change stays manual-review-only and must pass the lock/runtime tests.
 
   # Container images referenced by compose.yaml and compose.public.yaml.
   - package-ecosystem: "docker-compose"
     directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "saturday"
-      time: "09:00"
-      timezone: "Europe/Stockholm"
-    open-pull-requests-limit: 5
+    multi-ecosystem-group: weekly-dependencies
+    patterns: ["*"]
     groups:
       security-minor-patch:
         applies-to: "security-updates"
         patterns: ["*"]
         update-types: ["minor", "patch"]
-      docker-compose-minor-patch:
-        applies-to: "version-updates"
-        patterns:
-          - "*"
-        update-types:
-          - "minor"
-          - "patch"
 
   # Reviewed Node runtime for Camofox Browser. Updates require manual review; Dependabot only proposes them.
   - package-ecosystem: "npm"
     directory: "/runtime/camofox"
-    schedule:
-      interval: "weekly"
-      day: "saturday"
-      time: "09:00"
-      timezone: "Europe/Stockholm"
-    open-pull-requests-limit: 3
-
+    multi-ecosystem-group: weekly-dependencies
+    patterns: ["*"]
 
   # Third-party GitHub Actions, including commit-SHA-pinned actions.
   - package-ecosystem: "github-actions"
     directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "saturday"
-      time: "09:00"
-      timezone: "Europe/Stockholm"
-    open-pull-requests-limit: 5
+    multi-ecosystem-group: weekly-dependencies
+    patterns: ["*"]
     groups:
       security-minor-patch:
         applies-to: "security-updates"
         patterns: ["*"]
         update-types: ["minor", "patch"]
-      github-actions-minor-patch:
-        applies-to: "version-updates"
-        patterns:
-          - "*"
-        update-types:
-          - "minor"
-          - "patch"
-
 
   # Base images used by both reviewed runtime Dockerfiles.
   - package-ecosystem: "docker"
     directories:
       - "/runtime/influencerresearch"
       - "/runtime/camofox"
-    schedule:
-      interval: "weekly"
-      day: "saturday"
-      time: "09:00"
-      timezone: "Europe/Stockholm"
-    open-pull-requests-limit: 3
+    multi-ecosystem-group: weekly-dependencies
+    patterns: ["*"]
     # Python 3.14 -> 3.15 requires an independently validated runtime migration.
     # Continue receiving compatible Python 3.14 patch/base digest updates.
     ignore:
@@ -107,10 +76,3 @@ updates:
         applies-to: "security-updates"
         patterns: ["*"]
         update-types: ["minor", "patch"]
-      dockerfile-minor-patch:
-        applies-to: "version-updates"
-        patterns:
-          - "*"
-        update-types:
-          - "minor"
-          - "patch"
