@@ -40,7 +40,7 @@ jobs:
           const path = require('path');
           const packages = {
             '@askjo/camofox-browser': '1.18.1',
-            'better-sqlite3': '13.0.3',
+            'better-sqlite3': '13.2.0',
             'camoufox-js': '0.11.5',
             'impit-linux-x64-gnu': '0.14.9',
           };
@@ -54,7 +54,7 @@ jobs:
           if (typeof rateLimit.rateLimit !== 'function') throw new Error('Camofox express-rate-limit import failed');
           const rateManifest = JSON.parse(fs.readFileSync(
             'node_modules/@askjo/camofox-browser/node_modules/express-rate-limit/package.json', 'utf8'));
-          if (rateManifest.version !== '8.7.2') throw new Error('Camofox nested express-rate-limit version mismatch');
+          if (rateManifest.version !== '8.7.4') throw new Error('Camofox nested express-rate-limit version mismatch');
           NODE
       - name: Rebuild only the reviewed native dependency
         working-directory: runtime/camofox
