@@ -36,7 +36,7 @@ class CamofoxContainerRuntimeTests(TestCase):
         lock = json.loads(
             (BASE / "runtime" / "camofox" / "package-lock.json").read_text(encoding="utf-8")
         )
-        expected = "https://github.com/LurigeLars/camofox-browser/archive/08a32767809e9fe0f89e029462de0c9999eedcaf.tar.gz"
+        expected = "https://github.com/LurigeLars/camofox-browser/archive/d30058ec52e84c47aee4c903e42f506493f557ef.tar.gz"
         self.assertEqual(package["dependencies"]["@askjo/camofox-browser"], expected)
         self.assertEqual(lock["packages"][""]["dependencies"]["@askjo/camofox-browser"], expected)
         camofox = lock["packages"]["node_modules/@askjo/camofox-browser"]
@@ -49,24 +49,24 @@ class CamofoxContainerRuntimeTests(TestCase):
         # npm now records a verified SHA-512 for the immutable GitHub archive.
         # Keep integrity checking enabled instead of stripping this lock metadata.
         self.assertRegex(camofox["integrity"], r"^sha512-[A-Za-z0-9+/]+={0,2}$")
-        self.assertEqual(camofox["dependencies"]["express-rate-limit"], "8.7.2")
-        self.assertEqual(camofox["dependencies"]["better-sqlite3"], "13.0.3")
+        self.assertEqual(camofox["dependencies"]["express-rate-limit"], "8.7.4")
+        self.assertEqual(camofox["dependencies"]["better-sqlite3"], "13.2.0")
         self.assertNotIn("node_modules/@askjo/camofox-browser/node_modules/better-sqlite3", lock["packages"])
         # Resolve the mandatory dependency from the Camofox package context.
         # npm is allowed to nest it; an old optional root copy is omitted by
         # our production `npm ci --omit=optional` and must not be required.
         rate_limit = lock["packages"]["node_modules/@askjo/camofox-browser/node_modules/express-rate-limit"]
-        self.assertEqual(rate_limit["version"], "8.7.2")
+        self.assertEqual(rate_limit["version"], "8.7.4")
         self.assertEqual(
             rate_limit["integrity"],
-            "sha512-U1ScocxDD9WI09LaBVypvNkOtNR5yWAmZLkuKJdAzIchA4YKFYF6GT5IKER7epG58oXtjvGlV0/6ii0F83EyZg==",
+            "sha512-LKBXzX700wz3zAGNNmVnjRI5mEbYkLv7UbMI4+9Xa+JPcg2UZh6AgY/2CZh9RrJjFM5ttC/N1lD+KzyFoZITCw==",
         )
         self.assertIsNot(rate_limit.get("optional"), True)
         self.assertIs(lock["packages"]["node_modules/express-rate-limit"].get("optional"), True)
         ip_address = lock["packages"]["node_modules/ip-address"]
         self.assertEqual(ip_address["version"], "10.7.5")
         self.assertIsNot(ip_address.get("optional"), True)
-        self.assertEqual(sync.CAMOFOX_CONTAINER_SOURCE_COMMIT, "08a32767809e9fe0f89e029462de0c9999eedcaf")
+        self.assertEqual(sync.CAMOFOX_CONTAINER_SOURCE_COMMIT, "d30058ec52e84c47aee4c903e42f506493f557ef")
         self.assertEqual(sync.CAMOFOX_CONTAINER_EXPECTED_CAMOFOX_VERSION, "1.18.1")
         self.assertEqual(sync.CAMOFOX_FALLBACK_EXPECTED_CAMOFOX_VERSION, "1.17.0")
 
