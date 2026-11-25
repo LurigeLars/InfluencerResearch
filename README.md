@@ -552,3 +552,7 @@ Reactivation is **manual only**, after the operator has independently confirmed 
 Instagram account access is normal: change the Compose flag to `"0"`, redeploy the
 IR service, and explicitly re-enable approved Instagram sources using `creator_update`.
 Do not automatically reactivate after a timeout, restart, scheduled job, or CI run.
+
+### Local MCP tool usage
+
+`tool_usage(days=7, limit=50, tool=None)` reports counts, errors, latency histogram upper bounds (p50/p95) and registered tools without observed calls. SQLite aggregates in the existing local logs mount retain 30 UTC days. No creator identity, video URLs, arguments, transcripts, result payloads or free-form exceptions are stored. Disable with `INFLUENCER_RESEARCH_MCP_TOOL_USAGE=off`. Timing measures MCP calls, not completion of asynchronous research/transcription jobs; existing job timings remain the source for those durations. A crash may lose pending calls; report exposes pending and dropped counts. No changes to research state or job execution.
