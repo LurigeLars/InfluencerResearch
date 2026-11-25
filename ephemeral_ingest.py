@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from instagram_policy import require_instagram_access
 
+from provider_usage import measure
+
 import argparse
 import contextlib
 import hashlib
@@ -1238,6 +1240,7 @@ def _clear_story_ollama_insufficient(item: dict) -> None:
         item.pop(field, None)
 
 
+@measure("tesseract", "story_image")
 def extract_story_text_local_ocr(screenshot_path: Path) -> dict:
     """Extract visible Story text locally with bounded Tesseract OCR."""
     proc = subprocess.run(
