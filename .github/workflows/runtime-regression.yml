@@ -59,6 +59,7 @@ jobs:
           creator_recent_check.py
           ephemeral_ingest.py
           influencerresearch_mcp.py
+          tool_usage.py
           youtube_creator_evaluation.py
       - name: Run deterministic regression tests
         run: >-
@@ -70,6 +71,7 @@ jobs:
           test_instagram_ingest_limits
           test_local_runtime_namespace
           test_mcp_contract
+          test_tool_usage
           test_single_video_analysis
           test_analysis_queue
           test_creator_evaluation_pipeline
