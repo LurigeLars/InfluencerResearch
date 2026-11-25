@@ -18,6 +18,8 @@ from typing import Any, Callable
 from urllib import error as urllib_error
 from urllib import request as urllib_request
 
+from provider_usage import fallback_usage, measure
+
 GEMINI_SECRET_PATH = Path("/run/influencerresearch-secrets/gemini_api_key")
 DEFAULT_GEMINI_MODEL = "gemini-3.5-transcribe"
 DEFAULT_GEMINI_VISUAL_MODEL = "gemini-3.8-flash"
@@ -284,6 +286,7 @@ def _transcribe_gemini_audio(
                 client.files.delete(name=uploaded.name)
 
 
+@measure("gemini", "transcription")
 def transcribe_gemini(
     video_path: Path,
     *,
@@ -345,6 +348,7 @@ def _gemini_audio_worker_main(argv: list[str] | None = None) -> int:
         return 1
 
 
+@measure("gemini", "transcription")
 def transcribe_gemini_bounded(
     video_path: Path,
     *,
@@ -423,6 +427,7 @@ def transcribe_gemini_bounded(
 
 
 
+@measure("ollama", "story_image")
 def extract_image_evidence_ollama(
     image_path: Path,
     *,
@@ -570,6 +575,7 @@ def extract_image_evidence_ollama(
     }
 
 
+@measure("gemini", "story_image")
 def extract_image_evidence_gemini(
     image_path: Path,
     *,
@@ -639,6 +645,7 @@ def extract_image_evidence_gemini(
     }
 
 
+@measure("gemini", "video_text")
 def extract_visible_text_gemini(
     video_path: Path,
     *,
@@ -712,6 +719,7 @@ def extract_visible_text_gemini(
                 client.files.delete(name=uploaded.name)
 
 
+@measure("faster-whisper", "transcription")
 def transcribe_faster_whisper(
     video_path: Path,
     settings: dict[str, Any],
@@ -828,7 +836,8 @@ def transcribe_video(
         try:
             return transcribe_gemini_bounded(video_path, **gemini_kwargs)
         except Exception as exc:
-            fallback = transcribe_faster_whisper(video_path, settings, progress_callback=progress_callback)
+            with fallback_usage():
+                fallback = transcribe_faster_whisper(video_path, settings, progress_callback=progress_callback)
             fallback["fallback_from"] = "gemini"
             fallback["fallback_error"] = _safe_error(exc)
             return fallback
