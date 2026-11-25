@@ -44,6 +44,7 @@ class MCPContractTests(unittest.TestCase):
                 "analysis_evidence_get",
                 "research_status",
                 "research_stop",
+                "tool_usage",
             ],
         )
         self.assertNotIn("run_command", source)

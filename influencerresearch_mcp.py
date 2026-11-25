@@ -45,6 +45,7 @@ from creator_registry import (
 from research_status_summary import compact_job_status, summarize_status
 from single_video_analysis import canonical_video_url
 from manifest_store import atomic_write_json
+from tool_usage import audit_tool_usage, configure_usage, usage_report
 
 
 SERVER_NAME = "InfluencerResearch"
@@ -627,6 +628,7 @@ security = TransportSecuritySettings(
 
 mcp = MCPServer(
     SERVER_NAME,
+    middleware=[audit_tool_usage],
     instructions="Public-creator research tools. One long-running research job at a time.",
 )
 
@@ -1229,7 +1231,13 @@ def research_stop() -> str:
     return as_text(jobs.stop())
 
 
+@mcp.tool(description="Local tool counts, latency and errors.", annotations=READ, structured_output=False)
+def tool_usage(days: int = 7, limit: int = 50, tool: str | None = None) -> str:
+    return as_text(usage_report(days, limit, tool))
+
+
 if __name__ == "__main__":
+    configure_usage(Path("/research/logs/tool-usage.sqlite3"))
     mcp.run(
         transport="streamable-http",
         host="0.0.0.0",
