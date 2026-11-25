@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from provider_usage import measure
+
 import contextlib
 import json
 import os
@@ -130,6 +132,7 @@ def _sample_visual_records(records: list[dict], limit: int = VISUAL_OCR_MAX_FRAM
     return sorted(selected[:limit], key=lambda row: float(row.get("timestamp_s") or 0.0))
 
 
+@measure("tesseract", "video_frame_ocr")
 def _run_tesseract_visual_frame(path: Path, psm: int) -> str:
     try:
         proc = subprocess.run(
