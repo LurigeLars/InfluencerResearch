@@ -9,6 +9,7 @@ import math
 import os
 from pathlib import Path
 import subprocess
+import stat
 import time
 from datetime import datetime, timezone
 
@@ -21,8 +22,8 @@ _OUTCOMES = {"attempt", "completed", "empty", "failed", "timeout", "rate_limited
 
 
 @contextlib.contextmanager
-def fallback_usage():
-    token = _FALLBACK.set(True)
+def fallback_usage(active=True):
+    token = _FALLBACK.set(bool(active) or _FALLBACK.get())
     try:
         yield
     finally:
@@ -50,9 +51,10 @@ def _emit(provider, operation, outcome, *, elapsed=None, media_seconds=None):
     fd = None
     try:
         path = LOG_DIR / f"provider-usage-{now:%Y-%m-%d}.jsonl"
-        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
         fd = os.open(path, flags, 0o600)
-        if os.fstat(fd).st_size + len(line) <= DAILY_LIMIT:
+        info = os.fstat(fd)
+        if stat.S_ISREG(info.st_mode) and info.st_size + len(line) <= DAILY_LIMIT:
             os.write(fd, line)
     except OSError:
         # Accounting must not change the result of a research operation.
