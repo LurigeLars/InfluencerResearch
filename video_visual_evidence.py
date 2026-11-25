@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from provider_usage import measure
+from provider_usage import measure, fallback_usage
 
 import contextlib
 import json
@@ -133,23 +133,27 @@ def _sample_visual_records(records: list[dict], limit: int = VISUAL_OCR_MAX_FRAM
 
 
 @measure("tesseract", "video_frame_ocr")
+def _measure_tesseract_visual_frame(path: Path, psm: int) -> str:
+    proc = subprocess.run(
+        ["tesseract", str(path), "stdout", "-l", "eng", "--psm", str(psm)],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=VISUAL_OCR_TIMEOUT_SECONDS,
+        check=False,
+        env={**os.environ, "OMP_THREAD_LIMIT": "1"},
+    )
+    if proc.returncode != 0:
+        raise RuntimeError("Tesseract video-frame OCR failed.")
+    return re.sub(r"[ \t]+", " ", str(proc.stdout or "")).strip()
+
+
 def _run_tesseract_visual_frame(path: Path, psm: int) -> str:
     try:
-        proc = subprocess.run(
-            ["tesseract", str(path), "stdout", "-l", "eng", "--psm", str(psm)],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=VISUAL_OCR_TIMEOUT_SECONDS,
-            check=False,
-            env={**os.environ, "OMP_THREAD_LIMIT": "1"},
-        )
-    except (OSError, subprocess.SubprocessError):
+        return _measure_tesseract_visual_frame(path, psm)
+    except (OSError, subprocess.SubprocessError, RuntimeError):
         return ""
-    if proc.returncode != 0:
-        return ""
-    return re.sub(r"[ \t]+", " ", str(proc.stdout or "")).strip()
 
 
 def _ocr_visual_frame(path: Path) -> str:
@@ -159,7 +163,8 @@ def _ocr_visual_frame(path: Path) -> str:
     text = _run_tesseract_visual_frame(path, 11)
     if text:
         return text
-    return _run_tesseract_visual_frame(path, 6)
+    with fallback_usage():
+        return _run_tesseract_visual_frame(path, 6)
 
 
 def _visual_text_tokens(value: str) -> list[str]:
