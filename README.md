@@ -476,6 +476,11 @@ The shared transcription backend supports `auto`, `gemini`, and `faster-whisper`
 
 The backend never reads `GEMINI_API_KEY` from process environment variables.
 
+### Anonymous provider usage accounting
+
+The runtime appends fixed-schema events to the existing `/research/logs/provider-usage-YYYY-MM-DD.jsonl` mount (UTC day). Count `attempt` events by `provider` and `operation`; terminal events distinguish nonempty results, empty results, failures, timeouts and recognized rate limits. `fallback` means an earlier stage actually ran in the same operation flow, not a cache hit or an unavailable/disabled provider. Counts represent logical backend operations, not individual SDK HTTP retries. A nonempty result is not a guarantee of sufficient or correct evidence. `elapsed_seconds` measures operation time, and successful transcription records `media_seconds` from the provider or a bounded local FFprobe duration check (unknown is null, not zero). The latter is a media-duration estimate, not billed audio seconds. No prompts, media contents, transcripts, image text, creator/video identifiers, filenames, URLs, arbitrary model names, error text or credentials are recorded. Provider categories are fixed. Existing operator log retention applies; each day's file is capped at approximately 4 MiB, with no new database. Missing/unwritable logs or an interrupted worker can leave incomplete accounting without changing research results. No new public tool or endpoint.
+
+
 ### One-time local namespace migration
 
 Older installations stored host-only auth/fallback state under `%LOCALAPPDATA%\InstagramResearch`. The canonical host namespace is now `%LOCALAPPDATA%\InfluencerResearch`.
@@ -547,3 +552,7 @@ Reactivation is **manual only**, after the operator has independently confirmed 
 Instagram account access is normal: change the Compose flag to `"0"`, redeploy the
 IR service, and explicitly re-enable approved Instagram sources using `creator_update`.
 Do not automatically reactivate after a timeout, restart, scheduled job, or CI run.
+
+### Local MCP tool usage
+
+`tool_usage(days=7, limit=50, tool=None)` reports counts, errors, latency histogram upper bounds (p50/p95) and registered tools without observed calls. SQLite aggregates in the existing local logs mount retain 30 UTC days. No creator identity, video URLs, arguments, transcripts, result payloads or free-form exceptions are stored. Disable with `INFLUENCER_RESEARCH_MCP_TOOL_USAGE=off`. Timing measures MCP calls, not completion of asynchronous research/transcription jobs; existing job timings remain the source for those durations. A crash may lose pending calls; report exposes pending and dropped counts. No changes to research state or job execution.

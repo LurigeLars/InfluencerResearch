@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from instagram_policy import require_instagram_access
 
+from provider_usage import measure, fallback_usage
+
 import argparse
 import contextlib
 import hashlib
@@ -1238,6 +1240,7 @@ def _clear_story_ollama_insufficient(item: dict) -> None:
         item.pop(field, None)
 
 
+@measure("tesseract", "story_image")
 def extract_story_text_local_ocr(screenshot_path: Path) -> dict:
     """Extract visible Story text locally with bounded Tesseract OCR."""
     proc = subprocess.run(
@@ -1380,6 +1383,7 @@ def enrich_story_visual_evidence(
         # Local OCR is the cheap first pass. Cache a grounded INSUFFICIENT
         # result for the exact screenshot + OCR quality contract so unchanged
         # Stories do not rerun deterministic Tesseract work on every scan.
+        local_attempted = False
         ocr_text = ""
         ocr_fingerprint = ""
         ocr_cache_hit = False
@@ -1398,6 +1402,7 @@ def enrich_story_visual_evidence(
             ocr_cached_insufficient += 1
             ocr_text = str(item.get("ocr_visual_attempt_text") or "").strip()
         else:
+            local_attempted = True
             ocr_attempted += 1
             ocr_clock = time.perf_counter()
             try:
@@ -1468,14 +1473,15 @@ def enrich_story_visual_evidence(
             ) + 1
             ollama_clock = time.perf_counter()
             try:
-                ollama_result = extract_image_evidence_ollama(
-                    screenshot_path,
-                    model=ollama_model,
-                    base_url=ollama_base_url,
-                    timeout_seconds=ollama_timeout_seconds,
-                    num_ctx=ollama_num_ctx,
-                    ocr_hint=ocr_text or None,
-                )
+                with fallback_usage(local_attempted):
+                    ollama_result = extract_image_evidence_ollama(
+                        screenshot_path,
+                        model=ollama_model,
+                        base_url=ollama_base_url,
+                        timeout_seconds=ollama_timeout_seconds,
+                        num_ctx=ollama_num_ctx,
+                        ocr_hint=ocr_text or None,
+                    )
                 ollama_text = str(ollama_result.get("text") or "").strip()
                 if _story_evidence_text_sufficient(ollama_text):
                     item["visual_description"] = ollama_text
@@ -1508,6 +1514,7 @@ def enrich_story_visual_evidence(
                 ollama_errors.append(f"{key}: {type(exc).__name__}: {exc}")
             finally:
                 ollama_duration_ms += (time.perf_counter() - ollama_clock) * 1000
+                local_attempted = True
 
         existing_retry_after = _parse_retry_after(item.get("visual_description_retry_after"))
         if (
@@ -1542,11 +1549,12 @@ def enrich_story_visual_evidence(
         attempted += 1
         gemini_clock = time.perf_counter()
         try:
-            result = extract_image_evidence_gemini(
-                screenshot_path,
-                model=model,
-                timeout_ms=gemini_story_timeout_ms,
-            )
+            with fallback_usage(local_attempted):
+                result = extract_image_evidence_gemini(
+                    screenshot_path,
+                    model=model,
+                    timeout_ms=gemini_story_timeout_ms,
+                )
             text = str(result.get("text") or "").strip()
             item["visual_description"] = text
             item["visual_description_status"] = "DONE" if text else "INSUFFICIENT_CONTENT"

@@ -17,6 +17,19 @@ permissions:
   contents: read
 
 jobs:
+  mcp-protocol-eras:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install pinned MCP SDK only
+        run: python -m pip install "$(grep '^mcp==' requirements.txt)"
+      - name: Verify protocol eras without runtime services
+        run: python -m unittest -v test_mcp_protocol_eras
+
   runtime-regression:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -47,6 +60,7 @@ jobs:
         run: >-
           python -m py_compile
           transcription_backend.py
+          provider_usage.py
           camofox_container.py
           tiktok_camofox_sync.py
           research_queue.py
@@ -59,6 +73,7 @@ jobs:
           creator_recent_check.py
           ephemeral_ingest.py
           influencerresearch_mcp.py
+          tool_usage.py
           youtube_creator_evaluation.py
       - name: Run deterministic regression tests
         run: >-
@@ -70,6 +85,7 @@ jobs:
           test_instagram_ingest_limits
           test_local_runtime_namespace
           test_mcp_contract
+          test_tool_usage
           test_single_video_analysis
           test_analysis_queue
           test_creator_evaluation_pipeline
@@ -80,6 +96,7 @@ jobs:
           test_tiktok_content_fallback
           test_tiktok_camofox_retries
           test_transcription_backend
+          test_provider_usage
           test_creator_recent_lifecycle
           test_mcp_job_semantics
           test_manifest_store

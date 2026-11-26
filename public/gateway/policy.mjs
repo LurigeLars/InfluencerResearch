@@ -20,6 +20,7 @@ export const ALLOWED_TOOLS = new Set([
   'analysis_test_result_record',
   'research_status',
   'research_stop',
+  'tool_usage',
 ]);
 
 export function checkRequest(msg) {
