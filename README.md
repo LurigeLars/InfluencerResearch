@@ -355,6 +355,9 @@ The public allowlist is the same nineteen.
 
 ## Public Cloudflare access
 
+The optional Docker/Cloudflare gateway uses the shared local-only `dockerlocal-gateway:node-26.13.1-r1` image. Provision it first with the reviewed `build-gateway-runtime.ps1` in [Docker-MCP](https://github.com/LurigeLars/Docker-MCP) (pinned Node base, Alpine package upgrades, unused npm removed, immutable Scout review). The image is never pulled from a registry. For independent deployments, build and review the same versioned image locally from that recipe before starting Compose; normal non-Docker MCP operation is unchanged.
+
+
 The optional public stack follows the same pattern as the other local MCP services:
 
 ```text
